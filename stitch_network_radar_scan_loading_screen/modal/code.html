@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+
+<html lang="zh-Hant"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>SIP Command - Batch Sync</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<style>
+        body { font-family: 'Space_Grotesk', sans-serif; }
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: #070d1f; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #3c4a42; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #10b981; }
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 16px;
+            height: 16px;
+            background: #4edea3;
+            cursor: pointer;
+            border-radius: 2px;
+        }
+    </style>
+</head>
+<body class="bg-[#0c1324] text-[#dce1fb] overflow-hidden">
+<div id="app">
+<!-- Main UI (Background) -->
+<div class="min-h-screen selection:bg-[#4edea3]/30">
+<!-- Grid Background Decoration -->
+<div class="fixed inset-0 pointer-events-none opacity-5" style="background-image: radial-gradient(#86948a 0.5px, transparent 0.5px); background-size: 24px 24px;"></div>
+<!-- Top Navigation -->
+<header class="fixed top-0 w-full bg-[#0c1324] flex justify-between items-center px-6 h-16 z-50 border-b border-[#1e293b]">
+<div class="text-xl font-black tracking-tighter text-[#10b981]">SIP COMMAND</div>
+<nav class="hidden md:flex items-center gap-8 tracking-wider uppercase text-sm font-medium">
+<a class="text-[#bbcabf] hover:text-[#4edea3] transition-colors" href="#">Dashboard</a>
+<a class="text-[#bbcabf] hover:text-[#4edea3] transition-colors" href="#">Devices</a>
+<a class="text-[#4edea3] border-b-2 border-[#4edea3] pb-1" href="#">Multicast</a>
+<a class="text-[#bbcabf] hover:text-[#4edea3] transition-colors" href="#">Logs</a>
+</nav>
+<div class="flex items-center gap-4">
+<span class="material-symbols-outlined text-[#bbcabf] cursor-pointer hover:text-[#4edea3]">notifications</span>
+<span class="material-symbols-outlined text-[#bbcabf] cursor-pointer hover:text-[#4edea3]">settings</span>
+</div>
+</header>
+<!-- Sidebar -->
+<aside class="fixed left-0 top-16 h-[calc(100vh-64px)] w-64 bg-[#070d1f] flex flex-col py-4 z-40 border-r border-[#1e293b]">
+<div class="px-6 mb-8">
+<div class="font-medium text-xs uppercase text-[#bbcabf]">OPERATOR_01</div>
+<div class="text-[10px] text-[#4edea3]/60 tracking-widest">Level 4 Access</div>
+</div>
+<nav class="flex-1 space-y-1">
+<a class="flex items-center gap-4 px-6 py-3 text-[#bbcabf] hover:bg-[#23293c] hover:text-[#dce1fb] text-xs uppercase transition-transform hover:translate-x-1" href="#">
+<span class="material-symbols-outlined">hub</span>
+<span>Network Map</span>
+</a>
+<a class="flex items-center gap-4 px-6 py-3 text-[#bbcabf] hover:bg-[#23293c] hover:text-[#dce1fb] text-xs uppercase transition-transform hover:translate-x-1" href="#">
+<span class="material-symbols-outlined">settings_input_component</span>
+<span>SIP Nodes</span>
+</a>
+<a class="bg-[#23293c] text-[#4edea3] border-l-4 border-[#4edea3] flex items-center gap-4 px-6 py-3 text-xs uppercase transition-transform translate-x-1" href="#">
+<span class="material-symbols-outlined">sync_alt</span>
+<span>Batch Sync</span>
+</a>
+</nav>
+</aside>
+<!-- Main Content Background -->
+<main class="ml-64 mt-16 p-8 min-h-screen">
+<div class="flex flex-col gap-6 max-w-6xl mx-auto opacity-40">
+<h1 class="text-4xl font-black tracking-tight uppercase">Multicast Operations</h1>
+<div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+<div class="bg-[#191f31] border-b-2 border-[#4edea3]/20 p-6">
+<div class="text-xs text-[#bbcabf] uppercase mb-2">Global Nodes</div>
+<div class="text-3xl font-bold font-mono">1,204</div>
+</div>
+</div>
+</div>
+</main>
+<!-- Modal Overlay -->
+<div class="fixed inset-0 z-[100] flex items-center justify-center bg-[#0f172a]/80 backdrop-blur-md p-4" v-if="isModalOpen">
+<!-- Modal Container -->
+<div class="w-full max-w-2xl bg-[#191f31] shadow-2xl border border-[#3c4a42]/20 relative overflow-hidden">
+<!-- Neon Accent Line -->
+<div class="absolute top-0 left-0 w-full h-[2px] bg-gradient-to-r from-[#4edea3] to-[#4cd7f6]"></div>
+<!-- Header -->
+<div class="flex items-center justify-between px-8 py-6 bg-[#23293c]">
+<h2 class="text-2xl font-black uppercase tracking-tighter flex items-center gap-3">
+<span class="material-symbols-outlined text-[#4edea3]">sync_alt</span> 大量同步設定
+                        </h2>
+<button @click="closeModal" class="text-[#bbcabf] hover:text-[#ffb4ab] transition-colors">
+<span class="material-symbols-outlined">close</span>
+</button>
+</div>
+<div class="p-8 space-y-8">
+<!-- Controls Grid -->
+<div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+<!-- Volume Slider -->
+<div class="space-y-4">
+<label class="block text-xs font-bold uppercase tracking-widest text-[#bbcabf]">
+                                    廣播音量 <span class="text-[#4edea3] ml-2 font-mono">{{ broadcastVolume }}%</span>
+</label>
+<div class="relative w-full h-8 flex items-center">
+<input class="w-full h-1 bg-[#2e3447] appearance-none cursor-pointer accent-[#4edea3]" max="100" min="0" type="range" v-model="broadcastVolume"/>
+<div :style="{ width: broadcastVolume + '%' }" class="absolute h-1 bg-[#4edea3] pointer-events-none shadow-[0_0_10px_#10b981]"></div>
+</div>
+</div>
+<!-- IP Target Input -->
+<div class="space-y-4">
+<label class="block text-xs font-bold uppercase tracking-widest text-[#bbcabf]">多播 IP 目標</label>
+<div class="relative">
+<input class="w-full bg-[#070d1f] border-0 border-b-2 border-[#3c4a42] focus:border-[#4cd7f6] focus:ring-0 font-mono text-[#4cd7f6] px-0 py-2 transition-all outline-none" type="text" v-model="multicastIp"/>
+<div class="absolute right-0 bottom-2 text-[10px] text-[#86948a] opacity-40 uppercase">A-Class</div>
+</div>
+</div>
+</div>
+<!-- Progress Bar -->
+<div class="bg-[#070d1f] p-6 border-l-2 border-[#4edea3]/40">
+<div class="flex justify-between items-end mb-4">
+<div>
+<div class="text-[10px] font-bold uppercase text-[#bbcabf] tracking-[0.2em]">同步進度</div>
+<div class="text-lg font-mono font-bold">
+                                        {{ completedDevices }} <span class="text-[#bbcabf] font-normal text-sm">/ {{ totalDevices }} 台設備</span>
+</div>
+</div>
+<div class="text-2xl font-black text-[#4edea3] italic">{{ progressPercentage }}%</div>
+</div>
+<div class="w-full h-3 bg-[#2e3447] overflow-hidden">
+<div :style="{ width: progressPercentage + '%' }" class="h-full bg-gradient-to-r from-[#10b981] to-[#4edea3] transition-all duration-1000 ease-out"></div>
+</div>
+</div>
+<!-- Device List -->
+<div class="space-y-4">
+<div class="flex justify-between items-center text-[10px] font-bold uppercase text-[#bbcabf] tracking-widest">
+<span>執行中網路節點</span>
+<span>最終狀態</span>
+</div>
+<div class="max-h-48 overflow-y-auto pr-2 space-y-1 custom-scrollbar">
+<div :key="node.id" class="flex items-center justify-between p-3 bg-[#151b2d] hover:bg-[#23293c] transition-colors group" v-for="node in nodes">
+<div class="flex items-center gap-4">
+<span class="text-[10px] text-[#86948a] opacity-50 font-mono">{{ node.id }}</span>
+<span class="font-mono text-sm">{{ node.mac }}</span>
+</div>
+<div :class="{
+                                        'text-[#4edea3]': node.status === 'success',
+                                        'text-[#4cd7f6] animate-pulse': node.status === 'syncing',
+                                        'text-[#bbcabf]/40': node.status === 'waiting',
+                                        'text-[#ffb4ab]': node.status === 'error'
+                                    }" class="flex items-center gap-2 text-[10px] font-bold uppercase">
+<span>{{ node.statusText }}</span>
+<span class="material-symbols-outlined text-sm">{{ node.icon }}</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Actions -->
+<div class="flex items-center justify-end gap-4 p-8 bg-[#151b2d] border-t border-[#3c4a42]/10">
+<button @click="closeModal" class="px-6 py-2 text-[#bbcabf] font-bold uppercase text-xs tracking-widest hover:text-[#dce1fb] border border-transparent hover:border-[#3c4a42]/30 transition-all">
+                            取消操作
+                        </button>
+<button @click="startSync" class="px-8 py-3 bg-[#10b981] text-[#002113] font-bold uppercase text-xs tracking-[0.2em] shadow-[0_0_20px_rgba(16,185,129,0.3)] hover:shadow-[0_0_30px_rgba(16,185,129,0.5)] transition-all active:scale-95">
+                            開始系統同步
+                        </button>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Vue 3 Setup -->
+<script type="module">
+        import { createApp, ref, computed } from 'https://unpkg.com/vue@3/dist/vue.esm-browser.js'
+
+        createApp({
+            setup() {
+                // Modal State
+                const isModalOpen = ref(true)
+
+                // Sync Settings
+                const broadcastVolume = ref(82)
+                const multicastIp = ref('239.192.1.1')
+
+                // Progress Data
+                const totalDevices = ref(50)
+                const completedDevices = ref(45)
+                const progressPercentage = computed(() => 
+                    Math.round((completedDevices.value / totalDevices.value) * 100)
+                )
+
+                // Device Nodes List
+                const nodes = ref([
+                    { id: '01', mac: '00:1A:2B:3C:4D:5E', status: 'success', statusText: '成功', icon: 'check_circle' },
+                    { id: '02', mac: '00:1A:2B:6F:7G:8H', status: 'syncing', statusText: '同步中', icon: 'sync' },
+                    { id: '03', mac: '00:4E:9K:1L:0M:2N', status: 'waiting', statusText: '等待中', icon: 'hourglass_empty' },
+                    { id: '04', mac: '00:8C:1P:5Q:9R:3S', status: 'error', statusText: '失敗', icon: 'error_outline' },
+                    { id: '05', mac: '00:2B:9V:0W:1X:4Y', status: 'success', statusText: '成功', icon: 'check_circle' },
+                ])
+
+                const closeModal = () => {
+                    isModalOpen.value = false
+                }
+
+                const startSync = () => {
+                    console.log('Starting sync with volume:', broadcastVolume.value)
+                    // Reset progress for demo
+                    completedDevices.value = 0
+                    const interval = setInterval(() => {
+                        if (completedDevices.value < totalDevices.value) {
+                            completedDevices.value++
+                        } else {
+                            clearInterval(interval)
+                        }
+                    }, 100)
+                }
+
+                return {
+                    isModalOpen,
+                    broadcastVolume,
+                    multicastIp,
+                    totalDevices,
+                    completedDevices,
+                    progressPercentage,
+                    nodes,
+                    closeModal,
+                    startSync
+                }
+            }
+        }).mount('#app')
+    </script>
+</body></html>

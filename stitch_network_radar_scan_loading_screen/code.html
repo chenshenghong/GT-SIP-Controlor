@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="zh-Hant"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>OBSIDIAN COMMAND | NETWORK DISCOVERY</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "primary": "#4edea3",
+                        "secondary": "#4cd7f6",
+                        "error": "#ffb4ab",
+                        "surface": "#0c1324",
+                        "surface-container": "#191f31",
+                        "surface-container-low": "#151b2d",
+                        "surface-container-high": "#23293c",
+                        "outline-variant": "#3c4a42",
+                        "on-surface": "#dce1fb",
+                        "on-surface-variant": "#bbcabf",
+                        "on-primary": "#003824",
+                    },
+                    fontFamily: {
+                        "headline": ["Space Grotesk"],
+                        "body": ["Space Grotesk"],
+                    },
+                    animation: {
+                        'radar-sweep': 'sweep 4s linear infinite',
+                        'scanline': 'scan 8s linear infinite',
+                        'shimmer': 'shimmer 2s infinite',
+                        'bounce-x': 'bounce-x 1s ease-in-out infinite',
+                    },
+                    keyframes: {
+                        sweep: {
+                            'from': { transform: 'rotate(0deg)' },
+                            'to': { transform: 'rotate(360deg)' },
+                        },
+                        scan: {
+                            '0%': { top: '0' },
+                            '100%': { top: '100%' },
+                        },
+                        shimmer: {
+                            '0%': { transform: 'translateX(-100%)' },
+                            '100%': { transform: 'translateX(400%)' },
+                        },
+                        'bounce-x': {
+                            '0%, 100%': { transform: 'translateX(0)' },
+                            '50%': { transform: 'translateX(10px)' },
+                        }
+                    }
+                },
+            },
+        }
+    </script>
+</head>
+<body class="bg-surface text-on-surface font-body overflow-hidden selection:bg-primary selection:text-on-primary">
+<div id="app">
+<div class="relative min-h-screen">
+<!-- Background Layers -->
+<div class="fixed inset-0 pointer-events-none z-0" style="background-image: linear-gradient(to right, rgba(134, 148, 138, 0.05) 1px, transparent 1px), linear-gradient(to bottom, rgba(134, 148, 138, 0.05) 1px, transparent 1px); background-size: 24px 24px;"></div>
+<div class="fixed inset-0 w-full h-0.5 bg-primary/10 animate-scanline z-10 pointer-events-none"></div>
+<!-- Top Navigation -->
+<header class="fixed top-0 left-0 w-full z-50 flex justify-between items-center px-6 py-4 bg-surface border-b border-surface-container-high">
+<div class="flex items-center gap-3">
+<span class="text-xl font-bold tracking-tighter text-primary drop-shadow-[0_0_8px_rgba(78,222,163,0.5)] font-headline">OBSIDIAN COMMAND</span>
+<div class="h-4 w-px bg-outline-variant opacity-30 mx-2"></div>
+<span class="tracking-[0.05em] uppercase text-sm text-primary">區域網路探索</span>
+</div>
+<div class="flex items-center gap-6">
+<span class="material-symbols-outlined text-on-surface-variant hover:text-primary transition-colors cursor-pointer">settings</span>
+<span class="material-symbols-outlined text-on-surface-variant hover:text-primary transition-colors cursor-pointer">terminal</span>
+</div>
+</header>
+<!-- Side Navigation -->
+<aside class="hidden md:flex flex-col fixed left-0 top-0 h-full w-64 bg-surface border-r border-outline-variant/20 z-40 pt-24">
+<div class="px-6 mb-8">
+<div class="flex items-center gap-3 mb-2">
+<div class="w-2 h-2 rounded-full bg-primary animate-pulse"></div>
+<span class="text-[13px] uppercase tracking-wider text-primary">系統管理員</span>
+</div>
+<span class="text-[10px] text-on-surface-variant uppercase tracking-[0.2em]">4 級存取權限</span>
+</div>
+<nav class="flex flex-col gap-1">
+<a :class="item.active ? 'text-primary border-l-2 border-primary bg-gradient-to-r from-primary/10 to-transparent' : 'text-on-surface-variant border-l-2 border-transparent hover:bg-surface-container-high hover:text-primary'" :key="item.id" class="flex items-center gap-4 px-6 py-3 transition-all" href="#" v-for="item in navItems">
+<span class="material-symbols-outlined text-[20px]">{{ item.icon }}</span>
+<span class="text-[13px] uppercase tracking-wider">{{ item.label }}</span>
+</a>
+</nav>
+<div class="mt-auto p-6 space-y-4">
+<button @click="toggleScan" class="w-full bg-primary text-on-primary py-3 font-bold text-[12px] tracking-[0.2em] uppercase transition-all hover:shadow-[0_0_15px_rgba(78,222,163,0.4)] active:scale-[0.98]">
+                        {{ isScanning ? '停止掃描' : '重新掃描' }}
+                    </button>
+<div class="flex flex-col gap-2 pt-4 border-t border-outline-variant/20">
+<div class="flex items-center gap-3 text-on-surface-variant text-[11px] tracking-widest uppercase cursor-pointer hover:text-primary transition-colors">
+<span class="material-symbols-outlined text-sm">sensors</span>
+<span>系統狀態</span>
+</div>
+<div class="flex items-center gap-3 text-on-surface-variant text-[11px] tracking-widest uppercase cursor-pointer hover:text-error transition-colors">
+<span class="material-symbols-outlined text-sm">logout</span>
+<span>登出</span>
+</div>
+</div>
+</div>
+</aside>
+<!-- Main Content -->
+<main class="relative z-20 min-h-screen flex flex-col items-center justify-center p-6 md:pl-72">
+<!-- Radar Section -->
+<div class="relative w-72 h-72 md:w-[450px] md:h-[450px] mb-12 group">
+<!-- Rings -->
+<div class="absolute inset-0 rounded-full border border-outline-variant opacity-40"></div>
+<div class="absolute inset-[15%] rounded-full border border-outline-variant opacity-30"></div>
+<div class="absolute inset-[30%] rounded-full border border-outline-variant opacity-20"></div>
+<div class="absolute inset-[45%] rounded-full border border-outline-variant opacity-10"></div>
+<!-- Axes -->
+<div class="absolute top-1/2 left-0 w-full h-px bg-outline-variant opacity-20"></div>
+<div class="absolute top-0 left-1/2 w-px h-full bg-outline-variant opacity-20"></div>
+<!-- Radar Sweep -->
+<div class="absolute inset-0 rounded-full animate-radar-sweep pointer-events-none" style="background: conic-gradient(from 0deg, rgba(78, 222, 163, 0.4) 0deg, transparent 90deg);" v-if="isScanning"></div>
+<!-- Blips -->
+<div class="absolute top-[20%] left-[30%] w-2 h-2 bg-primary rounded-full shadow-[0_0_10px_#4edea3] opacity-80"></div>
+<div class="absolute bottom-[35%] right-[25%] w-2 h-2 bg-secondary rounded-full shadow-[0_0_10px_#4cd7f6] opacity-60"></div>
+<div class="absolute top-[60%] left-[15%] w-1.5 h-1.5 bg-error rounded-full shadow-[0_0_10px_#ffb4ab] opacity-40"></div>
+<!-- Center -->
+<div class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-4 h-4 bg-surface border border-primary z-30"></div>
+</div>
+<!-- Scanning Status -->
+<div class="w-full max-w-2xl space-y-6">
+<div class="flex flex-col md:flex-row md:items-end justify-between gap-4 border-b border-outline-variant/30 pb-4">
+<div class="space-y-1">
+<h2 class="text-secondary font-mono text-sm tracking-[0.3em] uppercase">
+                                狀態：{{ isScanning ? '正在初始化探測...' : '探測暫停' }}
+                            </h2>
+<div class="flex items-center gap-3">
+<div :class="{ 'animate-bounce-x': isScanning }" class="flex items-center">
+<span class="text-primary font-mono text-xl md:text-2xl font-bold tracking-tighter">
+                                        正在掃描網路: 192.168.1.{{ currentNode }}
+                                    </span>
+</div>
+<span class="inline-block w-2 h-6 bg-primary animate-pulse" v-if="isScanning"></span>
+</div>
+</div>
+<div class="text-right">
+<span class="text-on-surface-variant font-mono text-xs uppercase tracking-widest">已耗時: {{ scanTime }}</span>
+</div>
+</div>
+<!-- Progress Bar -->
+<div class="space-y-3">
+<div class="flex justify-between items-center text-[10px] uppercase tracking-[0.2em] font-bold">
+<span class="text-on-surface-variant">封包分析</span>
+<span class="text-secondary">{{ currentNode }} / 254 個節點</span>
+</div>
+<div class="relative h-4 bg-surface-container-low border border-outline-variant p-0.5 overflow-hidden">
+<div :style="{ width: (currentNode / 254 * 100) + '%' }" class="h-full bg-gradient-to-r from-primary to-secondary transition-all duration-300 relative">
+<div class="absolute inset-0 bg-[linear-gradient(90deg,transparent_0%,rgba(255,255,255,0.2)_50%,transparent_100%)] translate-x-[-100%] animate-shimmer"></div>
+</div>
+</div>
+<div class="flex justify-between gap-2">
+<div class="flex gap-1">
+<div :class="n &lt;= (currentNode / 32) + 1 ? 'bg-primary' : 'bg-outline-variant/30'" :key="n" class="w-1 h-3 transition-colors duration-200" v-for="n in 8"></div>
+</div>
+<span class="text-on-surface-variant font-mono text-[10px] uppercase">緩衝: {{ bufferSpeed }} MB/s</span>
+</div>
+</div>
+<!-- Data Grid -->
+<div class="grid grid-cols-2 md:grid-cols-4 gap-px bg-outline-variant/20 border border-outline-variant/20 mt-8">
+<div class="bg-surface-container-low p-4 space-y-1">
+<span class="text-[9px] uppercase tracking-widest text-on-surface-variant">活動連接埠</span>
+<p class="text-secondary font-bold text-lg">{{ activePorts }}</p>
+</div>
+<div class="bg-surface-container-low p-4 space-y-1">
+<span class="text-[9px] uppercase tracking-widest text-on-surface-variant">延遲</span>
+<p class="text-primary font-bold text-lg">{{ latency }}ms</p>
+</div>
+<div class="bg-surface-container-low p-4 space-y-1">
+<span class="text-[9px] uppercase tracking-widest text-on-surface-variant">威脅等級</span>
+<p class="text-error font-bold text-lg">{{ threatLevel }}</p>
+</div>
+<div class="bg-surface-container-low p-4 space-y-1">
+<span class="text-[9px] uppercase tracking-widest text-on-surface-variant">加密協議</span>
+<p class="text-on-surface font-bold text-lg uppercase">{{ encryption }}</p>
+</div>
+</div>
+</div>
+</main>
+<!-- Mobile Bottom Nav -->
+<nav class="md:hidden fixed bottom-0 left-0 w-full z-50 bg-surface/90 backdrop-blur-xl border-t border-outline-variant/20 flex justify-around items-center h-16 shadow-[0_-4px_20px_rgba(0,0,0,0.5)]">
+<a :class="item.active ? 'text-primary bg-surface-container-high' : 'text-on-surface-variant'" :key="item.id" class="flex flex-col items-center justify-center py-2 w-full h-full transition-transform active:scale-95" href="#" v-for="item in navItems">
+<span class="material-symbols-outlined">{{ item.icon }}</span>
+<span class="text-[10px] font-bold uppercase">{{ item.label }}</span>
+</a>
+</nav>
+</div>
+</div>
+<script>
+        const { createApp, ref, onMounted, onUnmounted } = Vue;
+
+        createApp({
+            setup() {
+                const isScanning = ref(true);
+                const currentNode = ref(144);
+                const scanTimeSeconds = ref(262);
+                const activePorts = ref("1,244");
+                const latency = ref(12);
+                const threatLevel = ref("低");
+                const encryption = ref("AES-256");
+                const bufferSpeed = ref("8.42");
+                
+                const navItems = ref([
+                    { id: 'dashboard', label: '儀表板', icon: 'grid_view', active: false },
+                    { id: 'map', label: '網路地圖', icon: 'hub', active: true },
+                    { id: 'logs', label: '流量日誌', icon: 'list_alt', active: false },
+                    { id: 'security', label: '安全維運', icon: 'shield', active: false },
+                ]);
+
+                const formatTime = (seconds) => {
+                    const hrs = Math.floor(seconds / 3600);
+                    const mins = Math.floor((seconds % 3600) / 60);
+                    const secs = seconds % 60;
+                    return [hrs, mins, secs].map(v => v < 10 ? "0" + v : v).join(":");
+                };
+
+                const scanTime = ref(formatTime(scanTimeSeconds.value));
+
+                let intervalId = null;
+
+                const startSimulation = () => {
+                    intervalId = setInterval(() => {
+                        if (isScanning.value) {
+                            // Update node progress
+                            if (currentNode.value < 254) {
+                                currentNode.value += 1;
+                            } else {
+                                currentNode.value = 0;
+                            }
+                            
+                            // Update clock
+                            scanTimeSeconds.value += 1;
+                            scanTime.value = formatTime(scanTimeSeconds.value);
+                            
+                            // Randomize some jitter
+                            latency.value = Math.floor(Math.random() * (18 - 8) + 8);
+                            bufferSpeed.value = (Math.random() * (9.5 - 7.5) + 7.5).toFixed(2);
+                        }
+                    }, 500);
+                };
+
+                const toggleScan = () => {
+                    isScanning.value = !isScanning.value;
+                };
+
+                onMounted(() => {
+                    startSimulation();
+                });
+
+                onUnmounted(() => {
+                    if (intervalId) clearInterval(intervalId);
+                });
+
+                return {
+                    isScanning,
+                    currentNode,
+                    scanTime,
+                    activePorts,
+                    latency,
+                    threatLevel,
+                    encryption,
+                    navItems,
+                    bufferSpeed,
+                    toggleScan
+                };
+            }
+        }).mount('#app');
+    </script>
+</body></html>

@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+
+<html lang="zh-Hant"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>SIP COMMANDER - 設備管理</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+<style>
+        body { font-family: 'Space_Grotesk', sans-serif; }
+    </style>
+</head>
+<body class="bg-[#0c1324] text-[#dce1fb] selection:bg-emerald-500/30">
+<div id="app">
+<div class="min-h-screen flex overflow-hidden">
+<!-- Background Grid Effect -->
+<div class="fixed inset-0 pointer-events-none opacity-5" style="background-image: radial-gradient(circle, #86948a 1px, transparent 1px); background-size: 24px 24px;"></div>
+<!-- SideNavBar -->
+<aside class="fixed left-0 top-0 h-full flex flex-col z-40 bg-[#070d1f] w-64 border-r border-[#3c4a42]/20">
+<div class="p-6">
+<div class="text-[#4edea3] font-bold text-lg tracking-tighter mb-8">SIP COMMANDER</div>
+<div class="flex items-center gap-3 mb-10 p-3 bg-[#0c1324] border border-[#3c4a42]/10">
+<div class="w-10 h-10 bg-[#23293c] flex items-center justify-center border border-[#4edea3]/20">
+<span class="material-symbols-outlined text-[#4edea3]">person</span>
+</div>
+<div>
+<div class="text-xs font-bold text-[#dce1fb] uppercase tracking-widest">OPERATOR_01</div>
+<div class="text-[10px] text-[#bbcabf]">Level 4 Access</div>
+</div>
+</div>
+<nav class="space-y-1">
+<a :class="['flex items-center gap-3 px-4 py-3 transition-all duration-200 group border-l-4', item.active ? 'bg-[#161d2f] text-[#4edea3] border-[#4edea3]' : 'text-[#bbcabf] border-transparent hover:bg-[#161d2f] hover:text-[#dce1fb]']" :key="item.label" href="#" v-for="item in navItems">
+<span class="material-symbols-outlined text-sm">{{ item.icon }}</span>
+<span class="text-xs font-medium uppercase tracking-wider">{{ item.label }}</span>
+</a>
+</nav>
+</div>
+<div class="mt-auto p-6 space-y-1">
+<button class="w-full py-3 bg-[#4edea3] text-[#003824] font-bold text-xs uppercase tracking-widest mb-6 hover:brightness-110 transition-all active:scale-[0.98]">
+                        新增部署
+                    </button>
+<a class="flex items-center gap-3 px-4 py-2 text-[#bbcabf] hover:text-[#dce1fb] text-xs transition-colors" href="#">
+<span class="material-symbols-outlined text-sm">help_center</span>
+<span>支援</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-2 text-[#bbcabf] hover:text-[#dce1fb] text-xs transition-colors" href="#">
+<span class="material-symbols-outlined text-sm">description</span>
+<span>文件</span>
+</a>
+</div>
+</aside>
+<!-- Main Content Area -->
+<main class="ml-64 flex-1 min-h-screen flex flex-col relative z-10">
+<!-- TopAppBar -->
+<header class="bg-[#0c1324] w-full px-8 py-3 flex justify-between items-center z-30 sticky top-0 border-b border-[#3c4a42]/10">
+<div class="flex items-center gap-8">
+<div class="relative">
+<span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-[#bbcabf] text-sm">search</span>
+<input class="bg-[#070d1f] border-0 border-b-2 border-[#3c4a42] focus:border-[#4edea3] focus:ring-0 text-xs pl-10 pr-4 py-2 w-64 placeholder:text-[#86948a]/50 uppercase tracking-widest transition-all" placeholder="搜尋系統..." type="text"/>
+</div>
+<nav class="hidden md:flex items-center gap-6">
+<a :class="['tracking-wider uppercase text-xs transition-colors', link.active ? 'text-[#4edea3] border-b-2 border-[#4edea3] pb-1' : 'text-[#bbcabf] hover:text-[#dce1fb]']" :key="link.label" href="#" v-for="link in topLinks">
+                                {{ link.label }}
+                            </a>
+</nav>
+</div>
+<div class="flex items-center gap-4">
+<!-- Batch Sync Button: Disabled if no selection -->
+<button :class="['px-4 py-2 font-bold text-xs uppercase tracking-widest transition-all active:scale-95 flex items-center gap-2', 
+                                         selectedIds.length === 0 ? 'bg-[#23293c] text-[#bbcabf] cursor-not-allowed opacity-50' : 'bg-[#10b981] text-[#00422b] hover:opacity-80']" :disabled="selectedIds.length === 0">
+<span class="material-symbols-outlined text-sm">sync</span>
+                            大量同步 {{ selectedIds.length &gt; 0 ? `(${selectedIds.length})` : '' }}
+                        </button>
+<button class="p-2 text-[#bbcabf] hover:bg-[#23293c] transition-colors relative">
+<span class="material-symbols-outlined">notifications</span>
+<span class="absolute top-2 right-2 w-2 h-2 bg-red-500 rounded-full"></span>
+</button>
+<button class="p-2 text-[#bbcabf] hover:bg-[#23293c] transition-colors">
+<span class="material-symbols-outlined">settings</span>
+</button>
+</div>
+</header>
+<!-- Workspace -->
+<div class="p-8 flex-1">
+<div class="mb-8 flex justify-between items-end">
+<div>
+<h1 class="text-3xl font-bold tracking-tighter text-[#dce1fb] flex items-center gap-4">
+                                設備註冊表 
+                                <span class="text-[10px] px-2 py-0.5 border border-[#4cd7f6] text-[#4cd7f6] tracking-[0.2em] font-normal">即時數據</span>
+</h1>
+<p class="text-[#bbcabf] text-sm mt-1 uppercase tracking-widest">子網路 192.168.1.0/24 中有 {{ onlineCount }} 個節點在線</p>
+</div>
+<div class="flex gap-2">
+<button class="flex items-center px-4 py-2 bg-[#070d1f] border border-[#3c4a42]/30 text-[10px] uppercase font-bold text-[#bbcabf] hover:border-[#4edea3]/50 transition-colors">
+<span class="material-symbols-outlined text-sm mr-2 text-[#4edea3]">filter_list</span> 篩選
+                            </button>
+<button class="flex items-center px-4 py-2 bg-[#070d1f] border border-[#3c4a42]/30 text-[10px] uppercase font-bold text-[#bbcabf] hover:border-[#4edea3]/50 transition-colors">
+<span class="material-symbols-outlined text-sm mr-2 text-[#4cd7f6]">sort</span> 排序
+                            </button>
+</div>
+</div>
+<!-- SIP Device Data Table -->
+<div class="bg-[#191f31] border border-[#3c4a42]/20 overflow-hidden shadow-2xl">
+<table class="w-full text-left border-collapse">
+<thead>
+<tr class="bg-[#2e3447]/50 border-b border-[#3c4a42]">
+<th class="p-4 w-12 text-center">
+<input :checked="isAllSelected" @change="toggleAll" class="w-4 h-4 rounded-none bg-[#070d1f] border-[#86948a] text-[#4edea3] focus:ring-[#4edea3] focus:ring-offset-[#0c1324]" type="checkbox"/>
+</th>
+<th class="p-4 text-[10px] font-bold text-[#bbcabf] uppercase tracking-[0.2em]">MAC 位址</th>
+<th class="p-4 text-[10px] font-bold text-[#bbcabf] uppercase tracking-[0.2em]">IP 位址</th>
+<th class="p-4 text-[10px] font-bold text-[#bbcabf] uppercase tracking-[0.2em]">狀態</th>
+<th class="p-4 text-[10px] font-bold text-[#bbcabf] uppercase tracking-[0.2em]">韌體版本</th>
+<th class="p-4 text-[10px] font-bold text-[#bbcabf] uppercase tracking-[0.2em] text-right">操作</th>
+</tr>
+</thead>
+<tbody class="divide-y divide-[#3c4a42]/10">
+<tr :key="device.mac" class="hover:bg-[#2e3447]/60 transition-colors group" v-for="device in devices">
+<td class="p-4 text-center">
+<input :value="device.mac" class="w-4 h-4 rounded-none bg-[#070d1f] border-[#86948a] text-[#4edea3] focus:ring-[#4edea3] focus:ring-offset-[#0c1324]" type="checkbox" v-model="selectedIds"/>
+</td>
+<td class="p-4 font-mono text-sm text-[#dce1fb]">{{ device.mac }}</td>
+<td class="p-4 font-mono text-sm text-[#4cd7f6]">{{ device.ip }}</td>
+<td class="p-4">
+<span class="inline-flex items-center gap-2 px-3 py-1 bg-[#10b981]/10 text-[#4edea3] text-[10px] font-bold uppercase tracking-wider border border-[#4edea3]/20" v-if="device.status === 'online'">
+<span class="w-1.5 h-1.5 bg-[#4edea3] rounded-full animate-pulse"></span> 在線
+                                        </span>
+<span class="inline-flex items-center gap-2 px-3 py-1 bg-[#ffb4ab]/10 text-[#ffb4ab] text-[10px] font-bold uppercase tracking-wider border border-[#ffb4ab]/20" v-else="">
+<span class="w-1.5 h-1.5 bg-[#ffb4ab] rounded-full"></span> 已斷線
+                                        </span>
+</td>
+<td class="p-4 text-xs text-[#bbcabf]">{{ device.firmware }}</td>
+<td class="p-4 text-right">
+<div class="flex justify-end gap-2">
+<button class="text-[#bbcabf] hover:text-[#4edea3] transition-colors p-1" title="Terminal">
+<span class="material-symbols-outlined text-sm">terminal</span>
+</button>
+<button class="text-[#bbcabf] hover:text-[#4cd7f6] transition-colors p-1" title="Sync">
+<span class="material-symbols-outlined text-sm">sync</span>
+</button>
+</div>
+</td>
+</tr>
+</tbody>
+</table>
+<!-- Pagination -->
+<div class="p-4 bg-[#151b2d] border-t border-[#3c4a42]/30 flex justify-between items-center">
+<div class="text-[10px] text-[#bbcabf] uppercase tracking-widest font-bold">
+                                顯示 42 個節點中的 {{ devices.length }} 個
+                            </div>
+<div class="flex gap-1">
+<button class="w-8 h-8 flex items-center justify-center bg-[#23293c] border border-[#3c4a42]/30 text-[#dce1fb] hover:bg-[#4edea3] hover:text-[#003824] transition-all">
+<span class="material-symbols-outlined text-xs">chevron_left</span>
+</button>
+<button class="w-8 h-8 flex items-center justify-center bg-[#4edea3] text-[#003824] border border-[#4edea3] text-[10px] font-bold">1</button>
+<button class="w-8 h-8 flex items-center justify-center bg-[#23293c] border border-[#3c4a42]/30 text-[#dce1fb] hover:bg-[#4edea3] hover:text-[#003824] transition-all text-[10px] font-bold">2</button>
+<button class="w-8 h-8 flex items-center justify-center bg-[#23293c] border border-[#3c4a42]/30 text-[#dce1fb] hover:bg-[#4edea3] hover:text-[#003824] transition-all text-[10px] font-bold">3</button>
+<button class="w-8 h-8 flex items-center justify-center bg-[#23293c] border border-[#3c4a42]/30 text-[#dce1fb] hover:bg-[#4edea3] hover:text-[#003824] transition-all">
+<span class="material-symbols-outlined text-xs">chevron_right</span>
+</button>
+</div>
+</div>
+</div>
+<!-- Dashboard Stats Row -->
+<div class="grid grid-cols-1 md:grid-cols-4 gap-4 mt-8">
+<div :class="['p-6 border-l-4 bg-[#191f31]', stat.borderColor]" :key="stat.label" v-for="stat in stats">
+<div class="text-[10px] text-[#bbcabf] uppercase tracking-widest font-bold mb-2">{{ stat.label }}</div>
+<div class="text-2xl font-bold text-[#dce1fb] tracking-tighter">
+                                {{ stat.value }} <span class="text-xs text-[#bbcabf]" v-if="stat.unit">{{ stat.unit }}</span>
+</div>
+</div>
+<div class="bg-[#2e3447] p-6 border border-[#4edea3]/20 flex items-center justify-between">
+<div>
+<div class="text-[10px] text-[#4edea3] uppercase tracking-widest font-bold mb-2">系統運作時間</div>
+<div class="text-xl font-bold text-[#dce1fb] tracking-tighter">99.982%</div>
+</div>
+<span class="material-symbols-outlined text-[#4edea3] text-3xl opacity-50">query_stats</span>
+</div>
+</div>
+</div>
+</main>
+</div>
+</div>
+<script>
+        const { createApp, ref, computed } = Vue;
+
+        createApp({
+            setup() {
+                const navItems = ref([
+                    { label: '儀表板', icon: 'dashboard', active: false },
+                    { label: '網路節點', icon: 'router', active: true },
+                    { label: '韌體庫', icon: 'terminal', active: false },
+                    { label: 'SIP 中繼', icon: 'settings_input_component', active: false },
+                    { label: '系統安全', icon: 'verified_user', active: false }
+                ]);
+
+                const topLinks = ref([
+                    { label: '設備列表', active: true },
+                    { label: '部署配置', active: false },
+                    { label: '排程任務', active: false },
+                    { label: '系統日誌', active: false }
+                ]);
+
+                const devices = ref([
+                    { mac: '00:1A:2B:3C:4D:5E', ip: '192.168.1.104', status: 'online', firmware: 'v2.4.12-STABLE' },
+                    { mac: '00:1A:2B:99:88:77', ip: '192.168.1.105', status: 'offline', firmware: 'v2.4.08-LEGACY' },
+                    { mac: '00:1A:2B:A1:B2:C3', ip: '192.168.1.112', status: 'online', firmware: 'v2.5.01-RC' },
+                    { mac: '00:1A:2B:F4:E5:D6', ip: '192.168.1.115', status: 'online', firmware: 'v2.4.12-STABLE' }
+                ]);
+
+                const stats = ref([
+                    { label: '總頻寬', value: '842.4', unit: 'MB/s', borderColor: 'border-[#4edea3]' },
+                    { label: '使用中中繼', value: '12 / 16', unit: '', borderColor: 'border-[#4cd7f6]' },
+                    { label: '延遲告警', value: '03', unit: '', borderColor: 'border-[#ffb4ab]' }
+                ]);
+
+                const selectedIds = ref([]);
+
+                const onlineCount = computed(() => {
+                    return devices.value.filter(d => d.status === 'online').length;
+                });
+
+                const isAllSelected = computed(() => {
+                    return devices.value.length > 0 && selectedIds.value.length === devices.value.length;
+                });
+
+                const toggleAll = (event) => {
+                    if (event.target.checked) {
+                        selectedIds.value = devices.value.map(d => d.mac);
+                    } else {
+                        selectedIds.value = [];
+                    }
+                };
+
+                return {
+                    navItems,
+                    topLinks,
+                    devices,
+                    stats,
+                    selectedIds,
+                    onlineCount,
+                    isAllSelected,
+                    toggleAll
+                };
+            }
+        }).mount('#app');
+    </script>
+</body></html>
