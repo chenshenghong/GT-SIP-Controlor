@@ -10,7 +10,7 @@ export const IPC_CHANNELS = {
   SCAN_COMPLETE: 'scan:complete',
   SCAN_ERROR: 'scan:error',
 
-  // IP Configuration
+  // IP Configuration (DBP SET)
   CHANGE_IP: 'device:change-ip',
   CHANGE_IP_RESULT: 'device:change-ip-result',
 
@@ -20,7 +20,7 @@ export const IPC_CHANNELS = {
   PING_RESULT: 'device:ping-result',
 } as const
 
-/** DBP/1.0 Protocol port */
+/** DBP/1.0 Protocol port — needs Wireshark capture to confirm */
 export const DBP_PORT = 18888
 
 /** TCP socket timeout for discovery scan (ms) */
@@ -39,4 +39,8 @@ export const RECONNECT_TIMEOUT_SEC = 45
 export const DEVICE_API_PORT = 80
 
 /** Device default credentials */
-export const DEVICE_DEFAULT_PASSWORD = 'admin'
+export const DEVICE_DEFAULT_USERNAME = 'admin'
+export const DEVICE_DEFAULT_PASSWORD = '123456'
+
+/** Device status polling interval (ms) — per REST API spec */
+export const STATUS_POLL_INTERVAL_MS = 3000

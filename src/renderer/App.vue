@@ -1,125 +1,195 @@
+<template>
+  <div id="app-root">
+    <AppLayout
+      :current-view="currentView"
+      @navigate="handleNavigate"
+    >
+      <!-- Network Radar (Scan) View -->
+      <template v-if="currentView === 'radar'">
+        <NetworkRadar
+          :is-scanning="isScanning"
+          :progress="scanProgress"
+          :elapsed-ms="elapsedMs"
+          @start-scan="startScan"
+        />
+      </template>
+
+      <!-- Device List View -->
+      <template v-if="currentView === 'devices'">
+        <DeviceTable
+          v-if="!selectedDevice"
+          :devices="deviceStore.devices"
+          @select="handleSelectDevice"
+          @change-ip="handleOpenIpChange"
+        />
+        <DeviceDetail
+          v-else
+          :device="selectedDevice"
+          @close="selectedDevice = null"
+          @reconnect="handleReconnect"
+        />
+      </template>
+
+      <!-- Traffic Logs View (placeholder) -->
+      <template v-if="currentView === 'logs'">
+        <div class="placeholder-view">
+          <h3>📋 流量日誌</h3>
+          <p>此功能將在後續階段實作</p>
+        </div>
+      </template>
+
+      <!-- Security View (placeholder) -->
+      <template v-if="currentView === 'security'">
+        <div class="placeholder-view">
+          <h3>🔒 安全維運</h3>
+          <p>此功能將在後續階段實作</p>
+        </div>
+      </template>
+    </AppLayout>
+
+    <!-- IP Change Modal -->
+    <IpChangeModal
+      :visible="ipChangeTarget !== null"
+      :device="ipChangeTarget!"
+      :duplicate-count="ipChangeTarget ? getIpDuplicateCount(ipChangeTarget.ip) : 0"
+      @close="ipChangeTarget = null"
+      @success="handleIpChangeSuccess"
+      v-if="ipChangeTarget"
+    />
+
+    <!-- Reconnect Overlay -->
+    <ReconnectOverlay
+      v-if="reconnectIp"
+      :target-ip="reconnectIp"
+      @connected="handleReconnected"
+      @timeout="handleReconnectTimeout"
+    />
+
+    <!-- Batch Sync Modal -->
+    <BatchSyncModal
+      v-if="showBatchSync"
+      :devices="deviceStore.onlineDevices"
+      @close="showBatchSync = false"
+    />
+  </div>
+</template>
+
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed } from 'vue'
+import { useDeviceStore } from '@/stores/devices'
+import type { DeviceNode, ScanProgress } from '@shared/types'
 import AppLayout from '@/components/AppLayout.vue'
 import NetworkRadar from '@/components/NetworkRadar.vue'
 import DeviceTable from '@/components/DeviceTable.vue'
-import BatchSyncModal from '@/components/BatchSyncModal.vue'
+import DeviceDetail from '@/components/DeviceDetail.vue'
+import IpChangeModal from '@/components/IpChangeModal.vue'
 import ReconnectOverlay from '@/components/ReconnectOverlay.vue'
-import { useDeviceStore } from '@/stores/devices'
-import type { DeviceNode } from '@shared/types'
+import BatchSyncModal from '@/components/BatchSyncModal.vue'
 
 const deviceStore = useDeviceStore()
 
-const currentView = ref('scan')
-const showBatchModal = ref(false)
-const selectedDevicesForSync = ref<DeviceNode[]>([])
+// Navigation
+const currentView = ref<'radar' | 'devices' | 'logs' | 'security'>('radar')
 
-// Reconnect state
-const showReconnect = ref(false)
-const reconnectTargetIp = ref('')
+function handleNavigate(view: string) {
+  currentView.value = view as typeof currentView.value
+  if (view !== 'devices') {
+    selectedDevice.value = null
+  }
+}
 
-// Scan timer
-const elapsedSeconds = ref(0)
-let timerInterval: ReturnType<typeof setInterval> | null = null
-let cleanupProgressListener: (() => void) | null = null
+// Scanning state
+const isScanning = ref(false)
+const scanProgress = ref<ScanProgress>({ currentIp: '', currentIndex: 0, total: 254 })
+const elapsedMs = ref(0)
 
 async function startScan() {
-  deviceStore.startScan()
-  elapsedSeconds.value = 0
+  isScanning.value = true
+  elapsedMs.value = 0
+  const startTime = Date.now()
 
-  // Start timer
-  timerInterval = setInterval(() => {
-    elapsedSeconds.value++
-  }, 1000)
+  const interval = setInterval(() => {
+    elapsedMs.value = Date.now() - startTime
+  }, 100)
 
-  // Listen for progress events
-  cleanupProgressListener = window.electronAPI.onScanProgress((progress) => {
-    deviceStore.updateProgress(progress)
+  const cleanup = window.electronAPI.onScanProgress((progress) => {
+    scanProgress.value = progress
   })
 
-  // Invoke scan
-  const result = await window.electronAPI.startScan('192.168.1.1')
-
-  // Stop timer
-  if (timerInterval) clearInterval(timerInterval)
-  timerInterval = null
-
-  if (cleanupProgressListener) {
-    cleanupProgressListener()
-    cleanupProgressListener = null
-  }
-
-  if (result.success && result.data) {
-    deviceStore.finishScan(result.data.devices)
-    // Auto-switch to device list after scan
-    currentView.value = 'devices'
-  } else {
-    deviceStore.finishScan([])
+  try {
+    const result = await window.electronAPI.startScan('192.168.1.0')
+    if (result.success && result.data) {
+      deviceStore.setDevices(result.data.devices)
+      elapsedMs.value = result.data.elapsedMs
+      // Auto-switch to device list
+      currentView.value = 'devices'
+    }
+  } catch (err) {
+    console.error('Scan failed:', err)
+  } finally {
+    clearInterval(interval)
+    cleanup()
+    isScanning.value = false
   }
 }
 
-function handleBatchSync(devices: DeviceNode[]) {
-  selectedDevicesForSync.value = devices
-  showBatchModal.value = true
+// Device selection
+const selectedDevice = ref<DeviceNode | null>(null)
+
+function handleSelectDevice(device: DeviceNode) {
+  selectedDevice.value = device
 }
 
-onMounted(() => {
-  // Auto-start scan on app launch
+// IP Change
+const ipChangeTarget = ref<DeviceNode | null>(null)
+
+function handleOpenIpChange(device: DeviceNode) {
+  ipChangeTarget.value = device
+}
+
+function getIpDuplicateCount(ip: string): number {
+  return deviceStore.devices.filter(d => d.ip === ip).length
+}
+
+function handleIpChangeSuccess(newIp: string) {
+  ipChangeTarget.value = null
+  reconnectIp.value = newIp
+}
+
+// Reconnect
+const reconnectIp = ref<string | null>(null)
+
+function handleReconnect(ip: string) {
+  reconnectIp.value = ip
+}
+
+function handleReconnected() {
+  reconnectIp.value = null
+  // Re-scan after reconnect
   startScan()
-})
+}
 
-onUnmounted(() => {
-  if (timerInterval) clearInterval(timerInterval)
-  if (cleanupProgressListener) cleanupProgressListener()
-})
+function handleReconnectTimeout() {
+  reconnectIp.value = null
+  alert('⚠️ 設備重連超時，請手動檢查設備狀態。')
+}
+
+// Batch Sync
+const showBatchSync = ref(false)
 </script>
 
-<template>
-  <AppLayout v-model="currentView">
-    <!-- Scan View -->
-    <NetworkRadar
-      v-if="currentView === 'scan'"
-      :current-ip="deviceStore.scanProgress?.currentIp || '192.168.1.1'"
-      :progress="deviceStore.scanProgress?.currentIndex || 0"
-      :is-scanning="deviceStore.isScanning"
-      :elapsed-seconds="elapsedSeconds"
-    />
-
-    <!-- Device List View -->
-    <DeviceTable
-      v-if="currentView === 'devices'"
-      :devices="deviceStore.devices"
-      @batch-sync="handleBatchSync"
-    />
-
-    <!-- Placeholder for other views -->
-    <div v-if="currentView === 'logs'" class="flex-1 flex items-center justify-center">
-      <div class="text-center">
-        <span class="material-symbols-outlined text-6xl text-outline-variant mb-4">construction</span>
-        <p class="text-on-surface-variant uppercase tracking-widest text-sm">流量日誌模組開發中</p>
-      </div>
-    </div>
-
-    <div v-if="currentView === 'security'" class="flex-1 flex items-center justify-center">
-      <div class="text-center">
-        <span class="material-symbols-outlined text-6xl text-outline-variant mb-4">construction</span>
-        <p class="text-on-surface-variant uppercase tracking-widest text-sm">安全維運模組開發中</p>
-      </div>
-    </div>
-  </AppLayout>
-
-  <!-- Batch Sync Modal -->
-  <BatchSyncModal
-    :show="showBatchModal"
-    :selected-devices="selectedDevicesForSync"
-    @close="showBatchModal = false"
-  />
-
-  <!-- Reconnect Overlay -->
-  <ReconnectOverlay
-    :show="showReconnect"
-    :target-ip="reconnectTargetIp"
-    @reconnected="showReconnect = false; currentView = 'devices'"
-    @timeout="showReconnect = false"
-  />
-</template>
+<style>
+.placeholder-view {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 60vh;
+  color: #8b9dc3;
+}
+.placeholder-view h3 {
+  font-size: 1.5rem;
+  margin-bottom: 0.5rem;
+  color: #e0f2e9;
+}
+</style>

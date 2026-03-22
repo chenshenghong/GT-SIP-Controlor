@@ -1,27 +1,34 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import type { ScanProgress } from '@shared/types'
 
 const props = defineProps<{
-  currentIp: string
-  progress: number // 0-254
   isScanning: boolean
-  elapsedSeconds: number
+  progress: ScanProgress
+  elapsedMs: number
 }>()
 
+const emit = defineEmits<{
+  'start-scan': []
+}>()
+
+const currentIp = computed(() => props.progress?.currentIp || '...')
+const currentIndex = computed(() => props.progress?.currentIndex || 0)
+
 const progressPercent = computed(() =>
-  Math.round((props.progress / 254) * 100)
+  Math.round((currentIndex.value / 254) * 100)
 )
 
 const scanTime = computed(() => {
-  const s = props.elapsedSeconds
-  const hrs = Math.floor(s / 3600)
-  const mins = Math.floor((s % 3600) / 60)
-  const secs = s % 60
+  const totalSec = Math.floor((props.elapsedMs || 0) / 1000)
+  const hrs = Math.floor(totalSec / 3600)
+  const mins = Math.floor((totalSec % 3600) / 60)
+  const secs = totalSec % 60
   return [hrs, mins, secs].map((v) => (v < 10 ? '0' + v : v)).join(':')
 })
 
 const bufferSpeed = computed(() => (Math.random() * 2 + 7.5).toFixed(2))
-const barSegments = computed(() => Math.floor(props.progress / 32) + 1)
+const barSegments = computed(() => Math.floor(currentIndex.value / 32) + 1)
 </script>
 
 <template>
@@ -57,10 +64,13 @@ const barSegments = computed(() => Math.floor(props.progress / 32) + 1)
           <h2 class="text-secondary font-mono text-sm tracking-[0.3em] uppercase">
             狀態：{{ isScanning ? '正在初始化探測...' : '探測暫停' }}
           </h2>
+          <button v-if="!isScanning" class="text-primary border border-primary/30 px-4 py-1 text-xs font-mono tracking-widest hover:bg-primary/10 transition-colors mt-2" @click="emit('start-scan')">
+            ▶ 啟動掃描
+          </button>
           <div class="flex items-center gap-3">
             <div :class="{ 'animate-bounce-x': isScanning }" class="flex items-center">
               <span class="text-primary font-mono text-xl md:text-2xl font-bold tracking-tighter">
-                正在掃描網路: {{ currentIp }}
+                正在掃描網路：{{ currentIp }}
               </span>
             </div>
             <span v-if="isScanning" class="inline-block w-2 h-6 bg-primary animate-pulse"></span>
@@ -75,7 +85,7 @@ const barSegments = computed(() => Math.floor(props.progress / 32) + 1)
       <div class="space-y-3">
         <div class="flex justify-between items-center text-[10px] uppercase tracking-[0.2em] font-bold">
           <span class="text-on-surface-variant">封包分析</span>
-          <span class="text-secondary">{{ progress }} / 254 個節點</span>
+          <span class="text-secondary">{{ currentIndex }} / 254 個節點</span>
         </div>
         <div class="relative h-4 bg-surface-container-low border border-outline-variant p-0.5 overflow-hidden">
           <div

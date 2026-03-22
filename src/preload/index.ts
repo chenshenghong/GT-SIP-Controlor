@@ -4,12 +4,14 @@
 // ============================================
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC_CHANNELS } from '@shared/constants'
-import type { ScanProgress, ScanResult } from '@shared/types'
+import type { ScanProgress, ScanResult, IpChangeRequest } from '@shared/types'
 
 export type ElectronAPI = {
   // Scanner
   startScan: (baseIp: string) => Promise<{ success: boolean; data?: ScanResult; error?: string }>
   onScanProgress: (callback: (progress: ScanProgress) => void) => () => void
+  // IP Change (DBP SET)
+  changeIp: (request: IpChangeRequest) => Promise<{ success: boolean; error?: string }>
   // Device operations
   pingDevice: (ip: string) => Promise<boolean>
 }
@@ -28,6 +30,10 @@ const electronAPI: ElectronAPI = {
     return () => {
       ipcRenderer.removeListener(IPC_CHANNELS.SCAN_PROGRESS, handler)
     }
+  },
+
+  changeIp: (request: IpChangeRequest) => {
+    return ipcRenderer.invoke(IPC_CHANNELS.CHANGE_IP, request)
   },
 
   pingDevice: (ip: string) => {

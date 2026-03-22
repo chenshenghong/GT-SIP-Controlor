@@ -6,6 +6,8 @@ import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { IPC_CHANNELS } from '@shared/constants'
 import { scanSubnet } from './scanner'
+import { changeDeviceIp } from './ipChanger'
+import type { IpChangeRequest } from '@shared/types'
 
 function createWindow(): BrowserWindow {
   const mainWindow = new BrowserWindow({
@@ -53,6 +55,15 @@ function registerIpcHandlers(mainWindow: BrowserWindow): void {
         mainWindow.webContents.send(IPC_CHANNELS.SCAN_PROGRESS, progress)
       })
       return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  // Change device IP via DBP SET command
+  ipcMain.handle(IPC_CHANNELS.CHANGE_IP, async (_event, request: IpChangeRequest) => {
+    try {
+      return await changeDeviceIp(request)
     } catch (error) {
       return { success: false, error: String(error) }
     }
