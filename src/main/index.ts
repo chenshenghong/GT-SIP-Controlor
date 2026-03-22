@@ -5,7 +5,8 @@ import { app, shell, BrowserWindow, ipcMain } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { IPC_CHANNELS } from '@shared/constants'
-import { scanSubnet } from './scanner'
+import { scanSubnet, autoDetectPort, resetDetectedPort, getActivePort } from './scanner'
+import { scanViaTaskServer } from './taskServerClient'
 import { changeDeviceIp } from './ipChanger'
 import type { IpChangeRequest } from '@shared/types'
 
@@ -36,7 +37,6 @@ function createWindow(): BrowserWindow {
     return { action: 'deny' }
   })
 
-  // HMR for renderer in dev
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
@@ -48,7 +48,7 @@ function createWindow(): BrowserWindow {
 
 // ---- IPC Handlers ----
 function registerIpcHandlers(mainWindow: BrowserWindow): void {
-  // Start network scan
+  // Start network scan (mode=0: subnet scan)
   ipcMain.handle(IPC_CHANNELS.SCAN_START, async (_event, baseIp: string) => {
     try {
       const result = await scanSubnet(baseIp, (progress) => {
@@ -57,6 +57,29 @@ function registerIpcHandlers(mainWindow: BrowserWindow): void {
       return { success: true, data: result }
     } catch (error) {
       return { success: false, error: String(error) }
+    }
+  })
+
+  // TaskServer scan (mode=1)
+  ipcMain.handle(IPC_CHANNELS.TASKSERVER_QUERY, async (_event, serverIp: string, serverPort: number) => {
+    try {
+      const result = await scanViaTaskServer(serverIp, serverPort, (progress) => {
+        mainWindow.webContents.send(IPC_CHANNELS.SCAN_PROGRESS, progress)
+      })
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  // Auto-detect DBP port
+  ipcMain.handle(IPC_CHANNELS.DETECT_PORT, async (_event, targetIp: string) => {
+    try {
+      resetDetectedPort()
+      const port = await autoDetectPort(targetIp)
+      return { success: port !== null, port: port ?? getActivePort() }
+    } catch (error) {
+      return { success: false, port: getActivePort(), error: String(error) }
     }
   })
 

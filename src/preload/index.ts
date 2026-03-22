@@ -7,9 +7,13 @@ import { IPC_CHANNELS } from '@shared/constants'
 import type { ScanProgress, ScanResult, IpChangeRequest } from '@shared/types'
 
 export type ElectronAPI = {
-  // Scanner
+  // Scanner (mode=0: subnet scan)
   startScan: (baseIp: string) => Promise<{ success: boolean; data?: ScanResult; error?: string }>
   onScanProgress: (callback: (progress: ScanProgress) => void) => () => void
+  // TaskServer scan (mode=1)
+  taskServerQuery: (serverIp: string, serverPort: number) => Promise<{ success: boolean; data?: ScanResult; error?: string }>
+  // Port detection
+  detectPort: (targetIp: string) => Promise<{ success: boolean; port: number; error?: string }>
   // IP Change (DBP SET)
   changeIp: (request: IpChangeRequest) => Promise<{ success: boolean; error?: string }>
   // Device operations
@@ -26,10 +30,17 @@ const electronAPI: ElectronAPI = {
       callback(progress)
     }
     ipcRenderer.on(IPC_CHANNELS.SCAN_PROGRESS, handler)
-    // Return cleanup function
     return () => {
       ipcRenderer.removeListener(IPC_CHANNELS.SCAN_PROGRESS, handler)
     }
+  },
+
+  taskServerQuery: (serverIp: string, serverPort: number) => {
+    return ipcRenderer.invoke(IPC_CHANNELS.TASKSERVER_QUERY, serverIp, serverPort)
+  },
+
+  detectPort: (targetIp: string) => {
+    return ipcRenderer.invoke(IPC_CHANNELS.DETECT_PORT, targetIp)
   },
 
   changeIp: (request: IpChangeRequest) => {

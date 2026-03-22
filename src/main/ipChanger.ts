@@ -1,16 +1,19 @@
 // ============================================
 // SIP CMS — DBP/1.0 IP Changer (Main Process)
-// Implements "SET DBP/1.0" command per protocol spec
+// Implements "SET DBP/1.0" command per QueryTool analysis
+// Now includes CSeq header matching original exe format
 // ============================================
 import * as net from 'net'
-import { DBP_PORT, SCAN_TIMEOUT_MS } from '@shared/constants'
+import { PORT_DETECT_TIMEOUT_MS } from '@shared/constants'
+import { getActivePort } from './scanner'
 import type { IpChangeRequest } from '@shared/types'
 
 /**
- * Build the SET DBP/1.0 command body
+ * Build the SET DBP/1.0 command body with CSeq header.
  *
- * Format (per spec — symmetric with GET response):
+ * Format (per exe analysis — symmetric with GET):
  *   SET DBP/1.0
+ *   CSeq: 1
  *   IP: 192.168.1.200
  *   Mask: 255.255.255.0
  *   Gateway: 192.168.1.1
@@ -20,6 +23,7 @@ import type { IpChangeRequest } from '@shared/types'
  */
 function buildSetCommand(req: IpChangeRequest): string {
   let cmd = 'SET DBP/1.0\r\n'
+  cmd += 'CSeq: 1\r\n'
   cmd += `IP: ${req.newIp}\r\n`
   cmd += `Mask: ${req.newMask}\r\n`
   cmd += `Gateway: ${req.newGateway}\r\n`
@@ -33,11 +37,7 @@ function buildSetCommand(req: IpChangeRequest): string {
 /**
  * Send SET DBP/1.0 command to change a device's IP configuration.
  *
- * Flow:
- *   1. TCP connect to targetIp:DBP_PORT
- *   2. Send "SET DBP/1.0" + parameters
- *   3. Wait for "DBP/1.0 200 OK" confirmation
- *   4. socket.destroy() — IRON RULE
+ * Uses the auto-detected port from scanner module.
  *
  * After success, the device will reboot and the old IP becomes unreachable.
  * The renderer should trigger ReconnectOverlay to poll the NEW IP.
@@ -48,12 +48,14 @@ export function changeDeviceIp(
   return new Promise((resolve) => {
     const socket = new net.Socket()
     let responseData = ''
-    const timeout = SCAN_TIMEOUT_MS * 10 // 3 seconds for SET operations
+    const timeout = PORT_DETECT_TIMEOUT_MS * 2 // 3 seconds for SET operations
+    const port = getActivePort()
 
     socket.setTimeout(timeout)
 
     socket.once('connect', () => {
       const cmd = buildSetCommand(request)
+      console.log(`[DBP SET] Sending to ${request.targetIp}:${port}`)
       socket.write(cmd)
     })
 
@@ -63,8 +65,8 @@ export function changeDeviceIp(
 
     socket.once('end', () => {
       socket.destroy() // IRON RULE
-      // Check for success response
-      if (responseData.includes('200 OK')) {
+      if (responseData.includes('200 OK') || responseData.includes('200')) {
+        console.log(`[DBP SET] ✅ IP changed successfully`)
         resolve({ success: true })
       } else {
         resolve({ success: false, error: `Unexpected response: ${responseData.trim()}` })
@@ -81,6 +83,6 @@ export function changeDeviceIp(
       resolve({ success: false, error: `TCP error: ${err.message}` })
     })
 
-    socket.connect(DBP_PORT, request.targetIp)
+    socket.connect(port, request.targetIp)
   })
 }

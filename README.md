@@ -109,26 +109,43 @@ cd GT-SIP-Controlor
 npm install
 ```
 
-### Step 2 — 確認 DBP Port
+### Step 2 — DBP Port（自動探測 or Wireshark）
 
-> ⚠️ **關鍵步驟**：DBP 協定的 TCP Port 在原始 exe 中未明確硬編碼。
-> 目前預設為 `18888`，**需用 Wireshark 抓包確認**。
+> 🆕 **v2 更新**：SIP CMS 現在內建 **Port 自動探測**功能！
+> 掃描前會自動對出廠 IP（`192.168.x.10`）嘗試以下 9 個候選 Port：
+>
+> `18888 → 9988 → 8899 → 8000 → 10000 → 10010 → 5060 → 3000 → 80`
+>
+> 若自動探測成功，無需手動設定。若全部失敗，請用 Wireshark 抓包確認。
 
-#### Wireshark 抓包方法
+#### Wireshark 抓包方法（備用）
 
 1. 在現場主機上安裝並開啟 **Wireshark**
 2. 選擇主機的網路介面卡開始擷取
 3. 開啟原廠工具 `QueryTool.exe`，執行一次掃描
 4. 在 Wireshark 過濾欄輸入：`tcp.flags.syn == 1 && ip.dst == 192.168.1.10`
-5. 觀察目標 Port 號碼（例如 `18888` 或 `9527` 等）
+5. 觀察目標 Port 號碼
 
-#### 修改 Port
+#### 手動修改 Port
 
-確認 Port 後，編輯 `src/shared/constants.ts` 第 24 行：
+確認 Port 後，可在 `src/shared/constants.ts` 的 `DBP_PORT_CANDIDATES` 陣列**首位**放入正確值：
 
 ```typescript
-// 將 18888 改為實際抓到的 Port
-export const DBP_PORT = 18888   // ← 改為正確值
+export const DBP_PORT_CANDIDATES = [
+  9527,   // ← Wireshark 確認的值放首位
+  18888, 9988, 8899, 8000, ...
+]
+```
+
+#### TaskServer 模式（可選）
+
+若現場有 **TaskServer**（原廠 `config.ini` 中 `mode=1, ip=192.168.3.200`），
+SIP CMS 支援直接從 TaskServer 取得已註冊設備清單，不靠逐 IP 掃描。
+
+修改 `src/shared/constants.ts`：
+```typescript
+export const TASK_SERVER_DEFAULT_IP = '192.168.3.200'  // ← 填入實際 IP
+export const TASK_SERVER_DEFAULT_PORT = 18888            // ← 填入實際 Port
 ```
 
 ### Step 3 — 啟動並測試

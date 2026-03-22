@@ -1,15 +1,40 @@
 // ============================================
 // SIP CMS — TCP Subnet Scanner (Main Process)
-// Aligned with DBP/1.0 protocol specification:
-//   Command: "GET DBP/1.0\r\n"
+// Aligned with QueryTool v5.0.9.L DBP/1.0 protocol:
+//   Command: "GET DBP/1.0\r\nCSeq: 1\r\n\r\n"
 //   Response: "Key: Value" per line (colon separator)
+//   Port: Auto-detected from DBP_PORT_CANDIDATES
 // ============================================
 import * as net from 'net'
-import { DBP_PORT, SCAN_TIMEOUT_MS } from '@shared/constants'
+import {
+  DBP_PORT, DBP_PORT_CANDIDATES, SCAN_TIMEOUT_MS, PORT_DETECT_TIMEOUT_MS,
+} from '@shared/constants'
 import type { DeviceNode, ScanProgress, ScanResult } from '@shared/types'
 
-/** DBP/1.0 discovery command — per spec: "GET DBP/1.0" */
-const DBP_DISCOVERY_CMD = 'GET DBP/1.0\r\n'
+/**
+ * DBP/1.0 discovery command — with CSeq header per QueryTool format.
+ * Original exe: "GET DBP/1.0" + "CSeq: %d"
+ */
+const DBP_DISCOVERY_CMD = 'GET DBP/1.0\r\nCSeq: 1\r\n\r\n'
+
+/**
+ * SETTING command — queries extended SIP/MQTT/PTT parameters via JSON.
+ * From QueryTool exe: SETTING DBP/1.0 + JSON key_name array
+ */
+const DBP_SETTING_CMD = 'SETTING DBP/1.0\r\nCSeq: 2\r\n\r\n'
+const DBP_SETTING_JSON = JSON.stringify({
+  key_name: [
+    'RegAddr', 'ServerPort', 'RegUser', 'RegPswd',
+    'OutVol', 'MicVol', 'Key1A', 'Key1B',
+    'ConnectMode', 'SWversion', 'PTT', 'COR',
+    'MQTT_NAME', 'MQTT_URL', 'CLIENT_ID',
+    'USER_NAME', 'USER_PASSWD',
+    'CHECK', 'NTP', 'ROLE',
+  ],
+})
+
+/** Cached detected port — survives across scans within same session */
+let detectedPort: number | null = null
 
 /**
  * Create a default DeviceNode with all fields initialized
@@ -30,17 +55,7 @@ function createDefaultDevice(): DeviceNode {
 
 /**
  * Parse multi-line DBP/1.0 response into a DeviceNode.
- *
- * Response format (per spec):
- *   DBP/1.0 200 OK        ← status line (skip)
- *   CSeq: 1
- *   ID: 5
- *   Type: SIP-Speaker
- *   MAC: 00:1A:2B:3C:4D:5E
- *   IP: 192.168.1.200
- *   ...
- *
- * Separator is COLON `:` (not `=`)
+ * Separator is COLON `:` (verified from exe sscanf patterns)
  */
 function parseDbpResponse(raw: string): DeviceNode | null {
   const device = createDefaultDevice()
@@ -57,7 +72,6 @@ function parseDbpResponse(raw: string): DeviceNode | null {
     const key = line.substring(0, colonIdx).trim()
     const val = line.substring(colonIdx + 1).trim()
 
-    // Map DBP keys to DeviceNode fields (case-insensitive matching)
     switch (key) {
       case 'ID':         device.id = parseInt(val, 10) || 0; break
       case 'Type':       device.type = val; break
@@ -89,15 +103,90 @@ function parseDbpResponse(raw: string): DeviceNode | null {
       case 'CaptureVol': device.captureVol = parseInt(val, 10) || 0; break
       case 'VOL':        device.playVol = parseInt(val, 10) || 0; break
       case 'CAP':        device.captureVol = parseInt(val, 10) || 0; break
-      case 'Group':      device.group = parseInt(val, 10) || 0; break
+      case 'Group':
+      case 'GROUP':      device.group = parseInt(val, 10) || 0; break
       case 'Reboot':     device.reboot = val; break
       case 'SvcConfig':  device.svcConfig = val; break
-      // CSeq, AGC, GROUP, UpdateAll, ResetAll, IFCFG-APP — captured but not mapped to critical fields
     }
   }
 
   if (!hasValidData) return null
   return device
+}
+
+/**
+ * Auto-detect DBP port by trying each candidate on a known device IP.
+ * Returns the first port that responds with "DBP/1.0" protocol.
+ *
+ * Strategy: try candidates in parallel, first valid response wins.
+ */
+export async function autoDetectPort(targetIp: string): Promise<number | null> {
+  // Return cached result if available
+  if (detectedPort !== null) return detectedPort
+
+  console.log(`[DBP] Auto-detecting port on ${targetIp}, trying ${DBP_PORT_CANDIDATES.length} candidates...`)
+
+  const tryPort = (port: number): Promise<number | null> => {
+    return new Promise((resolve) => {
+      const socket = new net.Socket()
+      socket.setTimeout(PORT_DETECT_TIMEOUT_MS)
+
+      socket.once('connect', () => {
+        socket.write(DBP_DISCOVERY_CMD)
+      })
+
+      let responseData = ''
+
+      socket.on('data', (chunk) => {
+        responseData += chunk.toString('utf-8')
+      })
+
+      socket.once('end', () => {
+        socket.destroy()
+        if (responseData.includes('DBP/1.0') || responseData.includes('MAC:') || responseData.includes('MAC :')) {
+          console.log(`[DBP] ✅ Port ${port} responded with DBP protocol!`)
+          resolve(port)
+        } else {
+          resolve(null)
+        }
+      })
+
+      socket.once('timeout', () => {
+        socket.destroy()
+        resolve(null)
+      })
+
+      socket.once('error', () => {
+        socket.destroy()
+        resolve(null)
+      })
+
+      socket.connect(port, targetIp)
+    })
+  }
+
+  // Try all candidates in parallel — first DBP response wins
+  const results = await Promise.all(DBP_PORT_CANDIDATES.map(tryPort))
+  const foundPort = results.find((p) => p !== null) ?? null
+
+  if (foundPort) {
+    detectedPort = foundPort
+    console.log(`[DBP] Port detection complete: using port ${foundPort}`)
+  } else {
+    console.log(`[DBP] ⚠️ No port responded with DBP protocol on ${targetIp}`)
+  }
+
+  return foundPort
+}
+
+/** Reset cached port (e.g., when user changes network) */
+export function resetDetectedPort(): void {
+  detectedPort = null
+}
+
+/** Get currently detected port or fallback */
+export function getActivePort(): number {
+  return detectedPort ?? DBP_PORT
 }
 
 /**
@@ -131,13 +220,11 @@ function probeSingleIp(ip: string, port: number): Promise<DeviceNode | null> {
     })
 
     socket.once('error', (_err) => {
-      // Suppress ECONNREFUSED / ECONNRESET — host alive but not SIP
       socket.destroy() // IRON RULE: always destroy
       resolve(null)
     })
 
     socket.once('close', () => {
-      // Safety net: if somehow we get close without prior resolution
       resolve(null)
     })
 
@@ -145,7 +232,7 @@ function probeSingleIp(ip: string, port: number): Promise<DeviceNode | null> {
   })
 }
 
-// ---- Mock Data for Development (aligned with real DBP format) ----
+// ---- Mock Data for Development ----
 const MOCK_DEVICES: DeviceNode[] = [
   {
     id: 1, type: 'SIP-Speaker', mac: '00:1A:2B:3C:4D:5E', sn: 'GSC2024001', name: '1F-大廳', hostName: 'sip-speaker-001',
@@ -158,7 +245,7 @@ const MOCK_DEVICES: DeviceNode[] = [
   },
   {
     id: 2, type: 'SIP-Speaker', mac: '00:1A:2B:99:88:77', sn: 'GSC2024002', name: '2F-會議室', hostName: 'sip-speaker-002',
-    ip: '192.168.1.10', mask: '255.255.255.0', gateway: '192.168.1.1', autoIp: 0, // ← SAME factory IP!
+    ip: '192.168.1.10', mask: '255.255.255.0', gateway: '192.168.1.1', autoIp: 0,
     dns1: '8.8.8.8', dns2: '', useDns: 1,
     server: '192.168.1.11:8899', server2: '', mode: 'intercom', isBroadcast: 0,
     version: 'v2.4.08', playVol: 5, captureVol: 6, treble: 3, bass: 4, tbAgc: 1, tbLinein: 0,
@@ -185,7 +272,7 @@ const MOCK_DEVICES: DeviceNode[] = [
   },
   {
     id: 5, type: 'SIP-Speaker', mac: '00:1A:2B:11:22:33', sn: 'GSC2024005', name: 'B1-停車場', hostName: 'sip-speaker-004',
-    ip: '192.168.1.10', mask: '255.255.255.0', gateway: '192.168.1.1', autoIp: 0, // ← SAME factory IP again!
+    ip: '192.168.1.10', mask: '255.255.255.0', gateway: '192.168.1.1', autoIp: 0,
     dns1: '8.8.8.8', dns2: '', useDns: 1,
     server: '192.168.1.11:8899', server2: '', mode: 'broadcast', isBroadcast: 1,
     version: 'v2.4.10', playVol: 12, captureVol: 5, treble: 7, bass: 8, tbAgc: 0, tbLinein: 0,
@@ -207,7 +294,11 @@ const USE_MOCK = process.env.NODE_ENV === 'development' || process.env.MOCK_SCAN
 
 /**
  * Scan entire subnet 192.168.x.1~254
- * Uses mock data in dev mode for UI development without real network
+ *
+ * Flow (matching QueryTool):
+ * 1. Auto-detect DBP port on known device IP (192.168.x.10)
+ * 2. Scan 1~254 using detected port
+ * 3. Parse GET DBP/1.0 responses
  */
 export async function scanSubnet(
   baseIp: string,
@@ -218,11 +309,10 @@ export async function scanSubnet(
   const subnet = `${parts[0]}.${parts[1]}.${parts[2]}`
 
   if (USE_MOCK) {
-    // Simulate scanning with delays for UI testing
     for (let i = 1; i <= 254; i++) {
       const ip = `${subnet}.${i}`
       onProgress?.({ currentIp: ip, currentIndex: i, total: 254 })
-      await new Promise((r) => setTimeout(r, 15)) // ~4 seconds total
+      await new Promise((r) => setTimeout(r, 15))
     }
     return {
       devices: MOCK_DEVICES,
@@ -231,7 +321,18 @@ export async function scanSubnet(
     }
   }
 
-  // Real scan: batch probe in groups of 50 to avoid fd exhaustion
+  // Step 1: Auto-detect port (try on factory default IP first)
+  const factoryIp = `${subnet}.10` // Factory default 192.168.x.10
+  let port = getActivePort()
+
+  const detected = await autoDetectPort(factoryIp)
+  if (detected) {
+    port = detected
+  } else {
+    console.log(`[DBP] Port detection failed on ${factoryIp}, using fallback: ${port}`)
+  }
+
+  // Step 2: Scan entire subnet
   const BATCH_SIZE = 50
   const devices: DeviceNode[] = []
 
@@ -242,7 +343,7 @@ export async function scanSubnet(
     for (let i = batch + 1; i <= end; i++) {
       const ip = `${subnet}.${i}`
       onProgress?.({ currentIp: ip, currentIndex: i, total: 254 })
-      promises.push(probeSingleIp(ip, DBP_PORT))
+      promises.push(probeSingleIp(ip, port))
     }
 
     const results = await Promise.all(promises)
