@@ -293,7 +293,39 @@ const MOCK_DEVICES: DeviceNode[] = [
 const USE_MOCK = process.env.NODE_ENV === 'development' || process.env.MOCK_SCAN === '1'
 
 /**
- * Scan entire subnet 192.168.x.1~254
+ * Scan a single subnet 192.168.x.1~254
+ */
+async function scanSingleSubnet(
+  subnet: string,
+  port: number,
+  onProgress?: (progress: ScanProgress) => void,
+  indexOffset: number = 0,
+  totalIps: number = 254,
+): Promise<DeviceNode[]> {
+  const BATCH_SIZE = 50
+  const devices: DeviceNode[] = []
+
+  for (let batch = 0; batch < 254; batch += BATCH_SIZE) {
+    const promises: Promise<DeviceNode | null>[] = []
+    const end = Math.min(batch + BATCH_SIZE, 254)
+
+    for (let i = batch + 1; i <= end; i++) {
+      const ip = `${subnet}.${i}`
+      onProgress?.({ currentIp: ip, currentIndex: indexOffset + i, total: totalIps })
+      promises.push(probeSingleIp(ip, port))
+    }
+
+    const results = await Promise.all(promises)
+    for (const device of results) {
+      if (device) devices.push(device)
+    }
+  }
+
+  return devices
+}
+
+/**
+ * Scan entire subnet 192.168.x.1~254 (single subnet, backward compatible)
  *
  * Flow (matching QueryTool):
  * 1. Auto-detect DBP port on known device IP (192.168.x.10)
@@ -322,7 +354,7 @@ export async function scanSubnet(
   }
 
   // Step 1: Auto-detect port (try on factory default IP first)
-  const factoryIp = `${subnet}.10` // Factory default 192.168.x.10
+  const factoryIp = `${subnet}.10`
   let port = getActivePort()
 
   const detected = await autoDetectPort(factoryIp)
@@ -332,25 +364,8 @@ export async function scanSubnet(
     console.log(`[DBP] Port detection failed on ${factoryIp}, using fallback: ${port}`)
   }
 
-  // Step 2: Scan entire subnet
-  const BATCH_SIZE = 50
-  const devices: DeviceNode[] = []
-
-  for (let batch = 0; batch < 254; batch += BATCH_SIZE) {
-    const promises: Promise<DeviceNode | null>[] = []
-    const end = Math.min(batch + BATCH_SIZE, 254)
-
-    for (let i = batch + 1; i <= end; i++) {
-      const ip = `${subnet}.${i}`
-      onProgress?.({ currentIp: ip, currentIndex: i, total: 254 })
-      promises.push(probeSingleIp(ip, port))
-    }
-
-    const results = await Promise.all(promises)
-    for (const device of results) {
-      if (device) devices.push(device)
-    }
-  }
+  // Step 2: Scan subnet
+  const devices = await scanSingleSubnet(subnet, port, onProgress)
 
   return {
     devices,
@@ -358,3 +373,100 @@ export async function scanSubnet(
     elapsedMs: Date.now() - startTime,
   }
 }
+
+/**
+ * Multi-subnet scan — the key fix for cross-subnet device discovery.
+ *
+ * When host is on 192.168.0.x but devices have factory IP 192.168.1.200,
+ * standard TCP fails because the OS routes to the gateway.
+ *
+ * Solution: For each non-local subnet, add a temporary on-link route
+ * so the OS sends ARP directly on the LAN interface.
+ *
+ * Flow:
+ * 1. Detect local network (iface, IP, subnet)
+ * 2. Build target subnet list (local + factory defaults)
+ * 3. Add on-link routes for non-local subnets
+ * 4. Auto-detect DBP port
+ * 5. Scan all subnets
+ * 6. Cleanup routes
+ */
+export async function scanMultiSubnet(
+  additionalSubnets: string[] = [],
+  onProgress?: (progress: ScanProgress) => void
+): Promise<ScanResult> {
+  // Import route manager (lazy to avoid circular deps)
+  const { detectLocalNetwork, getTargetSubnets, addRoutesForScan, cleanupAllRoutes } =
+    await import('./routeManager')
+
+  const startTime = Date.now()
+
+  // Step 1: Detect local network
+  const local = detectLocalNetwork()
+  if (!local) {
+    console.log('[Scan] ⚠️ Could not detect local network interface')
+    return { devices: [], scannedCount: 0, elapsedMs: 0 }
+  }
+  console.log(`[Scan] Local network: ${local.ip} on ${local.iface} (subnet ${local.subnet}.0/24)`)
+
+  // Step 2: Build target subnets
+  const subnets = getTargetSubnets(local.subnet, additionalSubnets)
+  console.log(`[Scan] Target subnets: ${subnets.map(s => s + '.0/24').join(', ')}`)
+
+  const totalIps = subnets.length * 254
+
+  // Step 3: Add on-link routes for non-local subnets
+  await addRoutesForScan(subnets, local.ip, local.iface)
+
+  try {
+    // Step 4: Auto-detect port on factory default 192.168.1.10
+    let port = getActivePort()
+    for (const subnet of subnets) {
+      const detected = await autoDetectPort(`${subnet}.10`)
+      if (detected) {
+        port = detected
+        break
+      }
+    }
+
+    // Step 5: Scan all subnets
+    const allDevices: DeviceNode[] = []
+
+    for (let si = 0; si < subnets.length; si++) {
+      const subnet = subnets[si]
+      const indexOffset = si * 254
+      console.log(`[Scan] Scanning ${subnet}.0/24 (${si + 1}/${subnets.length})...`)
+
+      const devices = await scanSingleSubnet(subnet, port, onProgress, indexOffset, totalIps)
+      allDevices.push(...devices)
+    }
+
+    // De-duplicate by MAC address (same device found on multiple subnets)
+    const uniqueDevices = deduplicateByMac(allDevices)
+
+    return {
+      devices: uniqueDevices,
+      scannedCount: totalIps,
+      elapsedMs: Date.now() - startTime,
+    }
+  } finally {
+    // Step 6: ALWAYS cleanup routes, even on error
+    await cleanupAllRoutes()
+  }
+}
+
+/**
+ * De-duplicate devices by MAC address.
+ * If the same device responds on multiple subnets (unlikely but safe),
+ * keep only the first one found.
+ */
+function deduplicateByMac(devices: DeviceNode[]): DeviceNode[] {
+  const seen = new Map<string, DeviceNode>()
+  for (const device of devices) {
+    if (device.mac && !seen.has(device.mac)) {
+      seen.set(device.mac, device)
+    }
+  }
+  return Array.from(seen.values())
+}
+

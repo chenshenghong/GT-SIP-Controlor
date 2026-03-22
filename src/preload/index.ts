@@ -9,6 +9,8 @@ import type { ScanProgress, ScanResult, IpChangeRequest } from '@shared/types'
 export type ElectronAPI = {
   // Scanner (mode=0: subnet scan)
   startScan: (baseIp: string) => Promise<{ success: boolean; data?: ScanResult; error?: string }>
+  // Scanner (mode=0+: multi-subnet scan with on-link routes)
+  scanMultiSubnet: (additionalSubnets?: string[]) => Promise<{ success: boolean; data?: ScanResult; error?: string }>
   onScanProgress: (callback: (progress: ScanProgress) => void) => () => void
   // TaskServer scan (mode=1)
   taskServerQuery: (serverIp: string, serverPort: number) => Promise<{ success: boolean; data?: ScanResult; error?: string }>
@@ -23,6 +25,10 @@ export type ElectronAPI = {
 const electronAPI: ElectronAPI = {
   startScan: (baseIp: string) => {
     return ipcRenderer.invoke(IPC_CHANNELS.SCAN_START, baseIp)
+  },
+
+  scanMultiSubnet: (additionalSubnets: string[] = []) => {
+    return ipcRenderer.invoke('scan:multi', additionalSubnets)
   },
 
   onScanProgress: (callback: (progress: ScanProgress) => void) => {

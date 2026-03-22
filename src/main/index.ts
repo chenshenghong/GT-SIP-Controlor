@@ -5,9 +5,10 @@ import { app, shell, BrowserWindow, ipcMain } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { IPC_CHANNELS } from '@shared/constants'
-import { scanSubnet, autoDetectPort, resetDetectedPort, getActivePort } from './scanner'
+import { scanSubnet, scanMultiSubnet, autoDetectPort, resetDetectedPort, getActivePort } from './scanner'
 import { scanViaTaskServer } from './taskServerClient'
 import { changeDeviceIp } from './ipChanger'
+import { cleanupAllRoutes } from './routeManager'
 import type { IpChangeRequest } from '@shared/types'
 
 function createWindow(): BrowserWindow {
@@ -52,6 +53,18 @@ function registerIpcHandlers(mainWindow: BrowserWindow): void {
   ipcMain.handle(IPC_CHANNELS.SCAN_START, async (_event, baseIp: string) => {
     try {
       const result = await scanSubnet(baseIp, (progress) => {
+        mainWindow.webContents.send(IPC_CHANNELS.SCAN_PROGRESS, progress)
+      })
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  // Multi-subnet scan (mode=0+: scan local + factory default subnets)
+  ipcMain.handle('scan:multi', async (_event, additionalSubnets: string[]) => {
+    try {
+      const result = await scanMultiSubnet(additionalSubnets, (progress) => {
         mainWindow.webContents.send(IPC_CHANNELS.SCAN_PROGRESS, progress)
       })
       return { success: true, data: result }
@@ -138,4 +151,9 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit()
   }
+})
+
+// Cleanup temporary routes on app quit
+app.on('will-quit', async () => {
+  await cleanupAllRoutes()
 })
