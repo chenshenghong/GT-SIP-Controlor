@@ -16,6 +16,20 @@ export const useDeviceStore = defineStore('devices', () => {
     lastScanAt.value = Date.now()
   }
 
+  /**
+   * Add (or merge) a single device — used by manual "add by IP".
+   * De-dupes by MAC (fallback IP); merges fields onto an existing entry.
+   */
+  function addDevice(node: DeviceNode) {
+    const match = (d: DeviceNode) =>
+      (node.mac && d.mac === node.mac) || (!node.mac && d.ip === node.ip)
+    if (devices.value.some(match)) {
+      devices.value = devices.value.map((d) => (match(d) ? { ...d, ...node } : d))
+    } else {
+      devices.value = [...devices.value, node]
+    }
+  }
+
   function updateDeviceStatus(mac: string, status: DeviceNode['status']) {
     devices.value = devices.value.map((d) =>
       d.mac === mac ? { ...d, status } : d
@@ -41,6 +55,7 @@ export const useDeviceStore = defineStore('devices', () => {
     devices,
     lastScanAt,
     setDevices,
+    addDevice,
     updateDeviceStatus,
     clearDevices,
     onlineDevices,

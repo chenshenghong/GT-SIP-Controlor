@@ -22,3 +22,6 @@ npm-debug.log*
 # Environment
 .env
 .env.local
+
+# Vendor firmware source (factory-provided, keep local — do not publish)
+docs/firmware-reference/

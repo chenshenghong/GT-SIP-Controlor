@@ -21,6 +21,8 @@
           :devices="deviceStore.devices"
           @select="handleSelectDevice"
           @change-ip="handleOpenIpChange"
+          @add="showAddDevice = true"
+          @rest-scan="showRestScan = true"
         />
         <DeviceDetail
           v-else
@@ -71,6 +73,20 @@
       :devices="deviceStore.onlineDevices"
       @close="showBatchSync = false"
     />
+
+    <!-- Manual Add Device Modal -->
+    <AddDeviceModal
+      :visible="showAddDevice"
+      @close="showAddDevice = false"
+      @added="handleDeviceAdded"
+    />
+
+    <!-- REST Discovery Scan Modal -->
+    <RestScanModal
+      :visible="showRestScan"
+      @close="showRestScan = false"
+      @found="handleDevicesFound"
+    />
   </div>
 </template>
 
@@ -85,6 +101,8 @@ import DeviceDetail from '@/components/DeviceDetail.vue'
 import IpChangeModal from '@/components/IpChangeModal.vue'
 import ReconnectOverlay from '@/components/ReconnectOverlay.vue'
 import BatchSyncModal from '@/components/BatchSyncModal.vue'
+import AddDeviceModal from '@/components/AddDeviceModal.vue'
+import RestScanModal from '@/components/RestScanModal.vue'
 
 const deviceStore = useDeviceStore()
 
@@ -176,6 +194,22 @@ function handleReconnectTimeout() {
 
 // Batch Sync
 const showBatchSync = ref(false)
+
+// Manual add device (by IP, REST-only devices that DBP scan can't find)
+const showAddDevice = ref(false)
+
+function handleDeviceAdded(device: DeviceNode) {
+  deviceStore.addDevice(device)
+  currentView.value = 'devices'
+}
+
+// REST discovery scan
+const showRestScan = ref(false)
+
+function handleDevicesFound(devices: DeviceNode[]) {
+  for (const d of devices) deviceStore.addDevice(d)
+  currentView.value = 'devices'
+}
 </script>
 
 <style>

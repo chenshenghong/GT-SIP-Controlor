@@ -1,0 +1,16 @@
+appId: com.tcfnet.sip-cms
+productName: SIP COMMANDER
+directories:
+  output: dist
+  buildResources: build
+files:
+  - out/**/*
+  - package.json
+  - "!**/*.map"
+win:
+  target:
+    - dir
+  icon: build/icon.png
+  artifactName: ${productName}-${version}.${ext}
+asar: true
+npmRebuild: false

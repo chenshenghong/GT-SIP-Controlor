@@ -3,7 +3,7 @@
     <div v-if="visible" class="modal-overlay" @click.self="$emit('close')">
       <div class="modal-card">
         <div class="modal-header">
-          <h3>🔧 修改 IP 設定 (DBP SET)</h3>
+          <h3>🔧 修改 IP 設定 (REST / DBP)</h3>
           <button class="close-btn" @click="$emit('close')">✕</button>
         </div>
 
@@ -72,6 +72,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed } from 'vue'
 import type { DeviceNode, IpChangeRequest } from '@shared/types'
+import { loginToDevice, setNetworkConfig } from '@/composables/deviceApi'
 
 const props = defineProps<{
   visible: boolean
@@ -110,15 +111,32 @@ async function handleSubmit() {
   resultMsg.value = ''
 
   try {
-    const request: IpChangeRequest = {
-      targetIp: props.device.ip,
-      ...form,
+    // REST-first: works on REST-only devices (static mode only).
+    // Falls back to DBP for legacy devices sharing a factory IP.
+    if (form.autoIp === 0 && (await loginToDevice(props.device.ip))) {
+      const ok = await setNetworkConfig(props.device.ip, {
+        network_mode: 'static',
+        ip_address: form.newIp,
+        subnet_mask: form.newMask,
+        gateway: form.newGateway,
+        dns: form.dns1 || '',
+      })
+      if (ok) {
+        resultMsg.value = `✅ (REST) IP 已修改為 ${form.newIp}，等待設備重啟...`
+        resultOk.value = true
+        setTimeout(() => emit('success', form.newIp), 1500)
+        return
+      }
     }
 
-    const result = await window.electronAPI.changeIp(request)
+    // DBP fallback (legacy devices / DHCP mode)
+    const result = await window.electronAPI.changeIp({
+      targetIp: props.device.ip,
+      ...form,
+    } as IpChangeRequest)
 
     if (result.success) {
-      resultMsg.value = `✅ IP 已修改為 ${form.newIp}，等待設備重啟...`
+      resultMsg.value = `✅ (DBP) IP 已修改為 ${form.newIp}，等待設備重啟...`
       resultOk.value = true
       setTimeout(() => emit('success', form.newIp), 1500)
     } else {

@@ -1,24 +1,51 @@
 // ============================================
 // SIP CMS — Device REST API Client
-// Complete wrapper for all 14 endpoints per GT-SIP-REST_API.md
+// Verified against factory firmware websetsip.c (19 endpoints)
 // ============================================
 import axios, { type AxiosInstance } from 'axios'
 import { useAuthStore } from '@/stores/auth'
 import { DEVICE_DEFAULT_USERNAME, DEVICE_DEFAULT_PASSWORD } from '@shared/constants'
 import type {
-  DeviceStatus, VolumeConfig, SipConfig, MulticastConfig,
+  DeviceStatus, VolumeConfig, SipConfig, SipConfigResponse, MulticastConfig,
   SipParameters, SipCodecs, CallStatus, NetworkConfig,
 } from '@shared/types'
+
+/** Firmware responds in GBK (Content-Type: ...;charset=GBK) */
+const gbkDecoder = new TextDecoder('gbk')
+
+/**
+ * Per-device-IP request queue. The firmware web server is single-threaded and
+ * times out on concurrent / back-to-back requests, so we serialize all requests
+ * to the same IP. Different IPs still run in parallel.
+ */
+const ipQueue = new Map<string, Promise<unknown>>()
+function enqueue<T>(ip: string, task: () => Promise<T>): Promise<T> {
+  const prev = (ipQueue.get(ip) ?? Promise.resolve()).catch(() => {})
+  const next = prev.then(task)
+  ipQueue.set(ip, next.catch(() => {}))
+  return next
+}
+
+/** Retry a task once after a short gap — used for idempotent GETs only. */
+async function retryOnce<T>(task: () => Promise<T>): Promise<T> {
+  try {
+    return await task()
+  } catch {
+    await new Promise((r) => setTimeout(r, 300))
+    return task()
+  }
+}
 
 /**
  * Create an Axios instance bound to a specific device IP.
  * - Auto-injects per-IP Bearer token from Pinia
- * - Dirty JSON interceptor strips \u0000 and control characters
+ * - Decodes GBK responses and repairs the firmware's dirty JSON
  */
 export function createDeviceApiClient(deviceIp: string): AxiosInstance {
   const api = axios.create({
     baseURL: `http://${deviceIp}`,
-    timeout: 5000,
+    timeout: 8000, // device web server is single-threaded + slow on /system/info
+    responseType: 'arraybuffer', // take raw bytes; we GBK-decode ourselves
   })
 
   // ---- Request Interceptor: inject per-IP token ----
@@ -29,37 +56,56 @@ export function createDeviceApiClient(deviceIp: string): AxiosInstance {
       config.headers['Authorization'] = `Bearer ${token}`
     }
     config.headers['Content-Type'] = 'application/json'
-    config.headers['Accept'] = 'application/json; charset=UTF-8'
     return config
   })
 
-  // ---- Response: Dirty JSON cleaning (transformResponse) ----
-  // C/C++ firmware often returns null bytes (\u0000) and control chars
-  // that break JSON.parse → white screen crash
+  // ---- Response: GBK decode + dirty-JSON repair (transformResponse) ----
+  // Firmware (websetsip.c) emits GBK text, plus null bytes / control chars,
+  // plus (on /get/device/status) a malformed key "broadcast_volume that is
+  // missing its closing quote. Decode + repair all three before JSON.parse.
   api.defaults.transformResponse = [
-    (data: string | unknown) => {
-      if (typeof data === 'string') {
-        try {
-          const cleanData = data
-            .replace(/[\u0000-\u001F\u007F-\u009F]/g, '')
-            .trim()
-          return JSON.parse(cleanData)
-        } catch {
-          return data
-        }
+    (data: ArrayBuffer | string | unknown) => {
+      let text: string
+      if (data instanceof ArrayBuffer) {
+        text = gbkDecoder.decode(new Uint8Array(data))
+      } else if (typeof data === 'string') {
+        text = data
+      } else {
+        return data
       }
-      return data
+      try {
+        let clean = text
+          .replace(/[\u0000-\u001F\u007F-\u009F]/g, '')
+          .replace(/"broadcast_volume:/g, '"broadcast_volume":')
+          .trim()
+        // Firmware bug: /get/device/status omits the outer closing brace.
+        const opens = (clean.match(/{/g) || []).length
+        const closes = (clean.match(/}/g) || []).length
+        if (opens > closes) clean += '}'.repeat(opens - closes)
+        return JSON.parse(clean)
+      } catch {
+        return text
+      }
     },
   ]
+
+  // ---- Serialize per-IP + retry idempotent GETs (single-threaded firmware) ----
+  const originalRequest = api.request.bind(api)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ;(api as any).request = (config: any) => {
+    const method = String(config?.method ?? 'get').toLowerCase()
+    const task = () => originalRequest(config)
+    return enqueue(deviceIp, method === 'get' ? () => retryOnce(task) : task)
+  }
 
   return api
 }
 
 // ============================================
-// [Module 1] Auth — 1.1, 1.2
+// [Module 1] Auth — login / verify / change password
 // ============================================
 
-/** 1.1 Login and obtain JWT token */
+/** 1.1 Login and obtain token (token is nested under data.token) */
 export async function loginToDevice(
   ip: string,
   username: string = DEVICE_DEFAULT_USERNAME,
@@ -70,7 +116,11 @@ export async function loginToDevice(
 
   try {
     const response = await api.post('/auth/login', { username, password })
-    const token = response.data?.token || response.data?.access_token
+    // Firmware shape: { status, message, data: { token, expires_in, user_info } }
+    const token =
+      response.data?.data?.token ??
+      response.data?.token ??
+      response.data?.access_token
     if (token) {
       authStore.setToken(ip, token)
       return true
@@ -86,6 +136,24 @@ export async function verifyToken(ip: string): Promise<boolean> {
   const api = createDeviceApiClient(ip)
   try {
     const res = await api.get('/auth/verify')
+    return res.data?.status === 'success'
+  } catch {
+    return false
+  }
+}
+
+/** 1.3 Change web password */
+export async function changePassword(
+  ip: string,
+  oldPassword: string,
+  newPassword: string
+): Promise<boolean> {
+  const api = createDeviceApiClient(ip)
+  try {
+    const res = await api.post('/auth/change_password', {
+      old_password: oldPassword,
+      new_password: newPassword,
+    })
     return res.data?.status === 'success'
   } catch {
     return false
@@ -144,7 +212,7 @@ export async function getDeviceVolume(ip: string): Promise<VolumeConfig | null> 
   }
 }
 
-/** 3.2 Set volume */
+/** 3.2 Set volume (broadcast_volume / microphone_volume: 0-100) */
 export async function setDeviceVolume(
   ip: string,
   config: VolumeConfig
@@ -159,11 +227,11 @@ export async function setDeviceVolume(
 }
 
 // ============================================
-// [Module 4] SIP & Multicast — 4.1~4.5
+// [Module 4] SIP & Multicast — 4.1~4.6
 // ============================================
 
-/** 4.1 Get all SIP configuration */
-export async function getSipConfig(ip: string): Promise<SipConfig | null> {
+/** 4.1 Get all SIP configuration (nested response) */
+export async function getSipConfig(ip: string): Promise<SipConfigResponse | null> {
   const api = createDeviceApiClient(ip)
   try {
     const res = await api.get('/get/sip/config')
@@ -187,7 +255,21 @@ export async function setSipPrimary(
   }
 }
 
-/** 4.3 Set multicast receiver */
+/** 4.3 Set backup SIP line */
+export async function setSipBackup(
+  ip: string,
+  config: SipConfig
+): Promise<boolean> {
+  const api = createDeviceApiClient(ip)
+  try {
+    await api.post('/set/sip/backup', config)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** 4.4 Set multicast receiver */
 export async function setSipMulticast(
   ip: string,
   config: MulticastConfig
@@ -201,7 +283,7 @@ export async function setSipMulticast(
   }
 }
 
-/** 4.4 Set SIP advanced parameters */
+/** 4.5 Set SIP advanced parameters */
 export async function setSipParameters(
   ip: string,
   config: SipParameters
@@ -215,7 +297,7 @@ export async function setSipParameters(
   }
 }
 
-/** 4.5 Set audio codecs */
+/** 4.6 Set audio codecs */
 export async function setSipCodecs(
   ip: string,
   config: SipCodecs
@@ -274,7 +356,7 @@ export async function getNetworkConfig(ip: string): Promise<NetworkConfig | null
   }
 }
 
-/** 6.2 Set network configuration ⚠️ — may cause IP change + disconnect */
+/** 6.2 Set network configuration ⚠️ — static only; device reboots after ~1s */
 export async function setNetworkConfig(
   ip: string,
   config: NetworkConfig

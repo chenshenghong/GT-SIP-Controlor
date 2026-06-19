@@ -26,6 +26,10 @@ function createWindow(): BrowserWindow {
       sandbox: false,
       contextIsolation: true,
       nodeIntegration: false,
+      // LAN device REST APIs send no CORS headers; the renderer talks to them
+      // cross-origin via axios. Disable web security so those calls are not
+      // blocked by CORS / preflight (internal tool, LAN-only targets).
+      webSecurity: false,
     },
   })
 

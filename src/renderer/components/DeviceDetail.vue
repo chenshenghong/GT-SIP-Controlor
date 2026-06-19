@@ -53,12 +53,12 @@
         <h3>音頻控制</h3>
         <div class="form-group">
           <label>播放音量 (broadcast_volume)</label>
-          <input type="range" v-model.number="audioForm.broadcast_volume" min="0" max="15" />
+          <input type="range" v-model.number="audioForm.broadcast_volume" min="0" max="100" />
           <span class="vol-value">{{ audioForm.broadcast_volume }}</span>
         </div>
         <div class="form-group">
           <label>麥克風音量 (microphone_volume)</label>
-          <input type="range" v-model.number="audioForm.microphone_volume" min="0" max="15" />
+          <input type="range" v-model.number="audioForm.microphone_volume" min="0" max="100" />
           <span class="vol-value">{{ audioForm.microphone_volume }}</span>
         </div>
         <button class="primary-btn" @click="handleSetVolume">儲存音量</button>

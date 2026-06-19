@@ -7,6 +7,12 @@
         <span v-if="duplicateIps.length" class="duplicate-alert">
           ⚠️ {{ duplicateIps.length }} 組 IP 衝突
         </span>
+        <button class="add-btn" @click="$emit('restScan')" title="掃描網段自動發現 REST SIP 終端">
+          🔎 REST 掃描
+        </button>
+        <button class="add-btn" @click="$emit('add')" title="手動輸入 IP 加入設備">
+          ➕ 新增設備
+        </button>
       </div>
     </div>
 
@@ -91,6 +97,8 @@ const props = defineProps<{ devices: DeviceNode[] }>()
 defineEmits<{
   select: [device: DeviceNode]
   changeIp: [device: DeviceNode]
+  add: []
+  restScan: []
 }>()
 
 const onlineCount = computed(() => props.devices.filter(d => d.status === 'ONLINE').length)
@@ -122,6 +130,8 @@ function getIpCount(ip: string): number {
 .toolbar-actions { display: flex; gap: 1rem; align-items: center; }
 .device-count { color: #8b9dc3; font-size: 0.85rem; }
 .duplicate-alert { background: rgba(255,82,82,0.15); color: #ff8a80; padding: 4px 12px; border-radius: 12px; font-size: 0.8rem; animation: pulse 2s infinite; }
+.add-btn { background: rgba(78,222,163,0.1); border: 1px solid rgba(78,222,163,0.3); color: #4edea3; padding: 5px 14px; border-radius: 8px; cursor: pointer; font-size: 0.8rem; transition: all 0.2s; }
+.add-btn:hover { background: rgba(78,222,163,0.2); transform: translateY(-1px); }
 
 .table-scroll { overflow-x: auto; border-radius: 12px; border: 1px solid rgba(78,222,163,0.1); }
 table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }

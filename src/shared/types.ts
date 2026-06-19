@@ -36,8 +36,8 @@ export interface DeviceNode {
   version: string
 
   // --- Audio ---
-  playVol: number            // Output volume (0-15)
-  captureVol: number         // Input volume (0-15)
+  playVol: number            // Output volume (0-100, per firmware websetsip.c)
+  captureVol: number         // Input volume (0-100, per firmware websetsip.c)
   treble: number
   bass: number
   tbAgc: number
@@ -113,17 +113,46 @@ export interface DeviceSyncEntry {
 // Aligned with GT-SIP-REST_API.md
 // ============================================
 
-export interface DeviceStatus {
-  device_info: Record<string, unknown>
-  sip_status: Record<string, unknown>
-  network_info: Record<string, unknown>
-}
-
-export interface VolumeConfig {
+/** device_info block inside /get/device/status (firmware websetsip.c) */
+export interface DeviceInfoBlock {
+  model: string
+  hardware_version: string
+  software_version: string
+  uptime: string
   broadcast_volume: number
   microphone_volume: number
 }
 
+/** network_info block inside /get/device/status (firmware websetsip.c) */
+export interface NetworkInfoBlock {
+  mac_address: string
+  ip_allocation: string
+  ip_address: string
+  subnet_mask: string
+  gateway: string
+  dns: string
+}
+
+/**
+ * GET /get/device/status — firmware nests everything under `sip_status`
+ * (device_info / network_info are siblings of primary_line, inside sip_status).
+ */
+export interface DeviceStatus {
+  sip_status: {
+    primary_line?: Record<string, unknown>
+    multicast_status?: Record<string, unknown>
+    device_info: DeviceInfoBlock
+    network_info: NetworkInfoBlock
+  }
+}
+
+/** Volume values are 0-100 (firmware validates 0 <= v <= 100) */
+export interface VolumeConfig {
+  broadcast_volume: number   // 0-100
+  microphone_volume: number  // 0-100
+}
+
+/** Flat shape used by POST /set/sip/primary and /set/sip/backup (one line) */
 export interface SipConfig {
   server_address: string
   server_port: number
@@ -154,6 +183,17 @@ export interface SipCodecs {
   opus: boolean
   g711_ulaw: boolean
   g711_alaw: boolean
+}
+
+/**
+ * GET /get/sip/config — firmware returns a NESTED object, not the flat SipConfig.
+ * Use this for reads; use SipConfig (flat) for /set/sip/primary & /set/sip/backup.
+ */
+export interface SipConfigResponse {
+  primary_line: SipConfig
+  multicast_config: MulticastConfig
+  sip_parameters: SipParameters
+  audio_codecs: SipCodecs
 }
 
 export interface CallStatus {
