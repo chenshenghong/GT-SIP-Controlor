@@ -98,6 +98,13 @@ export interface ScanResult {
   elapsedMs: number
 }
 
+/** REST discovery scan progress (main → renderer) */
+export interface RestScanProgress {
+  done: number
+  total: number
+  found: number
+}
+
 /** Device sync status for individual nodes in batch sync */
 export type DeviceSyncStatus = 'PENDING' | 'SYNCING' | 'SUCCESS' | 'FAILED'
 

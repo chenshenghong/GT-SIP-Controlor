@@ -4,7 +4,7 @@
 // ============================================
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC_CHANNELS } from '@shared/constants'
-import type { ScanProgress, ScanResult, IpChangeRequest } from '@shared/types'
+import type { ScanProgress, ScanResult, RestScanProgress, DeviceNode, IpChangeRequest } from '@shared/types'
 
 export type ElectronAPI = {
   // Scanner (mode=0: subnet scan)
@@ -12,6 +12,9 @@ export type ElectronAPI = {
   // Scanner (mode=0+: multi-subnet scan with on-link routes)
   scanMultiSubnet: (additionalSubnets?: string[]) => Promise<{ success: boolean; data?: ScanResult; error?: string }>
   onScanProgress: (callback: (progress: ScanProgress) => void) => () => void
+  // REST discovery scan (finds REST-only devices)
+  restScan: (subnet: string) => Promise<{ success: boolean; devices?: DeviceNode[]; error?: string }>
+  onRestScanProgress: (callback: (progress: RestScanProgress) => void) => () => void
   // TaskServer scan (mode=1)
   taskServerQuery: (serverIp: string, serverPort: number) => Promise<{ success: boolean; data?: ScanResult; error?: string }>
   // Port detection
@@ -38,6 +41,20 @@ const electronAPI: ElectronAPI = {
     ipcRenderer.on(IPC_CHANNELS.SCAN_PROGRESS, handler)
     return () => {
       ipcRenderer.removeListener(IPC_CHANNELS.SCAN_PROGRESS, handler)
+    }
+  },
+
+  restScan: (subnet: string) => {
+    return ipcRenderer.invoke(IPC_CHANNELS.REST_SCAN, subnet)
+  },
+
+  onRestScanProgress: (callback: (progress: RestScanProgress) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, progress: RestScanProgress) => {
+      callback(progress)
+    }
+    ipcRenderer.on(IPC_CHANNELS.REST_SCAN_PROGRESS, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.REST_SCAN_PROGRESS, handler)
     }
   },
 

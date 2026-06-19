@@ -65,6 +65,19 @@ function registerIpcHandlers(mainWindow: BrowserWindow): void {
     }
   })
 
+  // REST discovery scan (TCP :80 probe + REST confirm) — finds REST-only devices
+  ipcMain.handle(IPC_CHANNELS.REST_SCAN, async (_event, subnet: string) => {
+    try {
+      const { restScanSubnet } = await import('./restScanner')
+      const devices = await restScanSubnet(subnet, (progress) => {
+        mainWindow.webContents.send(IPC_CHANNELS.REST_SCAN_PROGRESS, progress)
+      })
+      return { success: true, devices }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
   // Multi-subnet scan (mode=0+: scan local + factory default subnets)
   ipcMain.handle('scan:multi', async (_event, additionalSubnets: string[]) => {
     try {

@@ -48,8 +48,7 @@
 
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import type { DeviceNode } from '@shared/types'
-import { restScanSubnet, type RestScanProgress } from '@/composables/useRestScan'
+import type { DeviceNode, RestScanProgress } from '@shared/types'
 
 defineProps<{ visible: boolean }>()
 const emit = defineEmits<{
@@ -71,12 +70,16 @@ async function handleScan() {
   isScanning.value = true
   resultMsg.value = ''
   progress.value = { done: 0, total: 254, found: 0 }
+  const unsubscribe = window.electronAPI.onRestScanProgress((p) => { progress.value = p })
   try {
-    const devices = await restScanSubnet(subnetBase.value.trim(), (p) => { progress.value = p })
-    if (devices.length > 0) {
-      emit('found', devices)
+    const result = await window.electronAPI.restScan(subnetBase.value.trim())
+    if (!result.success) {
+      resultOk.value = false
+      resultMsg.value = `❌ 掃描失敗：${result.error}`
+    } else if (result.devices && result.devices.length > 0) {
+      emit('found', result.devices)
       resultOk.value = true
-      resultMsg.value = `✅ 找到 ${devices.length} 台，已加入設備清單`
+      resultMsg.value = `✅ 找到 ${result.devices.length} 台，已加入設備清單`
       setTimeout(() => emit('close'), 1200)
     } else {
       resultOk.value = false
@@ -86,6 +89,7 @@ async function handleScan() {
     resultOk.value = false
     resultMsg.value = `❌ 掃描失敗：${err}`
   } finally {
+    unsubscribe()
     isScanning.value = false
   }
 }

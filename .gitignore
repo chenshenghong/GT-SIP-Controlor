@@ -25,3 +25,9 @@ npm-debug.log*
 
 # Vendor firmware source (factory-provided, keep local — do not publish)
 docs/firmware-reference/
+
+# Knowledge graph artifacts (graphify)
+graphify-out/
+
+# GitNexus local index
+.gitnexus/

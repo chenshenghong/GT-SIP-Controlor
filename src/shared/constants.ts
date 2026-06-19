@@ -10,6 +10,10 @@ export const IPC_CHANNELS = {
   SCAN_COMPLETE: 'scan:complete',
   SCAN_ERROR: 'scan:error',
 
+  // REST discovery scan (TCP :80 probe + REST confirm)
+  REST_SCAN: 'rest:scan',
+  REST_SCAN_PROGRESS: 'rest:scan-progress',
+
   // IP Configuration (DBP SET)
   CHANGE_IP: 'device:change-ip',
   CHANGE_IP_RESULT: 'device:change-ip-result',
