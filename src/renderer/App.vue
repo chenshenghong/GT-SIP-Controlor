@@ -27,7 +27,7 @@
         <DeviceDetail
           v-else
           :device="selectedDevice"
-          @close="selectedDevice = null"
+          @close="handleDetailClose"
           @reconnect="handleReconnect"
         />
       </template>
@@ -56,7 +56,7 @@
     <BatchSyncModal
       :show="showBatchSync"
       :selected-devices="deviceStore.devices"
-      @close="showBatchSync = false"
+      @close="handleBatchClose"
     />
 
     <!-- Manual Add Device Modal -->
@@ -185,6 +185,18 @@ const selectedDevice = ref<DeviceNode | null>(null)
 
 function handleSelectDevice(device: DeviceNode) {
   selectedDevice.value = device
+}
+
+// Returning from detail / closing batch sync may have changed config → refresh list
+function handleDetailClose() {
+  const d = selectedDevice.value
+  selectedDevice.value = null
+  if (d) enrichRegStatus([d])
+}
+
+function handleBatchClose() {
+  showBatchSync.value = false
+  enrichRegStatus(deviceStore.devices)
 }
 
 // IP Change

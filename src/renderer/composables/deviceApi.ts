@@ -133,16 +133,23 @@ export async function loginToDevice(
   return false
 }
 
-/** Retry an idempotent write (POST that sets config) — device drops ~half of POSTs. */
+/**
+ * Retry an idempotent write (POST that sets config) — device drops ~half of POSTs.
+ * The firmware ALWAYS returns HTTP 200; a rejected request comes back as
+ * { status: "error", ... }, so we must check the JSON status, not just HTTP.
+ */
 async function postRetry(
   api: AxiosInstance, url: string, body: unknown, tries = 4
 ): Promise<boolean> {
   for (let i = 0; i < tries; i++) {
     try {
-      await api.post(url, body)
-      return true
+      const res = await api.post(url, body)
+      const status = (res.data as { status?: string })?.status
+      if (status === 'success') return true
+      if (status === 'error') return false // deterministic reject (bad params) — retrying won't help
+      // unparsed / unexpected → fall through and retry
     } catch {
-      // retry
+      // dropped POST — retry
     }
   }
   return false

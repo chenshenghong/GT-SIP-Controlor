@@ -147,7 +147,7 @@ function close() {
                   type="range"
                   min="0"
                   max="100"
-                  v-model="broadcastVolume"
+                  v-model.number="broadcastVolume"
                   class="w-full h-1 bg-surface-container-highest appearance-none cursor-pointer accent-primary"
                 />
                 <div
