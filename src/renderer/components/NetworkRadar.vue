@@ -1,29 +1,22 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
-import type { RestScanProgress } from '@shared/types'
+import { computed } from 'vue'
 
 const props = defineProps<{
   isScanning: boolean
-  progress: RestScanProgress
+  found: number
   elapsedMs: number
-  defaultSubnet?: string
 }>()
 
 const emit = defineEmits<{
-  'start-scan': [subnet: string]
+  'start-scan': []
 }>()
 
-const subnet = ref(props.defaultSubnet || '192.168.0')
-watch(
-  () => props.defaultSubnet,
-  (v) => { if (v && !props.isScanning) subnet.value = v }
+const EXPECTED_MS = 4000
+const progressPercent = computed(() =>
+  props.isScanning
+    ? Math.min(98, Math.round((props.elapsedMs / EXPECTED_MS) * 100))
+    : (props.found > 0 ? 100 : 0)
 )
-
-const subnetValid = computed(() => /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.test(subnet.value.trim()))
-const done = computed(() => props.progress?.done || 0)
-const found = computed(() => props.progress?.found || 0)
-
-const progressPercent = computed(() => Math.round((done.value / 254) * 100))
 
 const scanTime = computed(() => {
   const totalSec = Math.floor((props.elapsedMs || 0) / 1000)
@@ -33,11 +26,9 @@ const scanTime = computed(() => {
   return [hrs, mins, secs].map((v) => (v < 10 ? '0' + v : v)).join(':')
 })
 
-const barSegments = computed(() => Math.floor(done.value / 32) + 1)
-
-function start() {
-  if (subnetValid.value) emit('start-scan', subnet.value.trim())
-}
+const barSegments = computed(() =>
+  Math.min(8, Math.floor((props.elapsedMs / EXPECTED_MS) * 8) + (props.isScanning ? 1 : 0))
+)
 </script>
 
 <template>
@@ -71,21 +62,17 @@ function start() {
       <div class="flex flex-col md:flex-row md:items-end justify-between gap-4 border-b border-outline-variant/30 pb-4">
         <div class="space-y-1">
           <h2 class="text-secondary font-mono text-sm tracking-[0.3em] uppercase">
-            狀態：{{ isScanning ? 'REST 探測中...' : '待機' }}
+            狀態：{{ isScanning ? 'DBP 廣播探測中...' : '待機' }}
           </h2>
-          <div v-if="!isScanning" class="flex items-center gap-2 mt-2">
-            <input v-model="subnet" placeholder="192.168.0" @keyup.enter="start"
-              class="bg-surface-container-low border border-primary/30 text-primary font-mono text-xs px-2 py-1 w-28 focus:outline-none focus:border-primary" />
-            <span class="text-on-surface-variant font-mono text-xs">.1~254</span>
-            <button class="text-primary border border-primary/30 px-4 py-1 text-xs font-mono tracking-widest hover:bg-primary/10 transition-colors disabled:opacity-40"
-              :disabled="!subnetValid" @click="start">
-              ▶ REST 掃描
-            </button>
-          </div>
+          <button v-if="!isScanning"
+            class="text-primary border border-primary/30 px-4 py-1 text-xs font-mono tracking-widest hover:bg-primary/10 transition-colors mt-2"
+            @click="$emit('start-scan')">
+            ▶ 掃描設備 (DBP 廣播)
+          </button>
           <div class="flex items-center gap-3">
             <div :class="{ 'animate-bounce-x': isScanning }" class="flex items-center">
               <span class="text-primary font-mono text-xl md:text-2xl font-bold tracking-tighter">
-                {{ isScanning ? `掃描 ${subnet}.x` : (found > 0 ? `已發現 ${found} 台設備` : '準備掃描 SIP 終端') }}
+                {{ isScanning ? 'DBP 廣播探測中...' : (found > 0 ? `已發現 ${found} 台設備` : '準備掃描設備') }}
               </span>
             </div>
             <span v-if="isScanning" class="inline-block w-2 h-6 bg-primary animate-pulse"></span>
@@ -99,8 +86,8 @@ function start() {
       <!-- Progress Bar -->
       <div class="space-y-3">
         <div class="flex justify-between items-center text-[10px] uppercase tracking-[0.2em] font-bold">
-          <span class="text-on-surface-variant">REST 探測</span>
-          <span class="text-secondary">{{ done }} / 254 · 已發現 {{ found }} 台</span>
+          <span class="text-on-surface-variant">DBP 廣播探測</span>
+          <span class="text-secondary">已發現 {{ found }} 台設備</span>
         </div>
         <div class="relative h-4 bg-surface-container-low border border-outline-variant p-0.5 overflow-hidden">
           <div

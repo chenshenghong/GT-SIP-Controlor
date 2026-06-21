@@ -65,6 +65,19 @@ function registerIpcHandlers(mainWindow: BrowserWindow): void {
     }
   })
 
+  // DBP/1.0 UDP broadcast discovery — finds devices on ALL subnets of the L2 segment
+  ipcMain.handle(IPC_CHANNELS.DBP_DISCOVER, async () => {
+    try {
+      const { dbpDiscover } = await import('./dbpDiscover')
+      const devices = await dbpDiscover(4000, (found) => {
+        mainWindow.webContents.send(IPC_CHANNELS.DBP_DISCOVER_PROGRESS, found)
+      })
+      return { success: true, devices }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
   // Local subnet detection (for defaulting the REST scan target)
   ipcMain.handle('net:local-subnet', async () => {
     try {

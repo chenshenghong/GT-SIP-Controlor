@@ -15,6 +15,9 @@ export type ElectronAPI = {
   // REST discovery scan (finds REST-only devices)
   restScan: (subnet: string) => Promise<{ success: boolean; devices?: DeviceNode[]; error?: string }>
   onRestScanProgress: (callback: (progress: RestScanProgress) => void) => () => void
+  // DBP/1.0 UDP broadcast discovery (finds cross-subnet devices)
+  dbpDiscover: () => Promise<{ success: boolean; devices?: DeviceNode[]; error?: string }>
+  onDbpProgress: (callback: (found: number) => void) => () => void
   // Detected local /24 subnet prefix (e.g. "192.168.0"), or null
   getLocalSubnet: () => Promise<string | null>
   // TaskServer scan (mode=1)
@@ -52,6 +55,20 @@ const electronAPI: ElectronAPI = {
 
   getLocalSubnet: () => {
     return ipcRenderer.invoke('net:local-subnet')
+  },
+
+  dbpDiscover: () => {
+    return ipcRenderer.invoke(IPC_CHANNELS.DBP_DISCOVER)
+  },
+
+  onDbpProgress: (callback: (found: number) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, found: number) => {
+      callback(found)
+    }
+    ipcRenderer.on(IPC_CHANNELS.DBP_DISCOVER_PROGRESS, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.DBP_DISCOVER_PROGRESS, handler)
+    }
   },
 
   onRestScanProgress: (callback: (progress: RestScanProgress) => void) => {

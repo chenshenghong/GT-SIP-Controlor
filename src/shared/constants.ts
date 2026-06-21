@@ -14,6 +14,10 @@ export const IPC_CHANNELS = {
   REST_SCAN: 'rest:scan',
   REST_SCAN_PROGRESS: 'rest:scan-progress',
 
+  // DBP/1.0 UDP broadcast discovery (finds cross-subnet devices on the L2 segment)
+  DBP_DISCOVER: 'dbp:discover',
+  DBP_DISCOVER_PROGRESS: 'dbp:discover-progress',
+
   // IP Configuration (DBP SET)
   CHANGE_IP: 'device:change-ip',
   CHANGE_IP_RESULT: 'device:change-ip-result',

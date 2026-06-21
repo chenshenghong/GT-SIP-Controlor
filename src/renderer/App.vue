@@ -8,9 +8,8 @@
       <template v-if="currentView === 'radar'">
         <NetworkRadar
           :is-scanning="isScanning"
-          :progress="scanProgress"
+          :found="foundCount"
           :elapsed-ms="elapsedMs"
-          :default-subnet="restSubnet"
           @start-scan="startScan"
         />
       </template>
@@ -92,9 +91,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref } from 'vue'
 import { useDeviceStore } from '@/stores/devices'
-import type { DeviceNode, RestScanProgress } from '@shared/types'
+import type { DeviceNode } from '@shared/types'
 import AppLayout from '@/components/AppLayout.vue'
 import NetworkRadar from '@/components/NetworkRadar.vue'
 import DeviceTable from '@/components/DeviceTable.vue'
@@ -117,42 +116,34 @@ function handleNavigate(view: string) {
   }
 }
 
-// Scanning state — radar runs the REST discovery scan
+// Scanning state — radar runs DBP/1.0 UDP broadcast discovery (finds all subnets)
 const isScanning = ref(false)
-const scanProgress = ref<RestScanProgress>({ done: 0, total: 254, found: 0 })
+const foundCount = ref(0)
 const elapsedMs = ref(0)
-const restSubnet = ref('192.168.0')
 
-onMounted(async () => {
-  const sub = await window.electronAPI.getLocalSubnet()
-  if (sub) restSubnet.value = sub
-})
-
-async function startScan(subnet?: string) {
-  const target = (subnet || restSubnet.value || '192.168.0').trim()
-  restSubnet.value = target
+async function startScan() {
   isScanning.value = true
   elapsedMs.value = 0
-  scanProgress.value = { done: 0, total: 254, found: 0 }
+  foundCount.value = 0
   const startTime = Date.now()
 
   const interval = setInterval(() => {
     elapsedMs.value = Date.now() - startTime
   }, 100)
 
-  const cleanup = window.electronAPI.onRestScanProgress((progress) => {
-    scanProgress.value = progress
+  const cleanup = window.electronAPI.onDbpProgress((found) => {
+    foundCount.value = found
   })
 
   try {
-    const result = await window.electronAPI.restScan(target)
+    const result = await window.electronAPI.dbpDiscover()
     if (result.success && result.devices) {
       deviceStore.setDevices(result.devices)
       // Auto-switch to device list
       currentView.value = 'devices'
     }
   } catch (err) {
-    console.error('REST scan failed:', err)
+    console.error('DBP discovery failed:', err)
   } finally {
     clearInterval(interval)
     cleanup()
