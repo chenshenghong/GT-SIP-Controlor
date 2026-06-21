@@ -54,8 +54,8 @@
 
     <!-- Batch Sync Modal -->
     <BatchSyncModal
-      v-if="showBatchSync"
-      :devices="deviceStore.onlineDevices"
+      :show="showBatchSync"
+      :selected-devices="deviceStore.devices"
       @close="showBatchSync = false"
     />
 

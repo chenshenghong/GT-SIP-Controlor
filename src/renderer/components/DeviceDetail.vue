@@ -17,6 +17,13 @@
       </div>
     </div>
 
+    <div v-if="reachable === false" class="cross-subnet-notice">
+      ⚠️ REST 無法連線此設備（多半是跨網段 — TCP 回包繞不回來）。下方為 DBP 探測值，無法即時讀取或控制。請先用設備清單的「🔧 IP」把它改到本機網段。
+    </div>
+    <div v-else-if="loadingConfig" class="loading-notice">
+      ⏳ 讀取設備即時設定中…
+    </div>
+
     <!-- Tab Navigation -->
     <div class="tab-bar">
       <button v-for="tab in tabs" :key="tab.id"
@@ -181,12 +188,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, toRef } from 'vue'
+import { ref, reactive, toRef, onMounted, onUnmounted } from 'vue'
 import type { DeviceNode } from '@shared/types'
 import { useDevicePolling } from '@/composables/useDevicePolling'
 import {
   setDeviceVolume, setSipPrimary, setSipMulticast,
   callControl, setNetworkConfig, restartDevice,
+  loginToDevice, getDeviceVolume, getSipConfig, getNetworkConfig,
 } from '@/composables/deviceApi'
 
 const props = defineProps<{ device: DeviceNode }>()
@@ -227,6 +235,63 @@ const networkForm = reactive({
   dns: props.device.dns1,
 })
 const dialNumber = ref('')
+
+// --- Load LIVE config from the device (REST) when the detail opens ---
+// The list values come from DBP discovery (incomplete); the forms below must
+// reflect the device's real current config, which only REST provides.
+const reachable = ref<boolean | null>(null)
+const loadingConfig = ref(false)
+
+onMounted(async () => {
+  loadingConfig.value = true
+  try {
+    const ok = await loginToDevice(props.device.ip)
+    reachable.value = ok
+    if (!ok) return
+
+    const vol = await getDeviceVolume(props.device.ip)
+    if (vol) {
+      audioForm.broadcast_volume = vol.broadcast_volume
+      audioForm.microphone_volume = vol.microphone_volume
+    }
+
+    const sip = await getSipConfig(props.device.ip)
+    if (sip?.primary_line) {
+      const pl = sip.primary_line
+      sipForm.server_address = pl.server_address ?? sipForm.server_address
+      sipForm.server_port = pl.server_port ?? sipForm.server_port
+      sipForm.user_id = pl.user_id ?? ''
+      sipForm.password = pl.password ?? ''
+      sipForm.auto_answer = pl.auto_answer ?? true
+      sipForm.register_timeout = pl.register_timeout ?? 3600
+      sipForm.transport_protocol = pl.transport_protocol ?? 'UDP'
+    }
+    if (sip?.multicast_config) {
+      const mc = sip.multicast_config
+      multicastForm.multicast_address = mc.multicast_address || multicastForm.multicast_address
+      multicastForm.multicast_port = mc.multicast_port || multicastForm.multicast_port
+      multicastForm.enabled = mc.enabled
+      multicastForm.audio_codec = mc.audio_codec || multicastForm.audio_codec
+    }
+
+    const net = await getNetworkConfig(props.device.ip)
+    if (net) {
+      networkForm.network_mode = net.network_mode
+      networkForm.ip_address = net.ip_address
+      networkForm.subnet_mask = net.subnet_mask
+      networkForm.gateway = net.gateway
+      networkForm.dns = net.dns
+    }
+
+    polling.startPolling()
+  } finally {
+    loadingConfig.value = false
+  }
+})
+
+onUnmounted(() => {
+  polling.stopPolling()
+})
 
 // Handlers
 async function handleSetVolume() {
@@ -321,6 +386,8 @@ async function handleRestart() {
 .section-divider { border: none; border-top: 1px solid rgba(78,222,163,0.1); margin: 2rem 0; }
 .system-actions { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid rgba(255,82,82,0.2); }
 .warning-box { background: rgba(255,152,0,0.1); border: 1px solid rgba(255,152,0,0.3); color: #ffcc80; padding: 10px 14px; border-radius: 8px; font-size: 0.85rem; margin: 1rem 0; }
+.cross-subnet-notice { background: rgba(255,82,82,0.1); border: 1px solid rgba(255,82,82,0.3); color: #ff8a80; padding: 10px 14px; border-radius: 8px; font-size: 0.85rem; margin: 1rem 0 0; }
+.loading-notice { color: #8b9dc3; font-size: 0.85rem; margin: 1rem 0 0; }
 
 @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
 </style>

@@ -2,8 +2,8 @@
 import { ref, computed } from 'vue'
 import type { DeviceNode, DeviceSyncEntry } from '@shared/types'
 import { usePromiseQueue } from '@/composables/usePromiseQueue'
-import { createDeviceApiClient, loginToDevice } from '@/composables/deviceApi'
-import { MAX_CONCURRENT_SYNC, DEVICE_DEFAULT_PASSWORD } from '@shared/constants'
+import { loginToDevice, setDeviceVolume, setSipMulticast } from '@/composables/deviceApi'
+import { MAX_CONCURRENT_SYNC } from '@shared/constants'
 
 const props = defineProps<{
   show: boolean
@@ -64,15 +64,22 @@ async function startSync() {
         deviceStatuses.value = [...deviceStatuses.value]
       }
 
-      // Login first
-      await loginToDevice(device.ip, DEVICE_DEFAULT_PASSWORD)
+      // Login (default admin/123456); cross-subnet devices will fail here
+      const ok = await loginToDevice(device.ip)
+      if (!ok) throw new Error('登入失敗（跨網段或帳密不符）')
 
-      // Send settings
-      const api = createDeviceApiClient(device.ip)
-      await api.post('/set/multicast/config', {
-        volume: broadcastVolume.value,
-        multicast_ip: multicastIp.value,
-      })
+      // Push broadcast volume + multicast address via real REST endpoints
+      if (!(await setDeviceVolume(device.ip, {
+        broadcast_volume: broadcastVolume.value,
+        microphone_volume: broadcastVolume.value,
+      }))) throw new Error('音量設定失敗')
+
+      if (!(await setSipMulticast(device.ip, {
+        multicast_address: multicastIp.value,
+        multicast_port: 2000,
+        enabled: true,
+        audio_codec: 'G.722',
+      }))) throw new Error('組播設定失敗')
 
       // Update to SUCCESS
       if (idx >= 0) {
