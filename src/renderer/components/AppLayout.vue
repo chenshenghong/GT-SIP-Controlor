@@ -1,16 +1,12 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-
-const currentView = defineModel<string>({ default: 'scan' })
+defineProps<{ currentView: string }>()
+defineEmits<{ navigate: [view: string] }>()
 
 const navItems = [
-  { id: 'scan', label: '網路地圖', icon: 'hub' },
+  { id: 'radar', label: '設備探測', icon: 'sensors' },
   { id: 'devices', label: '設備清單', icon: 'router' },
-  { id: 'logs', label: '流量日誌', icon: 'list_alt' },
-  { id: 'security', label: '安全維運', icon: 'shield' },
+  { id: 'batch', label: '批次設定', icon: 'tune' },
 ]
-
-const isCollapsed = ref(false)
 </script>
 
 <template>
@@ -61,7 +57,7 @@ const isCollapsed = ref(false)
               ? 'text-primary border-l-2 border-primary bg-gradient-to-r from-primary/10 to-transparent'
               : 'text-on-surface-variant border-l-2 border-transparent hover:bg-surface-container-high hover:text-primary'
           "
-          @click="currentView = item.id"
+          @click="$emit('navigate', item.id)"
         >
           <span class="material-symbols-outlined text-[20px]">{{ item.icon }}</span>
           <span class="text-[13px] uppercase tracking-wider">{{ item.label }}</span>

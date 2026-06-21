@@ -52,6 +52,14 @@ export interface DeviceNode {
   svcConfig: string
   localSet: string           // "a,b,c,d" format
 
+  // --- DBP extended SIP settings (decoded from IFCFG-APP; discovery only) ---
+  regUser?: string       // SIP 分機 / 帳號 (RegUser)
+  regAddr?: string       // SIP 註冊伺服器位址 (RegAddr)
+  regPort?: string       // SIP 註冊埠 (ServerPort)
+  outVol?: number        // 輸出/播放音量設定 (OutVol)
+  micVol?: number        // 麥克風音量設定 (MicVol)
+  connectMode?: string   // 連線模式 (ConnectMode)
+
   // --- Runtime (added by CMS, not from DBP) ---
   status: 'ONLINE' | 'DISCONNECTED' | 'RECONNECTING'
 }

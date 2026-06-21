@@ -32,21 +32,6 @@
         />
       </template>
 
-      <!-- Traffic Logs View (placeholder) -->
-      <template v-if="currentView === 'logs'">
-        <div class="placeholder-view">
-          <h3>📋 流量日誌</h3>
-          <p>此功能將在後續階段實作</p>
-        </div>
-      </template>
-
-      <!-- Security View (placeholder) -->
-      <template v-if="currentView === 'security'">
-        <div class="placeholder-view">
-          <h3>🔒 安全維運</h3>
-          <p>此功能將在後續階段實作</p>
-        </div>
-      </template>
     </AppLayout>
 
     <!-- IP Change Modal -->
@@ -107,12 +92,18 @@ import RestScanModal from '@/components/RestScanModal.vue'
 const deviceStore = useDeviceStore()
 
 // Navigation
-const currentView = ref<'radar' | 'devices' | 'logs' | 'security'>('radar')
+const currentView = ref<'radar' | 'devices'>('radar')
 
 function handleNavigate(view: string) {
-  currentView.value = view as typeof currentView.value
-  if (view !== 'devices') {
-    selectedDevice.value = null
+  if (view === 'batch') {
+    // Batch config push acts on the discovered device list
+    showBatchSync.value = true
+    currentView.value = 'devices'
+    return
+  }
+  if (view === 'radar' || view === 'devices') {
+    currentView.value = view
+    if (view !== 'devices') selectedDevice.value = null
   }
 }
 

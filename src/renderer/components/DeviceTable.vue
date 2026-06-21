@@ -22,13 +22,13 @@
           <tr>
             <th class="col-status">狀態</th>
             <th class="col-name">名稱</th>
-            <th class="col-type">類型</th>
+            <th class="col-ext">分機</th>
             <th class="col-ip">IP 位址</th>
-            <th class="col-mac">MAC 位址</th>
-            <th class="col-version">韌體版本</th>
-            <th class="col-vol">播放</th>
-            <th class="col-vol">錄入</th>
-            <th class="col-sip">SIP Server</th>
+            <th class="col-group">群組</th>
+            <th class="col-sip">SIP 註冊</th>
+            <th class="col-version">韌體</th>
+            <th class="col-vol">音量 出/入</th>
+            <th class="col-mac">MAC</th>
             <th class="col-actions">操作</th>
           </tr>
         </thead>
@@ -40,18 +40,18 @@
               <span :class="['status-dot', device.status.toLowerCase()]"></span>
             </td>
             <td class="name-cell">{{ device.name || device.hostName || '—' }}</td>
-            <td>{{ device.type || device.mode }}</td>
+            <td class="ext-cell">{{ device.regUser || '—' }}</td>
             <td class="ip-cell">
               {{ device.ip }}
               <span v-if="getIpCount(device.ip) > 1" class="ip-conflict">
                 ×{{ getIpCount(device.ip) }}
               </span>
             </td>
+            <td class="group-cell">{{ device.group || '—' }}</td>
+            <td class="server-cell">{{ device.regAddr ? `${device.regAddr}:${device.regPort || '5060'}` : (device.server || '—') }}</td>
+            <td>{{ device.version || '—' }}</td>
+            <td class="vol-cell">{{ device.outVol ?? '—' }} / {{ device.micVol ?? '—' }}</td>
             <td><code>{{ device.mac }}</code></td>
-            <td>{{ device.version }}</td>
-            <td class="vol-cell">{{ device.playVol }}</td>
-            <td class="vol-cell">{{ device.captureVol }}</td>
-            <td class="server-cell">{{ device.server || '—' }}</td>
             <td class="actions-cell" @click.stop>
               <button class="action-btn ip-btn" @click="$emit('changeIp', device)"
                 title="修改 IP">
@@ -82,8 +82,8 @@
         <span class="card-value" :class="duplicateIps.length ? 'warning' : ''">{{ duplicateIps.length }}</span>
       </div>
       <div class="card">
-        <span class="card-label">設備類型</span>
-        <span class="card-value">{{ deviceTypes }}</span>
+        <span class="card-label">群組數</span>
+        <span class="card-value">{{ groupCount }}</span>
       </div>
     </div>
   </div>
@@ -103,7 +103,7 @@ defineEmits<{
 
 const onlineCount = computed(() => props.devices.filter(d => d.status === 'ONLINE').length)
 const offlineCount = computed(() => props.devices.filter(d => d.status !== 'ONLINE').length)
-const deviceTypes = computed(() => new Set(props.devices.map(d => d.type || d.mode)).size)
+const groupCount = computed(() => new Set(props.devices.map(d => d.group).filter(g => g > 0)).size)
 
 // IP conflict detection
 const ipCountMap = computed(() => {
@@ -149,6 +149,8 @@ tr.duplicate-row:hover { background: rgba(255,82,82,0.1); }
 .status-dot.reconnecting { background: #ffab40; animation: pulse 1s infinite; }
 
 .name-cell { font-weight: 500; }
+.ext-cell { color: #4edea3; font-weight: 600; font-family: 'JetBrains Mono', monospace; }
+.group-cell { text-align: center; color: #8b9dc3; }
 .ip-cell { font-family: 'JetBrains Mono', monospace; }
 .ip-conflict { background: rgba(255,82,82,0.2); color: #ff5252; padding: 1px 6px; border-radius: 8px; font-size: 0.7rem; margin-left: 6px; font-weight: 700; }
 code { background: rgba(78,222,163,0.1); padding: 2px 6px; border-radius: 4px; font-size: 0.8rem; color: #8b9dc3; }

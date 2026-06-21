@@ -72,6 +72,19 @@ function parseDbpReply(raw: string): DeviceNode | null {
       case 'CAP': d.captureVol = parseInt(val, 10) || 0; break
       case 'AGC': d.tbAgc = parseInt(val, 10) || 0; break
       case 'Mode': d.mode = val; break
+      case 'IFCFG-APP': {
+        // base64 of {"key_name":[...], "RegAddr":..., "RegUser":..., "OutVol":...}
+        try {
+          const s = JSON.parse(Buffer.from(val, 'base64').toString('utf-8')) as Record<string, string>
+          if (s.RegUser) d.regUser = s.RegUser
+          if (s.RegAddr) d.regAddr = s.RegAddr
+          if (s.ServerPort) d.regPort = s.ServerPort
+          if (s.OutVol != null && s.OutVol !== '') d.outVol = parseInt(s.OutVol, 10)
+          if (s.MicVol != null && s.MicVol !== '') d.micVol = parseInt(s.MicVol, 10)
+          if (s.ConnectMode) d.connectMode = s.ConnectMode
+        } catch { /* ignore malformed IFCFG-APP */ }
+        break
+      }
     }
   }
   if (!hasMac) return null
