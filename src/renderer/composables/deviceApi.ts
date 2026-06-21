@@ -44,7 +44,7 @@ async function retryOnce<T>(task: () => Promise<T>): Promise<T> {
 export function createDeviceApiClient(deviceIp: string): AxiosInstance {
   const api = axios.create({
     baseURL: `http://${deviceIp}`,
-    timeout: 8000, // device web server is single-threaded + slow on /system/info
+    timeout: 3000, // LAN device answers <1s; a longer wait just means a dropped packet → fail fast & retry
     responseType: 'arraybuffer', // take raw bytes; we GBK-decode ourselves
   })
 

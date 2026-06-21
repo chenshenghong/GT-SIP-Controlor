@@ -259,6 +259,8 @@ onMounted(async () => {
     reachable.value = ok
     if (!ok) return
 
+    polling.startPolling() // start status polling first so 狀態監控 fills ASAP
+
     const vol = await tryGet(() => getDeviceVolume(props.device.ip))
     if (vol) {
       audioForm.broadcast_volume = vol.broadcast_volume
@@ -292,8 +294,6 @@ onMounted(async () => {
       networkForm.gateway = net.gateway
       networkForm.dns = net.dns
     }
-
-    polling.startPolling()
   } finally {
     loadingConfig.value = false
   }

@@ -108,7 +108,17 @@ async function enrichRegStatus(devices: DeviceNode[]) {
     let st: Awaited<ReturnType<typeof getDeviceStatus>> = null
     for (let i = 0; i < 4 && !st; i++) st = await getDeviceStatus(d.ip)
     const pl = st?.sip_status?.primary_line as Record<string, unknown> | undefined
-    deviceStore.patchDevice(d.mac, { sipRegStatus: pl?.status ? String(pl.status) : '未知' })
+    const patch: Partial<DeviceNode> = { sipRegStatus: pl?.status ? String(pl.status) : '未知' }
+    // account = "30101@192.168.0.155:5060" — the LIVE registered identity, which
+    // overrides the device's stale DBP RegUser (the two config stores differ).
+    const account = pl?.account ? String(pl.account) : ''
+    const m = account.match(/^([^@]+)@([^:]+)(?::(\d+))?/)
+    if (m) {
+      patch.regUser = m[1]
+      patch.regAddr = m[2]
+      if (m[3]) patch.regPort = m[3]
+    }
+    deviceStore.patchDevice(d.mac, patch)
   }))
 }
 
