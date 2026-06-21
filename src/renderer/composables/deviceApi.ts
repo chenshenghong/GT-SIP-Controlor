@@ -113,22 +113,39 @@ export async function loginToDevice(
 ): Promise<boolean> {
   const authStore = useAuthStore()
   const api = createDeviceApiClient(ip)
-
-  try {
-    const response = await api.post('/auth/login', { username, password })
-    // Firmware shape: { status, message, data: { token, expires_in, user_info } }
-    const token =
-      response.data?.data?.token ??
-      response.data?.token ??
-      response.data?.access_token
-    if (token) {
-      authStore.setToken(ip, token)
-      return true
+  // login is a POST and the device drops ~half of them — retry a few times
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      const response = await api.post('/auth/login', { username, password })
+      // Firmware shape: { status, message, data: { token, expires_in, user_info } }
+      const token =
+        response.data?.data?.token ??
+        response.data?.token ??
+        response.data?.access_token
+      if (token) {
+        authStore.setToken(ip, String(token).trim()) // firmware token has a stray \n
+        return true
+      }
+    } catch {
+      // dropped POST — retry
     }
-    return false
-  } catch {
-    return false
   }
+  return false
+}
+
+/** Retry an idempotent write (POST that sets config) — device drops ~half of POSTs. */
+async function postRetry(
+  api: AxiosInstance, url: string, body: unknown, tries = 4
+): Promise<boolean> {
+  for (let i = 0; i < tries; i++) {
+    try {
+      await api.post(url, body)
+      return true
+    } catch {
+      // retry
+    }
+  }
+  return false
 }
 
 /** 1.2 Verify existing token validity */
@@ -217,13 +234,7 @@ export async function setDeviceVolume(
   ip: string,
   config: VolumeConfig
 ): Promise<boolean> {
-  const api = createDeviceApiClient(ip)
-  try {
-    await api.post('/set/device/volume', config)
-    return true
-  } catch {
-    return false
-  }
+  return postRetry(createDeviceApiClient(ip), '/set/device/volume', config)
 }
 
 // ============================================
@@ -246,13 +257,7 @@ export async function setSipPrimary(
   ip: string,
   config: SipConfig
 ): Promise<boolean> {
-  const api = createDeviceApiClient(ip)
-  try {
-    await api.post('/set/sip/primary', config)
-    return true
-  } catch {
-    return false
-  }
+  return postRetry(createDeviceApiClient(ip), '/set/sip/primary', config)
 }
 
 /** 4.3 Set backup SIP line */
@@ -260,13 +265,7 @@ export async function setSipBackup(
   ip: string,
   config: SipConfig
 ): Promise<boolean> {
-  const api = createDeviceApiClient(ip)
-  try {
-    await api.post('/set/sip/backup', config)
-    return true
-  } catch {
-    return false
-  }
+  return postRetry(createDeviceApiClient(ip), '/set/sip/backup', config)
 }
 
 /** 4.4 Set multicast receiver */
@@ -274,13 +273,7 @@ export async function setSipMulticast(
   ip: string,
   config: MulticastConfig
 ): Promise<boolean> {
-  const api = createDeviceApiClient(ip)
-  try {
-    await api.post('/set/sip/multicast', config)
-    return true
-  } catch {
-    return false
-  }
+  return postRetry(createDeviceApiClient(ip), '/set/sip/multicast', config)
 }
 
 /** 4.5 Set SIP advanced parameters */
@@ -288,13 +281,7 @@ export async function setSipParameters(
   ip: string,
   config: SipParameters
 ): Promise<boolean> {
-  const api = createDeviceApiClient(ip)
-  try {
-    await api.post('/set/sip/parameters', config)
-    return true
-  } catch {
-    return false
-  }
+  return postRetry(createDeviceApiClient(ip), '/set/sip/parameters', config)
 }
 
 /** 4.6 Set audio codecs */
@@ -302,13 +289,7 @@ export async function setSipCodecs(
   ip: string,
   config: SipCodecs
 ): Promise<boolean> {
-  const api = createDeviceApiClient(ip)
-  try {
-    await api.post('/set/sip/codecs', config)
-    return true
-  } catch {
-    return false
-  }
+  return postRetry(createDeviceApiClient(ip), '/set/sip/codecs', config)
 }
 
 // ============================================
