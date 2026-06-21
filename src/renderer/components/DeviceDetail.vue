@@ -398,7 +398,8 @@ async function handleRestart() {
 .system-actions { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid rgba(255,82,82,0.2); }
 .warning-box { background: rgba(255,152,0,0.1); border: 1px solid rgba(255,152,0,0.3); color: #ffcc80; padding: 10px 14px; border-radius: 8px; font-size: 0.85rem; margin: 1rem 0; }
 .cross-subnet-notice { background: rgba(255,82,82,0.1); border: 1px solid rgba(255,82,82,0.3); color: #ff8a80; padding: 10px 14px; border-radius: 8px; font-size: 0.85rem; margin: 1rem 0 0; }
-.loading-notice { color: #8b9dc3; font-size: 0.85rem; margin: 1rem 0 0; }
+.loading-notice { background: rgba(78,222,163,0.12); border: 1px solid rgba(78,222,163,0.4); color: #4edea3; padding: 10px 14px; border-radius: 8px; font-size: 0.9rem; font-weight: 600; margin: 1rem 0 0; animation: pulse 1.4s ease-in-out infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
 
 @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
 </style>

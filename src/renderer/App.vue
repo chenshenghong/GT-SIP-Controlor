@@ -118,6 +118,12 @@ async function enrichRegStatus(devices: DeviceNode[]) {
       patch.regAddr = m[2]
       if (m[3]) patch.regPort = m[3]
     }
+    // Live volume (REST PLAY_VOL/CAP_VOL) overrides the stale DBP OutVol/MicVol
+    const di = st?.sip_status?.device_info as Record<string, unknown> | undefined
+    if (di) {
+      if (di.broadcast_volume != null) patch.outVol = Number(di.broadcast_volume)
+      if (di.microphone_volume != null) patch.micVol = Number(di.microphone_volume)
+    }
     deviceStore.patchDevice(d.mac, patch)
   }))
 }
