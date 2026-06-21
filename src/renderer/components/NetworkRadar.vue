@@ -1,23 +1,29 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import type { ScanProgress } from '@shared/types'
+import { computed, ref, watch } from 'vue'
+import type { RestScanProgress } from '@shared/types'
 
 const props = defineProps<{
   isScanning: boolean
-  progress: ScanProgress
+  progress: RestScanProgress
   elapsedMs: number
+  defaultSubnet?: string
 }>()
 
 const emit = defineEmits<{
-  'start-scan': []
+  'start-scan': [subnet: string]
 }>()
 
-const currentIp = computed(() => props.progress?.currentIp || '...')
-const currentIndex = computed(() => props.progress?.currentIndex || 0)
-
-const progressPercent = computed(() =>
-  Math.round((currentIndex.value / 254) * 100)
+const subnet = ref(props.defaultSubnet || '192.168.0')
+watch(
+  () => props.defaultSubnet,
+  (v) => { if (v && !props.isScanning) subnet.value = v }
 )
+
+const subnetValid = computed(() => /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.test(subnet.value.trim()))
+const done = computed(() => props.progress?.done || 0)
+const found = computed(() => props.progress?.found || 0)
+
+const progressPercent = computed(() => Math.round((done.value / 254) * 100))
 
 const scanTime = computed(() => {
   const totalSec = Math.floor((props.elapsedMs || 0) / 1000)
@@ -27,8 +33,11 @@ const scanTime = computed(() => {
   return [hrs, mins, secs].map((v) => (v < 10 ? '0' + v : v)).join(':')
 })
 
-const bufferSpeed = computed(() => (Math.random() * 2 + 7.5).toFixed(2))
-const barSegments = computed(() => Math.floor(currentIndex.value / 32) + 1)
+const barSegments = computed(() => Math.floor(done.value / 32) + 1)
+
+function start() {
+  if (subnetValid.value) emit('start-scan', subnet.value.trim())
+}
 </script>
 
 <template>
@@ -62,15 +71,21 @@ const barSegments = computed(() => Math.floor(currentIndex.value / 32) + 1)
       <div class="flex flex-col md:flex-row md:items-end justify-between gap-4 border-b border-outline-variant/30 pb-4">
         <div class="space-y-1">
           <h2 class="text-secondary font-mono text-sm tracking-[0.3em] uppercase">
-            狀態：{{ isScanning ? '正在初始化探測...' : '探測暫停' }}
+            狀態：{{ isScanning ? 'REST 探測中...' : '待機' }}
           </h2>
-          <button v-if="!isScanning" class="text-primary border border-primary/30 px-4 py-1 text-xs font-mono tracking-widest hover:bg-primary/10 transition-colors mt-2" @click="emit('start-scan')">
-            ▶ 啟動掃描
-          </button>
+          <div v-if="!isScanning" class="flex items-center gap-2 mt-2">
+            <input v-model="subnet" placeholder="192.168.0" @keyup.enter="start"
+              class="bg-surface-container-low border border-primary/30 text-primary font-mono text-xs px-2 py-1 w-28 focus:outline-none focus:border-primary" />
+            <span class="text-on-surface-variant font-mono text-xs">.1~254</span>
+            <button class="text-primary border border-primary/30 px-4 py-1 text-xs font-mono tracking-widest hover:bg-primary/10 transition-colors disabled:opacity-40"
+              :disabled="!subnetValid" @click="start">
+              ▶ REST 掃描
+            </button>
+          </div>
           <div class="flex items-center gap-3">
             <div :class="{ 'animate-bounce-x': isScanning }" class="flex items-center">
               <span class="text-primary font-mono text-xl md:text-2xl font-bold tracking-tighter">
-                正在掃描網路：{{ currentIp }}
+                {{ isScanning ? `掃描 ${subnet}.x` : (found > 0 ? `已發現 ${found} 台設備` : '準備掃描 SIP 終端') }}
               </span>
             </div>
             <span v-if="isScanning" class="inline-block w-2 h-6 bg-primary animate-pulse"></span>
@@ -84,8 +99,8 @@ const barSegments = computed(() => Math.floor(currentIndex.value / 32) + 1)
       <!-- Progress Bar -->
       <div class="space-y-3">
         <div class="flex justify-between items-center text-[10px] uppercase tracking-[0.2em] font-bold">
-          <span class="text-on-surface-variant">封包分析</span>
-          <span class="text-secondary">{{ currentIndex }} / 254 個節點</span>
+          <span class="text-on-surface-variant">REST 探測</span>
+          <span class="text-secondary">{{ done }} / 254 · 已發現 {{ found }} 台</span>
         </div>
         <div class="relative h-4 bg-surface-container-low border border-outline-variant p-0.5 overflow-hidden">
           <div
@@ -104,7 +119,7 @@ const barSegments = computed(() => Math.floor(currentIndex.value / 32) + 1)
               class="w-1 h-3 transition-colors duration-200"
             ></div>
           </div>
-          <span class="text-on-surface-variant font-mono text-[10px] uppercase">緩衝: {{ bufferSpeed }} MB/s</span>
+          <span class="text-on-surface-variant font-mono text-[10px] uppercase">已發現: {{ found }} 台</span>
         </div>
       </div>
 

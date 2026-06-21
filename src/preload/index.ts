@@ -15,6 +15,8 @@ export type ElectronAPI = {
   // REST discovery scan (finds REST-only devices)
   restScan: (subnet: string) => Promise<{ success: boolean; devices?: DeviceNode[]; error?: string }>
   onRestScanProgress: (callback: (progress: RestScanProgress) => void) => () => void
+  // Detected local /24 subnet prefix (e.g. "192.168.0"), or null
+  getLocalSubnet: () => Promise<string | null>
   // TaskServer scan (mode=1)
   taskServerQuery: (serverIp: string, serverPort: number) => Promise<{ success: boolean; data?: ScanResult; error?: string }>
   // Port detection
@@ -46,6 +48,10 @@ const electronAPI: ElectronAPI = {
 
   restScan: (subnet: string) => {
     return ipcRenderer.invoke(IPC_CHANNELS.REST_SCAN, subnet)
+  },
+
+  getLocalSubnet: () => {
+    return ipcRenderer.invoke('net:local-subnet')
   },
 
   onRestScanProgress: (callback: (progress: RestScanProgress) => void) => {

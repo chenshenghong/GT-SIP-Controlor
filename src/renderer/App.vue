@@ -10,6 +10,7 @@
           :is-scanning="isScanning"
           :progress="scanProgress"
           :elapsed-ms="elapsedMs"
+          :default-subnet="restSubnet"
           @start-scan="startScan"
         />
       </template>
@@ -91,9 +92,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useDeviceStore } from '@/stores/devices'
-import type { DeviceNode, ScanProgress } from '@shared/types'
+import type { DeviceNode, RestScanProgress } from '@shared/types'
 import AppLayout from '@/components/AppLayout.vue'
 import NetworkRadar from '@/components/NetworkRadar.vue'
 import DeviceTable from '@/components/DeviceTable.vue'
@@ -116,34 +117,42 @@ function handleNavigate(view: string) {
   }
 }
 
-// Scanning state
+// Scanning state — radar runs the REST discovery scan
 const isScanning = ref(false)
-const scanProgress = ref<ScanProgress>({ currentIp: '', currentIndex: 0, total: 254 })
+const scanProgress = ref<RestScanProgress>({ done: 0, total: 254, found: 0 })
 const elapsedMs = ref(0)
+const restSubnet = ref('192.168.0')
 
-async function startScan() {
+onMounted(async () => {
+  const sub = await window.electronAPI.getLocalSubnet()
+  if (sub) restSubnet.value = sub
+})
+
+async function startScan(subnet?: string) {
+  const target = (subnet || restSubnet.value || '192.168.0').trim()
+  restSubnet.value = target
   isScanning.value = true
   elapsedMs.value = 0
+  scanProgress.value = { done: 0, total: 254, found: 0 }
   const startTime = Date.now()
 
   const interval = setInterval(() => {
     elapsedMs.value = Date.now() - startTime
   }, 100)
 
-  const cleanup = window.electronAPI.onScanProgress((progress) => {
+  const cleanup = window.electronAPI.onRestScanProgress((progress) => {
     scanProgress.value = progress
   })
 
   try {
-    const result = await window.electronAPI.startScan('192.168.1.0')
-    if (result.success && result.data) {
-      deviceStore.setDevices(result.data.devices)
-      elapsedMs.value = result.data.elapsedMs
+    const result = await window.electronAPI.restScan(target)
+    if (result.success && result.devices) {
+      deviceStore.setDevices(result.devices)
       // Auto-switch to device list
       currentView.value = 'devices'
     }
   } catch (err) {
-    console.error('Scan failed:', err)
+    console.error('REST scan failed:', err)
   } finally {
     clearInterval(interval)
     cleanup()

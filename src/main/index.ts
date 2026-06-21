@@ -65,6 +65,16 @@ function registerIpcHandlers(mainWindow: BrowserWindow): void {
     }
   })
 
+  // Local subnet detection (for defaulting the REST scan target)
+  ipcMain.handle('net:local-subnet', async () => {
+    try {
+      const { detectLocalNetwork } = await import('./routeManager')
+      return detectLocalNetwork()?.subnet ?? null
+    } catch {
+      return null
+    }
+  })
+
   // REST discovery scan (TCP :80 probe + REST confirm) — finds REST-only devices
   ipcMain.handle(IPC_CHANNELS.REST_SCAN, async (_event, subnet: string) => {
     try {
