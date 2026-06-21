@@ -36,6 +36,13 @@ export const useDeviceStore = defineStore('devices', () => {
     )
   }
 
+  /** Merge partial fields onto a device (matched by MAC) — used for async enrichment. */
+  function patchDevice(mac: string, partial: Partial<DeviceNode>) {
+    devices.value = devices.value.map((d) =>
+      d.mac === mac ? { ...d, ...partial } : d
+    )
+  }
+
   function clearDevices() {
     devices.value = []
   }
@@ -57,6 +64,7 @@ export const useDeviceStore = defineStore('devices', () => {
     setDevices,
     addDevice,
     updateDeviceStatus,
+    patchDevice,
     clearDevices,
     onlineDevices,
     offlineDevices,

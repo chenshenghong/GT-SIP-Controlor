@@ -15,20 +15,21 @@ export function useDevicePolling(targetIp: Ref<string>) {
   const lastError = ref<string | null>(null)
 
   let pollInterval: ReturnType<typeof setInterval> | null = null
+  let inFlight = false
 
   async function poll() {
-    if (!targetIp.value) return
-
+    if (!targetIp.value || inFlight) return // skip if previous poll still running
+    inFlight = true
     try {
-      const [status, call] = await Promise.all([
-        getDeviceStatus(targetIp.value),
-        getCallStatus(targetIp.value),
-      ])
-      deviceStatus.value = status
-      callStatus.value = call
-      lastError.value = null
-    } catch (err) {
-      lastError.value = String(err)
+      // Device web server is flaky (frequent timeouts). Only overwrite the
+      // displayed value on success — keep the last good value otherwise so the
+      // panel stays stable instead of flickering to "尚未取得" on every timeout.
+      const status = await getDeviceStatus(targetIp.value)
+      if (status) { deviceStatus.value = status; lastError.value = null }
+      const call = await getCallStatus(targetIp.value)
+      if (call) callStatus.value = call
+    } finally {
+      inFlight = false
     }
   }
 

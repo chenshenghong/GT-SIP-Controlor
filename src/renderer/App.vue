@@ -79,6 +79,7 @@
 import { ref } from 'vue'
 import { useDeviceStore } from '@/stores/devices'
 import type { DeviceNode } from '@shared/types'
+import { loginToDevice, getDeviceStatus } from '@/composables/deviceApi'
 import AppLayout from '@/components/AppLayout.vue'
 import NetworkRadar from '@/components/NetworkRadar.vue'
 import DeviceTable from '@/components/DeviceTable.vue'
@@ -90,6 +91,26 @@ import AddDeviceModal from '@/components/AddDeviceModal.vue'
 import RestScanModal from '@/components/RestScanModal.vue'
 
 const deviceStore = useDeviceStore()
+
+// After discovery, fetch each device's live SIP registration status via REST
+// (only reachable / same-subnet devices return it). Runs in the background.
+async function enrichRegStatus(devices: DeviceNode[]) {
+  // Per device, in parallel — a cross-subnet device's login timeout must not
+  // block reachable devices from filling in (different IPs = independent).
+  await Promise.all(devices.map(async (d) => {
+    if (!d.ip || !d.mac) return
+    let ok = false
+    for (let i = 0; i < 2 && !ok; i++) ok = await loginToDevice(d.ip)
+    if (!ok) {
+      deviceStore.patchDevice(d.mac, { sipRegStatus: '連線失敗' })
+      return
+    }
+    let st: Awaited<ReturnType<typeof getDeviceStatus>> = null
+    for (let i = 0; i < 4 && !st; i++) st = await getDeviceStatus(d.ip)
+    const pl = st?.sip_status?.primary_line as Record<string, unknown> | undefined
+    deviceStore.patchDevice(d.mac, { sipRegStatus: pl?.status ? String(pl.status) : '未知' })
+  }))
+}
 
 // Navigation
 const currentView = ref<'radar' | 'devices'>('radar')
@@ -132,6 +153,7 @@ async function startScan() {
       deviceStore.setDevices(result.devices)
       // Auto-switch to device list
       currentView.value = 'devices'
+      enrichRegStatus(result.devices) // background: fill SIP registration status
     }
   } catch (err) {
     console.error('DBP discovery failed:', err)
@@ -192,6 +214,7 @@ const showAddDevice = ref(false)
 function handleDeviceAdded(device: DeviceNode) {
   deviceStore.addDevice(device)
   currentView.value = 'devices'
+  enrichRegStatus([device])
 }
 
 // REST discovery scan
@@ -200,6 +223,7 @@ const showRestScan = ref(false)
 function handleDevicesFound(devices: DeviceNode[]) {
   for (const d of devices) deviceStore.addDevice(d)
   currentView.value = 'devices'
+  enrichRegStatus(devices)
 }
 </script>
 

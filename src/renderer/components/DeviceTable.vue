@@ -24,8 +24,8 @@
             <th class="col-name">名稱</th>
             <th class="col-ext">分機</th>
             <th class="col-ip">IP 位址</th>
-            <th class="col-group">群組</th>
-            <th class="col-sip">SIP 註冊</th>
+            <th class="col-reg">註冊狀態</th>
+            <th class="col-sip">SIP 伺服器</th>
             <th class="col-version">韌體</th>
             <th class="col-vol">音量 出/入</th>
             <th class="col-mac">MAC</th>
@@ -47,7 +47,7 @@
                 ×{{ getIpCount(device.ip) }}
               </span>
             </td>
-            <td class="group-cell">{{ device.group || '—' }}</td>
+            <td class="reg-cell" :class="regClass(device.sipRegStatus)">{{ device.sipRegStatus || '查詢中…' }}</td>
             <td class="server-cell">{{ device.regAddr ? `${device.regAddr}:${device.regPort || '5060'}` : (device.server || '—') }}</td>
             <td>{{ device.version || '—' }}</td>
             <td class="vol-cell">{{ device.outVol ?? '—' }} / {{ device.micVol ?? '—' }}</td>
@@ -82,8 +82,8 @@
         <span class="card-value" :class="duplicateIps.length ? 'warning' : ''">{{ duplicateIps.length }}</span>
       </div>
       <div class="card">
-        <span class="card-label">群組數</span>
-        <span class="card-value">{{ groupCount }}</span>
+        <span class="card-label">已註冊</span>
+        <span class="card-value online">{{ registeredCount }}</span>
       </div>
     </div>
   </div>
@@ -103,7 +103,14 @@ defineEmits<{
 
 const onlineCount = computed(() => props.devices.filter(d => d.status === 'ONLINE').length)
 const offlineCount = computed(() => props.devices.filter(d => d.status !== 'ONLINE').length)
-const groupCount = computed(() => new Set(props.devices.map(d => d.group).filter(g => g > 0)).size)
+function isRegistered(s?: string): boolean {
+  return !!s && /成功|註冊|注册|registered|success/i.test(s)
+}
+function regClass(s?: string): string {
+  if (!s) return 'reg-pending'
+  return isRegistered(s) ? 'reg-ok' : 'reg-fail'
+}
+const registeredCount = computed(() => props.devices.filter(d => isRegistered(d.sipRegStatus)).length)
 
 // IP conflict detection
 const ipCountMap = computed(() => {
@@ -150,7 +157,10 @@ tr.duplicate-row:hover { background: rgba(255,82,82,0.1); }
 
 .name-cell { font-weight: 500; }
 .ext-cell { color: #4edea3; font-weight: 600; font-family: 'JetBrains Mono', monospace; }
-.group-cell { text-align: center; color: #8b9dc3; }
+.reg-cell { font-size: 0.8rem; font-weight: 600; }
+.reg-cell.reg-ok { color: #4edea3; }
+.reg-cell.reg-fail { color: #ff5252; }
+.reg-cell.reg-pending { color: #8b9dc3; font-weight: 400; }
 .ip-cell { font-family: 'JetBrains Mono', monospace; }
 .ip-conflict { background: rgba(255,82,82,0.2); color: #ff5252; padding: 1px 6px; border-radius: 8px; font-size: 0.7rem; margin-left: 6px; font-weight: 700; }
 code { background: rgba(78,222,163,0.1); padding: 2px 6px; border-radius: 4px; font-size: 0.8rem; color: #8b9dc3; }

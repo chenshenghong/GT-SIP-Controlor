@@ -62,6 +62,7 @@ export interface DeviceNode {
 
   // --- Runtime (added by CMS, not from DBP) ---
   status: 'ONLINE' | 'DISCONNECTED' | 'RECONNECTING'
+  sipRegStatus?: string  // SIP 註冊狀態 (REST /get/device/status，同網段才有)
 }
 
 /** Per-device Bearer token dictionary, keyed by IP address */

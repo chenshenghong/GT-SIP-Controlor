@@ -242,20 +242,30 @@ const dialNumber = ref('')
 const reachable = ref<boolean | null>(null)
 const loadingConfig = ref(false)
 
+// Device web server times out ~50% of the time → retry each read until it lands
+async function tryGet<T>(fn: () => Promise<T | null>, tries = 4): Promise<T | null> {
+  for (let i = 0; i < tries; i++) {
+    const r = await fn()
+    if (r) return r
+  }
+  return null
+}
+
 onMounted(async () => {
   loadingConfig.value = true
   try {
-    const ok = await loginToDevice(props.device.ip)
+    let ok = false
+    for (let i = 0; i < 4 && !ok; i++) ok = await loginToDevice(props.device.ip)
     reachable.value = ok
     if (!ok) return
 
-    const vol = await getDeviceVolume(props.device.ip)
+    const vol = await tryGet(() => getDeviceVolume(props.device.ip))
     if (vol) {
       audioForm.broadcast_volume = vol.broadcast_volume
       audioForm.microphone_volume = vol.microphone_volume
     }
 
-    const sip = await getSipConfig(props.device.ip)
+    const sip = await tryGet(() => getSipConfig(props.device.ip))
     if (sip?.primary_line) {
       const pl = sip.primary_line
       sipForm.server_address = pl.server_address ?? sipForm.server_address
@@ -274,7 +284,7 @@ onMounted(async () => {
       multicastForm.audio_codec = mc.audio_codec || multicastForm.audio_codec
     }
 
-    const net = await getNetworkConfig(props.device.ip)
+    const net = await tryGet(() => getNetworkConfig(props.device.ip))
     if (net) {
       networkForm.network_mode = net.network_mode
       networkForm.ip_address = net.ip_address
