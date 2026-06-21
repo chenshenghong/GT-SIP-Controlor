@@ -243,7 +243,7 @@ const reachable = ref<boolean | null>(null)
 const loadingConfig = ref(false)
 
 // Device web server times out ~50% of the time → retry each read until it lands
-async function tryGet<T>(fn: () => Promise<T | null>, tries = 4): Promise<T | null> {
+async function tryGet<T>(fn: () => Promise<T | null>, tries = 6): Promise<T | null> {
   for (let i = 0; i < tries; i++) {
     const r = await fn()
     if (r) return r
@@ -253,13 +253,23 @@ async function tryGet<T>(fn: () => Promise<T | null>, tries = 4): Promise<T | nu
 
 onMounted(async () => {
   loadingConfig.value = true
+  // login runs in the background — it's a flaky POST and only needed for SET/control.
+  // All the reads below are auth-free, so they must NOT be gated on login.
+  void (async () => {
+    for (let i = 0; i < 6; i++) if (await loginToDevice(props.device.ip)) break
+  })()
   try {
-    let ok = false
-    for (let i = 0; i < 4 && !ok; i++) ok = await loginToDevice(props.device.ip)
-    reachable.value = ok
-    if (!ok) return
+    // Reachability + network from an auth-free GET (no login needed)
+    const net = await tryGet(() => getNetworkConfig(props.device.ip))
+    reachable.value = !!net
+    if (!net) return
+    networkForm.network_mode = net.network_mode
+    networkForm.ip_address = net.ip_address
+    networkForm.subnet_mask = net.subnet_mask
+    networkForm.gateway = net.gateway
+    networkForm.dns = net.dns
 
-    polling.startPolling() // start status polling first so 狀態監控 fills ASAP
+    polling.startPolling() // start status polling so 狀態監控 fills ASAP
 
     const vol = await tryGet(() => getDeviceVolume(props.device.ip))
     if (vol) {
@@ -284,15 +294,6 @@ onMounted(async () => {
       multicastForm.multicast_port = mc.multicast_port || multicastForm.multicast_port
       multicastForm.enabled = mc.enabled
       multicastForm.audio_codec = mc.audio_codec || multicastForm.audio_codec
-    }
-
-    const net = await tryGet(() => getNetworkConfig(props.device.ip))
-    if (net) {
-      networkForm.network_mode = net.network_mode
-      networkForm.ip_address = net.ip_address
-      networkForm.subnet_mask = net.subnet_mask
-      networkForm.gateway = net.gateway
-      networkForm.dns = net.dns
     }
   } finally {
     loadingConfig.value = false

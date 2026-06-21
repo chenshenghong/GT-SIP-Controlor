@@ -79,7 +79,7 @@
 import { ref } from 'vue'
 import { useDeviceStore } from '@/stores/devices'
 import type { DeviceNode } from '@shared/types'
-import { loginToDevice, getDeviceStatus } from '@/composables/deviceApi'
+import { getDeviceStatus } from '@/composables/deviceApi'
 import AppLayout from '@/components/AppLayout.vue'
 import NetworkRadar from '@/components/NetworkRadar.vue'
 import DeviceTable from '@/components/DeviceTable.vue'
@@ -99,14 +99,14 @@ async function enrichRegStatus(devices: DeviceNode[]) {
   // block reachable devices from filling in (different IPs = independent).
   await Promise.all(devices.map(async (d) => {
     if (!d.ip || !d.mac) return
-    let ok = false
-    for (let i = 0; i < 2 && !ok; i++) ok = await loginToDevice(d.ip)
-    if (!ok) {
+    // /get/device/status needs NO auth — call it directly. (login is a flaky
+    // POST and unnecessary for reads.) null after retries = unreachable.
+    let st: Awaited<ReturnType<typeof getDeviceStatus>> = null
+    for (let i = 0; i < 6 && !st; i++) st = await getDeviceStatus(d.ip)
+    if (!st) {
       deviceStore.patchDevice(d.mac, { sipRegStatus: '連線失敗' })
       return
     }
-    let st: Awaited<ReturnType<typeof getDeviceStatus>> = null
-    for (let i = 0; i < 4 && !st; i++) st = await getDeviceStatus(d.ip)
     const pl = st?.sip_status?.primary_line as Record<string, unknown> | undefined
     const patch: Partial<DeviceNode> = { sipRegStatus: pl?.status ? String(pl.status) : '未知' }
     // account = "30101@192.168.0.155:5060" — the LIVE registered identity, which
