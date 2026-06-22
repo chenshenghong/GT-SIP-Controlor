@@ -2,7 +2,7 @@
 import { ref, computed } from 'vue'
 import type { DeviceNode, DeviceSyncEntry } from '@shared/types'
 import { usePromiseQueue } from '@/composables/usePromiseQueue'
-import { loginToDevice, setDeviceVolume, setSipMulticast } from '@/composables/deviceApi'
+import { loginToDevice, getDeviceVolume, setDeviceVolume, setSipMulticast } from '@/composables/deviceApi'
 import { MAX_CONCURRENT_SYNC } from '@shared/constants'
 
 const props = defineProps<{
@@ -68,10 +68,12 @@ async function startSync() {
       const ok = await loginToDevice(device.ip)
       if (!ok) throw new Error('登入失敗（跨網段或帳密不符）')
 
-      // Push broadcast volume + multicast address via real REST endpoints
+      // Push only the broadcast volume; preserve each device's current mic volume
+      // (firmware requires both fields, so read the current mic and keep it).
+      const cur = await getDeviceVolume(device.ip)
       if (!(await setDeviceVolume(device.ip, {
         broadcast_volume: broadcastVolume.value,
-        microphone_volume: broadcastVolume.value,
+        microphone_volume: cur?.microphone_volume ?? broadcastVolume.value,
       }))) throw new Error('音量設定失敗')
 
       if (!(await setSipMulticast(device.ip, {
