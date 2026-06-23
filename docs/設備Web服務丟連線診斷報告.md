@@ -1,29 +1,24 @@
-# SIP 終端 Web 服務丟連線診斷報告
+# SIP 終端 Web 服務丟連線診斷報告（最終確診版）
 
 > 提交對象：設備/韌體原廠
-> 目的：以分層量測證明「設備 HTTP 請求約 60% 無回應」的根因位於**設備 web server（應用層）**，而非網路或主機端，並提供可重現的量測方法與數據。
-> 量測日期：2026-06-22
+> 結論：設備 80 埠上**同時運行兩個 web server（`lgw_web` + `hbi_web`）**，連線被隨機分配，約一半落到 `hbi_web` 並回 **403 Forbidden**，造成管理軟體「設定偶發失敗、狀態讀取不穩」。
+> 跨設備復現：`192.168.0.147`、`192.168.0.148`（全新設備）皆相同。
+> 更新日期：2026-06-22
 
 ---
 
-## 一、摘要與結論
+## 一、最終結論（確診）
 
-管理軟體（REST over HTTP）對設備發送設定 / 輪詢狀態時，**約 60% 的 HTTP 請求得不到回應（逾時）**，造成「設定偶發失敗」「狀態讀取很慢」。
+對設備發送**完全相同**的 `GET /get/device/volume`，設備會回兩種結果，差別在 HTTP 回應的 **`Server` 標頭**：
 
-以分層量測定位後，結論明確：
+| 設備回應 | Server 標頭 | 佔比 | 說明 |
+|----------|-------------|------|------|
+| **200 OK**（正常，含音量 JSON）| `Server: lgw_web_1.0.1` | ~50% | 正確的 API 服務 |
+| **403 Forbidden** | `Server: hbi_web_1.0.1` | ~50% | 另一個 web 服務，不認識此 API |
 
-> **問題在設備端的單執行緒 web server（`lgw_web`）：它把 kernel 已經接受的 TCP 連線丟棄了約 60%，未在合理時間內回應。網路、網線、交換器、設備 TCP/IP 堆疊均完全正常。**
+> **根因：韌體開機後 `lgw_web` 與 `hbi_web` 兩個 web server 都綁定/監聽了 TCP :80。kernel 把進來的連線輪流分給兩者；分到 `hbi_web` 的就回 403。** 這與網路、TCP、管理端 client、長/短連線、SIP 全部無關。
 
-關鍵證據（同網段、各取樣 50 次）：
-
-| 層級 | 結果 | 判讀 |
-|------|------|------|
-| ① ICMP（網路/實體層） | **50 / 50 回應，0% 丟失**，avg 0.2ms | 網路完全正常 |
-| ② TCP :80 連線（kernel/傳輸層） | **50 / 50 成功**，avg 2ms | 設備 TCP 堆疊完全正常 |
-| ③ HTTP GET（應用層 / web server） | **20 / 50 成功（40%）**，30 次逾時 | **丟包 100% 集中在此層** |
-| 補充 | HTTP 成功時延遲僅 **41–72ms** | 並非「處理慢」，而是「連線收下卻不回應」|
-
-並發更嚴重：6 個並發 HTTP 請求僅 1 個成功（約 17%）。
+**修正方向（韌體）：讓 `hbi_web` 不要監聽 80 埠，:80 只由 `lgw_web` 提供服務。** 一次修好所有設備。
 
 ---
 
@@ -31,123 +26,87 @@
 
 | 項目 | 內容 |
 |------|------|
-| 設備型號 | SIP-Player-2024（DBP 回報 Type 為 UNKOWN，Name=SipTerm）|
-| 韌體版本 | HK-WSDK-1.0.2.G.Sip |
-| Web 伺服器 | `lgw_web/1.0.1`（HTTP 回應 Server 標頭）|
-| 設備 IP / MAC | 192.168.0.147 / 20:23:BB:B2:93:E7 |
-| 測試主機 | Windows，192.168.0.203（與設備**同一交換器、同網段**，無路由跳轉）|
-| 取樣 | 每層 50 次 |
-| 測試端點 | `GET /get/device/volume`（免授權、純讀取檔案，不更動設定）|
+| 設備型號 | SipTerm / SIP-Player-2024，韌體 HK-WSDK-1.0.2.G.Sip |
+| 測試設備 | `192.168.0.147`（MAC 20:23:BB:B2:93:E7）、`192.168.0.148`（全新設備）|
+| 測試主機 | Windows `192.168.0.203`、Linux `192.168.0.155`（皆與設備**同網段、同交換器、直連、無代理**）|
+| 測試端點 | `GET /get/device/volume`（免授權純讀取，不更動設定）|
+| 工具 | `curl`（標準短連線、讀到 EOF 乾淨關閉、不復用 socket）、`tcpdump`（標準抓包）|
 
 ---
 
-## 三、方法：三層分層量測
+## 三、關鍵證據
 
-一個 HTTP 請求必須依序穿過三層，任一層丟包都會表現為「請求失敗」。分層量測可定位丟包**確切發生在哪一層**：
+### 3.1 同一請求 → 兩個 Server（同一台機器、同一埠）
 
 ```
-管理主機  ──①封包(ICMP)──>  ──②TCP三向交握(kernel)──>  ──③HTTP請求(web server)──>  設備
+---- 回應 A (Server: lgw_web) ----        ---- 回應 B (Server: hbi_web) 同一個 GET ----
+> GET /get/device/volume HTTP/1.1          > GET /get/device/volume HTTP/1.1
+< HTTP/1.1 200 OK                          < HTTP/1.1 403 Forbidden
+< Server: lgw_web_1.0.1                     < Server: hbi_web_1.0.1
+< Content-Type: application/json;charset=GBK< Connection: close
+< {"broadcast_volume": 56, ...}
 ```
 
-- **① ICMP**：驗證實體層與網路層（網線、交換器、封包傳輸）是否丟封包。
-- **② TCP :80 連線**：驗證設備 **kernel** 的 TCP/IP 堆疊能否穩定接受連線（SYN/SYN-ACK）。
-- **③ HTTP GET**：驗證設備 **userland 的 web server** 能否在接受連線後，讀取請求並回應。
+### 3.2 跨兩台設備統計（各 30 次相同請求）
 
-若 ①② 接近 100% 而 ③ 明顯偏低 → 丟包必然發生在設備的 HTTP 應用層（web server），可排除網路、TCP、主機端因素。
+```
+設備 192.168.0.147 :  lgw_web/200 = 17/30 (57%) ,  hbi_web/403 = 13/30 (43%)
+設備 192.168.0.148 :  lgw_web/200 = 14/30 (47%) ,  hbi_web/403 = 16/30 (53%)   <- 全新設備同樣有兩個 server
+```
+
+### 3.3 封包證據（標準 tcpdump 抓包）
+
+附 `docs/captures/device_http_two_servers.pcap`（標準 pcap，Wireshark 可直接開）。內含完整交握：
+```
+SYN → SYN-ACK → ACK → GET(94 bytes) → 200 OK(191 bytes) → FIN     （完整三次握手 + 請求 + 回應）
+```
+抓包中所有封包**只在 `.155` 與 `.147` 兩個 IP 之間**（無第三方/代理），且 `Server: lgw_web_1.0.1` 與 `Server: hbi_web_1.0.1` 兩者都出現。
+
+> 註：先前提供的 `.pcapng` 是 Windows `pktmon` 匯出的**非標準格式**（在多個網路層各抓一次、框架不完整，標準工具讀不出），請改用本報告的 tcpdump 標準抓包。
 
 ---
 
-## 四、量測數據（原始輸出）
+## 四、排除過程（第一性原理）
 
-```
-目標設備: 192.168.0.147 | 每層取樣: 50 次
-
-=== Layer 1: ICMP 網路層 ===
-  ping 50/50 回應 (0% 丟失), avg 0.2ms, max 1ms
-
-=== Layer 2: TCP :80 連線（kernel）===
-  TCP connect 50/50 成功, avg 2ms
-
-=== Layer 3: HTTP GET /get/device/volume（web server）===
-  HTTP 逐次 20/50 成功, 30 逾時/失敗
-  成功延遲 min/avg/max = 41/44/72ms
-```
-
-補充量測：
-- 並發 6 個 HTTP 請求 → 僅 1 個成功（其餘逾時）。
-- 寫入端點（如 `POST /set/device/volume`）行為相同：**有回應時 27–250ms 即成功**，但同樣約半數請求無回應。
+| 假設 | 實測 | 結論 |
+|------|------|------|
+| 網路 / 硬體問題 | ICMP **50/50 (100%)** | 排除 |
+| 設備 TCP 堆疊 | TCP :80 連線 **50/50 (100%)** | 排除（kernel 都接受連線）|
+| 回應太慢 | 成功延遲 2–113ms，timeout 拉到 10s 也救不回失敗者 | 排除（不是慢，是另一個 server 回 403）|
+| keep-alive / 長連線 / 復用 socket | 伺服器回 `Connection: close`；curl 短連線、乾淨關閉仍 ~50% | 排除 |
+| 連線間隔太密（2s 關閉窗口）| 間隔 300ms 與 2500ms 皆 ~50% | 排除 |
+| 管理端 client / 作業系統 | **Windows(.203) + Linux(.155)** 兩台、curl，皆 45–60% | 排除 |
+| SIP 搶佔 web | 原廠證實 SIP 與 web 為獨立程序 | 排除 |
+| **設備有兩個 web server 搶 :80** | 200↔`lgw_web`、403↔`hbi_web`，`.147`+`.148` 皆復現 | **確診** |
 
 ---
 
-## 四之二、補充實驗：依原廠建議的「短連線」方式，標準 client 實測仍約 50%
+## 五、給原廠的請求
 
-原廠回覆指出：(1) web server 採**短連線**，「回覆後等 2 秒，若客戶端不關閉就自動關閉」；(2) SIP 程序與網頁程序**相互獨立**、無關聯。據此我方完全依該方式重測：
-
-- 使用**最標準的 HTTP 客戶端 `curl`**（讀到 EOF 才關閉、乾淨 FIN 關閉，非長連線、非復用 socket）。
-- **逐次、單連線、嚴格序列化**（同時間只有一條連線）。
-- 兩種間隔各取樣 20 次（同網段，從 Windows 192.168.0.203）：
-
-```
-curl 短連線、間隔 300ms :  10/20 成功 (50%)
-curl 短連線、間隔 2500ms:   9/20 成功 (45%)   ← 間隔已大於「2 秒自動關閉」窗口
-```
-
-**換一台完全不同的機器、不同作業系統再驗（排除是測試端的問題）**：從 **Linux 主機 192.168.0.155**（與設備同網段）用 curl 連續 25 次，結果 **15/25（60%）**，失敗散佈隨機（`x x x 200 200 200 200 200 x 200 200 x 200 …`）；另一輪 6/15。**兩台獨立 client（Windows + Linux）、不同工具，全部約 45–60%** → 確定與測試端 / 作業系統 / client 實作無關。
-
-延伸量測（單連線、序列化、timeout 拉到 10 秒）：成功 14/25，**成功延遲 min/avg/max = 2/12/113ms，無任何一筆 > 1.5 秒** → 失敗者皆為「完全無回應」，非「慢回應」。
-
-**判讀**：
-- 即使**完全照短連線 + 乾淨關閉**、且間隔大於 2 秒自動關閉窗口、用標準 client，仍約**半數無回應** → **與客戶端是否長連線 / 復用 socket 無關**。
-- 拉長間隔（300ms→2500ms）並未改善 → 也**非** 2 秒關閉窗口的連線重疊問題。
-- 失敗皆為 0 bytes 完全無回應、成功皆 < 113ms → 設備並非「慢」，而是**接受 TCP 連線後，約一半從未被 web server 服務到**。
-
-> 換言之，「在 TCP 工具上手動單發每次都成功」的觀察，極可能是**手動少量取樣的錯覺**（單次成功率約 50–70%，手動點幾次很容易連續成功）。請原廠用本節 curl 方式在你們端**連續 20 次統計成功率**驗證。
-
-## 五、第一性原理分析
-
-1. 若為**網路/硬體問題**（網線、交換器、干擾、設備網卡），ICMP 與 TCP 也會丟包。實測二者 **0% 丟失、50/50 成功** → 排除。
-2. **TCP 三向交握由設備 kernel 處理**，實測 50/50 成功 → 設備網路堆疊正常、能穩定接受連線。
-3. 連線被 kernel 接受後，需由 **userland 的單執行緒 web server**（`lgw_web`）`accept()` → 讀取 HTTP 請求 → 回應。實測此層僅 40% 成功。
-4. **web server 有回應時僅 44ms**（極快）→ 並非處理緩慢，而是大量已被 kernel 接受的連線**從未被 web server 服務到**，直到客戶端逾時。
-5. 原廠已澄清：SIP 與網頁為**獨立程序**、web 採**短連線**（回覆後等 2 秒待客戶端關閉，否則自動關閉）。據此，丟包**非** SIP 搶佔、**非** keep-alive/長連線、**非** 2 秒關閉窗口的重疊（見四之二實測）。最可能機制（待原廠以源碼確認）：web server 的 **`accept()` → 讀請求 → 回應** 處理回路，在連續/有負載存取下**約一半的已接受連線從未被取出服務**（kernel 已完成三向交握並排入 accept queue，但 userland 未及時/未正確 `accept` 並處理），直到客戶端逾時。可能成因：listen backlog 過小、accept 迴圈間歇阻塞、或每連線資源（fd/socket 槽）回收與下一次 accept 之間有競態。
-
-> 我方持有 web 設定處理層 `websetsip.c` 的源碼，但 **accept/listen 的框架層（event/socketbase）不在我方手上，屬原廠程式**，故無法自行定位確切行號，需原廠協助。
+1. **確認韌體為何 `hbi_web` 與 `lgw_web` 都監聽 :80**（`hbi_web` 可能是另一條產品線的 web 服務被一併打包進此韌體）。
+2. **讓 `hbi_web` 不要綁定/監聽 80 埠**（停用該服務、或改埠、或不啟動），:80 僅由 `lgw_web` 提供。
+3. 可用第六節腳本在你們端對任一設備驗證：連續 30 次 `GET /get/device/volume`，看 `Server` 標頭是否出現 `hbi_web`。
+   - 若你們測試的是**閒置裸機**且只起了 `lgw_web`，會看起來「每次都成功」而看不到此問題；請在**與我方相同（兩個服務都啟動）**的狀態下驗證。
 
 ---
 
-## 六、結論與給原廠的請求
+## 六、可重現腳本與抓包檔
 
-**結論：設備韌體的單執行緒 web server（`lgw_web`）會丟棄約 60% 已被 kernel 接受的 TCP 連線，未予回應。此為韌體/軟體缺陷，非網路或硬體問題。**
+| 檔案 | 用途 |
+|------|------|
+| [`docs/scripts/compare-web-servers.ps1`](scripts/compare-web-servers.ps1) | Windows：對多台設備統計 `lgw_web`/`hbi_web` 佔比 |
+| [`docs/scripts/capture-clean-pcap.sh`](scripts/capture-clean-pcap.sh) | Linux：產生 Wireshark 可開的標準 pcap |
+| [`docs/scripts/diag-http-reliability.ps1`](scripts/diag-http-reliability.ps1) | Windows：ICMP/TCP/HTTP 三層可靠性量測 |
+| [`docs/captures/device_http_two_servers.pcap`](captures/device_http_two_servers.pcap) | 標準抓包證物（含 lgw_web/hbi_web 兩種回應）|
 
-請原廠協助：
-
-1. **確認 `lgw_web` 的 accept/listen 迴圈**：是否 listen backlog 過小、是否事件迴圈有阻塞點、是否每請求一連線造成資源/socket 壓力。
-2. **建議改善方向**（擇一/併用）：
-   - 加大 listen backlog；
-   - 支援 HTTP keep-alive，避免每個請求都新建/關閉連線；
-   - 確認 web server 事件迴圈不會被其他工作（如 SIP/IPC）阻塞；
-   - 或改用穩定的 HTTP server 元件。
-3. **可重現性**：原廠可用第七節腳本，在與設備同網段的 Windows 主機上直接復現本報告數據（ICMP/TCP 近 100%、HTTP 約 40%）。
-
-> 在原廠修復前，管理軟體端已做緩解（請求序列化 + 失敗重試 + 短逾時），可達 95%+ 可用率，但因每次無回應需等待逾時，操作延遲存在物理下限（平均約 2 秒/次操作），無法單靠客戶端根治。
-
----
-
-## 七、可重現量測腳本
-
-完整腳本見 [`docs/scripts/diag-http-reliability.ps1`](scripts/diag-http-reliability.ps1)。在**與設備同網段**的 Windows 主機上執行：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File diag-http-reliability.ps1
+最簡單的現場驗證（與設備同網段，cmd 直接貼）：
 ```
-
-（將腳本內 `$ip` 改為待測設備 IP；`/get/device/volume` 為免授權純讀取，不更動設定。）
+for /L %i in (1,1,20) do @curl -s -D - -o NUL --max-time 8 http://192.168.0.147/get/device/volume | findstr /C:"Server:"
+```
+會看到 `Server: lgw_web_1.0.1` 與 `Server: hbi_web_1.0.1` 交替出現。
 
 ---
 
-## 附錄：相關韌體事實（供原廠交叉比對）
+## 附錄：管理端緩解措施（原廠修復前）
 
-- Web 服務監聽 TCP :80（`websetsip.c`：`WEB_SIP_SET_TCP_LISTEN_PORT 80`，可由 `/etc/ifcfg-sip` 的 `WEB_PORT` 覆寫）。
-- 採事件迴圈：`main.c` → `get_main_event_loop()` / `init_sip_web_set_svr()` / `event_loop_run()`。
-- 回應為單行 JSON、`Connection: close`、`charset=GBK`。
-- DBP 發現協定為 UDP 廣播 :58001（與本 HTTP 問題無關，併附以利定位機種）。
+管理軟體已做：請求序列化 + 失敗/403 重試 + 短逾時。靠重試可把有效成功率拉到 95%+，但每次撞到 `hbi_web` 需重試，操作延遲存在物理下限。**根治需原廠讓 :80 只由 `lgw_web` 服務。**
