@@ -14,9 +14,15 @@ import type {
 const gbkDecoder = new TextDecoder('gbk')
 
 /**
- * Per-device-IP request queue. The firmware web server is single-threaded and
- * times out on concurrent / back-to-back requests, so we serialize all requests
- * to the same IP. Different IPs still run in parallel.
+ * Per-device-IP request queue. The firmware web server (lgw_web) uses a single
+ * short-lived connection per request (Connection: close); serializing requests to
+ * the same IP avoids overlapping connections. Different IPs still run in parallel.
+ *
+ * NOTE: the historical ~50% failure rate was NOT a single-thread timeout — it was
+ * a firmware defect where a second web server (hbi_web) also bound :80 and answered
+ * ~half the connections with 403. The factory removed hbi_web from :80 (verified
+ * 2026-06-22: .147/.148 now answer 100% from lgw_web). The serialize + retry below
+ * are kept as cheap insurance.
  */
 const ipQueue = new Map<string, Promise<unknown>>()
 function enqueue<T>(ip: string, task: () => Promise<T>): Promise<T> {
@@ -44,7 +50,7 @@ async function retryOnce<T>(task: () => Promise<T>): Promise<T> {
 export function createDeviceApiClient(deviceIp: string): AxiosInstance {
   const api = axios.create({
     baseURL: `http://${deviceIp}`,
-    timeout: 1500, // measured: device answers in 41-72ms; a longer wait is a dropped request → fail fast & retry
+    timeout: 1500, // lgw_web answers in <120ms; 1.5s leaves wide margin while still failing fast if a device is truly down
     responseType: 'arraybuffer', // take raw bytes; we GBK-decode ourselves
   })
 
@@ -113,7 +119,7 @@ export async function loginToDevice(
 ): Promise<boolean> {
   const authStore = useAuthStore()
   const api = createDeviceApiClient(ip)
-  // login is a POST and the device drops ~half of them — retry a few times
+  // login is a POST; retry a few times as insurance (pre-fix, hbi_web 403'd ~half)
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
       const response = await api.post('/auth/login', { username, password })
@@ -134,9 +140,10 @@ export async function loginToDevice(
 }
 
 /**
- * Retry an idempotent write (POST that sets config) — device drops ~half of POSTs.
- * The firmware ALWAYS returns HTTP 200; a rejected request comes back as
- * { status: "error", ... }, so we must check the JSON status, not just HTTP.
+ * Retry an idempotent write (POST that sets config). The firmware ALWAYS returns
+ * HTTP 200; a rejected request comes back as { status: "error", ... }, so we check
+ * the JSON status, not just HTTP. Retry is insurance — pre-fix, the rogue hbi_web
+ * server answered ~half of all requests with 403.
  */
 async function postRetry(
   api: AxiosInstance, url: string, body: unknown, tries = 4
@@ -344,16 +351,21 @@ export async function getNetworkConfig(ip: string): Promise<NetworkConfig | null
   }
 }
 
-/** 6.2 Set network configuration ⚠️ — static only; device reboots after ~1s */
+/**
+ * 6.2 Set network configuration ⚠️ — device reboots after ~1s on success.
+ *
+ * Firmware (websetsip.c request_set_network_config) accepts network_mode
+ * "static" ONLY; anything else is rejected with {status:"error",
+ * message:"仅支持静态网络设置"}. The device exposes NO DBP SET channel
+ * (UDP 58001 answers discovery only; no TCP DBP port is open), so DHCP simply
+ * cannot be set on this firmware — callers must surface that, not fake success.
+ *
+ * Uses postRetry so the JSON status is actually checked (the firmware always
+ * returns HTTP 200; a rejected write comes back as status:"error").
+ */
 export async function setNetworkConfig(
   ip: string,
   config: NetworkConfig
 ): Promise<boolean> {
-  const api = createDeviceApiClient(ip)
-  try {
-    await api.post('/set/network/config', config)
-    return true
-  } catch {
-    return false
-  }
+  return postRetry(createDeviceApiClient(ip), '/set/network/config', config)
 }
