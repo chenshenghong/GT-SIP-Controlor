@@ -8,7 +8,7 @@ import { IPC_CHANNELS } from '@shared/constants'
 import { scanSubnet, scanMultiSubnet, autoDetectPort, resetDetectedPort, getActivePort } from './scanner'
 import { scanViaTaskServer } from './taskServerClient'
 import { changeDeviceIp } from './ipChanger'
-import { cleanupAllRoutes } from './routeManager'
+import { cleanupAllRoutes, cleanupAllAliases } from './routeManager'
 import type { IpChangeRequest } from '@shared/types'
 
 function createWindow(): BrowserWindow {
@@ -72,6 +72,15 @@ function registerIpcHandlers(mainWindow: BrowserWindow): void {
       const devices = await dbpDiscover(4000, (found) => {
         mainWindow.webContents.send(IPC_CHANNELS.DBP_DISCOVER_PROGRESS, found)
       })
+      // Cross-subnet devices are FOUND via UDP broadcast but aren't reachable
+      // over TCP/REST (their replies don't route back). Add a same-subnet
+      // secondary IP for each non-local subnet so the list can read/control them.
+      try {
+        const { ensureReachableForIps } = await import('./routeManager')
+        await ensureReachableForIps(devices.map((d) => d.ip).filter(Boolean))
+      } catch (e) {
+        console.log('[Alias] ensureReachableForIps failed (need admin?):', e)
+      }
       return { success: true, devices }
     } catch (error) {
       return { success: false, error: String(error) }
@@ -168,6 +177,17 @@ function registerIpcHandlers(mainWindow: BrowserWindow): void {
   })
 }
 
+// ---- GPU / sandbox hardening for headless / elevated Windows Server ----
+// On a GPU-less, elevated (requireAdministrator) Windows Server like the .203
+// test host, Electron's sandboxed GPU child process fails to launch
+// (error_code=18 → fatal "GPU process isn't usable. Goodbye." → 0x80000003 crash
+// on startup, app won't open). Disable HW accel, run GPU in-process (no GPU
+// child), and drop the process sandbox so no child fails to spawn. Verified on
+// .203: with these, the app launches; without them it crashes immediately.
+app.disableHardwareAcceleration()
+app.commandLine.appendSwitch('in-process-gpu')
+app.commandLine.appendSwitch('no-sandbox')
+
 // ---- App Lifecycle ----
 app.whenReady().then(() => {
   electronApp.setAppUserModelId('com.tcfnet.sip-cms')
@@ -193,7 +213,8 @@ app.on('window-all-closed', () => {
   }
 })
 
-// Cleanup temporary routes on app quit
+// Cleanup temporary routes AND secondary IP aliases on app quit
 app.on('will-quit', async () => {
   await cleanupAllRoutes()
+  await cleanupAllAliases()
 })
