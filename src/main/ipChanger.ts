@@ -27,6 +27,7 @@
 // ============================================
 import * as dgram from 'dgram'
 import type { DeviceNode, IpChangeRequest } from '@shared/types'
+import { getBroadcastTargets } from './routeManager'
 
 const DBP_PORT = 58001
 
@@ -126,8 +127,10 @@ export function changeDeviceIp(
     sock.bind(() => {
       try { sock.setBroadcast(true) } catch { /* ignore */ }
       const packet = buildSetPacket(request, cseq)
+      const targets = getBroadcastTargets()
       const blast = () => {
-        if (!settled) sock.send(packet, DBP_PORT, '255.255.255.255', () => { /* ignore */ })
+        if (settled) return
+        for (const t of targets) sock.send(packet, DBP_PORT, t, () => { /* ignore */ })
       }
       console.log(`[DBP SET] Broadcasting → ${targetMac} new IP ${request.newIp} (CSeq ${cseq})`)
       blast()
