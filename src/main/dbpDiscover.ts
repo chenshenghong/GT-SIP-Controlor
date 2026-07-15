@@ -12,6 +12,7 @@
 // ============================================
 import * as dgram from 'dgram'
 import type { DeviceNode } from '@shared/types'
+import { getBroadcastTargets } from './routeManager'
 
 const DBP_PORT = 58001
 const gbk = new TextDecoder('gbk')
@@ -129,8 +130,10 @@ export function dbpDiscover(
       try {
         sock.setBroadcast(true)
       } catch { /* ignore */ }
+      const targets = getBroadcastTargets()
       const blast = () => {
-        if (!settled) sock.send(REQUEST, DBP_PORT, '255.255.255.255', () => { /* ignore */ })
+        if (settled) return
+        for (const t of targets) sock.send(REQUEST, DBP_PORT, t, () => { /* ignore */ })
       }
       // Send a few times — UDP can drop, and devices may be busy
       blast()
