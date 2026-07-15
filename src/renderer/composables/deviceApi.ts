@@ -43,13 +43,25 @@ async function retryOnce<T>(task: () => Promise<T>): Promise<T> {
 }
 
 /**
+ * Per-IP transport protocol, learned on first contact.
+ * New GT-SIP-GW firmware serves REST over HTTPS only (http :80 → 301 to the
+ * https ROOT, dropping the path → device HTML page instead of API JSON). Old
+ * firmware is http-only (no :443 listener). We try https first, fall back to
+ * http on a transport failure, and cache what worked so later calls skip the
+ * dead attempt. A given IP never changes firmware, so the cache is stable.
+ */
+const protocolCache = new Map<string, 'https' | 'http'>()
+
+/**
  * Create an Axios instance bound to a specific device IP.
  * - Auto-injects per-IP Bearer token from Pinia
  * - Decodes GBK responses and repairs the firmware's dirty JSON
  */
 export function createDeviceApiClient(deviceIp: string): AxiosInstance {
   const api = axios.create({
-    baseURL: `http://${deviceIp}`,
+    // baseURL is set per-request by the transport wrapper below (https-first
+    // with http fallback). This default only applies if that wrapper is bypassed.
+    baseURL: `https://${deviceIp}`,
     timeout: 1500, // lgw_web answers in <120ms; 1.5s leaves wide margin while still failing fast if a device is truly down
     responseType: 'arraybuffer', // take raw bytes; we GBK-decode ourselves
   })
@@ -95,13 +107,78 @@ export function createDeviceApiClient(deviceIp: string): AxiosInstance {
     },
   ]
 
-  // ---- Serialize per-IP + retry idempotent GETs (single-threaded firmware) ----
+  // ---- Transport: https-first with http fallback, cached per IP ----
+  // Fallback (trying both protocols) happens ONLY on first contact — once an IP
+  // is cached we use that protocol alone. This avoids timeout stacking and, for
+  // writes, avoids re-sending a non-idempotent POST down the second protocol.
   const originalRequest = api.request.bind(api)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  ;(api as any).request = (config: any) => {
+  const runTransport = async (config: any): Promise<any> => {
+    const cached = protocolCache.get(deviceIp)
+    const order: Array<'https' | 'http'> = cached ? [cached] : ['https', 'http']
+    let lastErr: unknown
+    for (const proto of order) {
+      config.baseURL = `${proto}://${deviceIp}`
+      try {
+        const res = await originalRequest(config)
+        // Only trust (and cache) a response that is genuine API JSON. New
+        // firmware's http→301 redirects to the https ROOT (dropping the path)
+        // and returns the device HTML page as 200 — no throw — which our
+        // transformResponse yields as a STRING. Caching that would permanently
+        // pin the wrong protocol (reads return HTML, writes silently no-op).
+        // Requiring a parsed object rejects it so we fall through to https.
+        if (res && typeof res.data === 'object' && res.data !== null) {
+          protocolCache.set(deviceIp, proto) // genuine API response — remember it
+          return res
+        }
+        // Non-API body over the CACHED protocol means this IP changed firmware
+        // (e.g. an http device swapped for an https one at the same IP). Drop
+        // the stale cache so the next call re-probes both protocols.
+        if (cached === proto) protocolCache.delete(deviceIp)
+        lastErr = new Error(`Non-API response over ${proto}:// (wrong protocol?)`)
+      } catch (err: unknown) {
+        // A 401 means we REACHED the real API (correct protocol) but lack a
+        // token. Cache the protocol and surface the 401 immediately — do NOT
+        // fall back to the other protocol, or the fallback's generic failure
+        // would mask the 401 and the caller's auth-retry would never fire.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        if ((err as any)?.response?.status === 401) {
+          protocolCache.set(deviceIp, proto)
+          throw err
+        }
+        lastErr = err // genuine transport failure — try the other protocol
+      }
+    }
+    throw lastErr
+  }
+
+  // ---- Serialize per-IP + retry idempotent GETs (single-threaded firmware) ----
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ;(api as any).request = async (config: any) => {
     const method = String(config?.method ?? 'get').toLowerCase()
-    const task = () => originalRequest(config)
-    return enqueue(deviceIp, method === 'get' ? () => retryOnce(task) : task)
+    const enqueued = () =>
+      enqueue(deviceIp, method === 'get' ? () => retryOnce(() => runTransport(config)) : () => runTransport(config))
+
+    try {
+      return await enqueued()
+    } catch (err: unknown) {
+      // ---- Transparent auth: new firmware requires a token even for GET reads.
+      // A tokenless request comes back HTTP 401 {error_code:"A003"}, which axios
+      // REJECTS — so we handle it here in the catch, not on a resolved response.
+      // Log in once (default creds) and retry; the request interceptor then
+      // injects the fresh token. Old firmware never 401s, so this is a no-op.
+      // Login enqueues its own request, and we're OUTSIDE the queue task here,
+      // so there's no per-IP self-deadlock.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const e = err as any
+      const isAuthReject =
+        e?.response?.status === 401 || e?.response?.data?.error_code === 'A003'
+      if (isAuthReject && config.url !== '/auth/login' && !config.__authRetried) {
+        config.__authRetried = true
+        if (await loginToDevice(deviceIp)) return enqueued()
+      }
+      throw err
+    }
   }
 
   return api
