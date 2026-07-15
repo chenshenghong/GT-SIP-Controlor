@@ -134,4 +134,53 @@ describe('provisionEngine', () => {
     expect(eng.isPaused()).toBe(true)
     expect(events.length).toBeGreaterThan(0)
   })
+
+  // 回歸（adversarial finding 1）：設備在「跨越 deadline 的那一輪」帶正確 IP 回來，
+  // 認回必須排在逾時 sweep 之前——健康設備不可被誤判 failed，且要完成 SIP 設定。
+  it('逾時窗口認回：改 IP 後恰在 deadline 後帶正確 IP 回來 → done 而非 failed', async () => {
+    const clock = { t: 1_000_000 }
+    const setSip = jest.fn<Promise<boolean>, [string, SipConfig]>(async () => true)
+    let round = 0
+    const deps = makeDeps({ clock, setSipPrimary: setSip,
+      discover: async () => (round++ === 0 ? [dev('FF', '192.168.0.50')] : [dev('FF', '192.168.1.101')]) })
+    const eng = createProvisionEngine(cfg, deps)
+    await eng.runRound() // → waiting_online, deadline = t + 120000
+    clock.t += 121_000    // 已過 deadline
+    await eng.runRound() // FF 帶正確 IP .101 回來：先認回 → 設 SIP → done（不得被逾時誤判）
+    expect(setSip).toHaveBeenCalledTimes(1)
+    expect(eng.getTasks().find((t) => t.mac === 'FF')?.status).toBe('done')
+  })
+
+  // 回歸（adversarial finding 2）：retry 清掉 failed 任務，下一輪沿用原分配重供裝。
+  // 預置登記表讓 GG 已在分配 IP .105（規則3、免改 IP、直接設 SIP）。
+  it('retry：失敗後重試 → 下一輪沿用原分配重跑並完成', async () => {
+    const store: ProvisionRegistryFile = { config: null, records: [
+      { mac: 'GG', assignedIp: '192.168.1.105', assignedExt: 8005, status: 'failed', updatedAt: '' }] }
+    let sipOk = false
+    const setSip = jest.fn<Promise<boolean>, [string, SipConfig]>(async () => sipOk)
+    const deps = makeDeps({ discover: async () => [dev('GG', '192.168.1.105', '')],
+      loadRegistry: async () => store, setSipPrimary: setSip,
+      saveRegistry: async (d) => { store.records = d.records } })
+    const eng = createProvisionEngine(cfg, deps)
+    await eng.runRound() // 規則3 沿用 .105/8005 → 免改IP → SIP 失敗 → failed
+    expect(eng.getTasks().find((t) => t.mac === 'GG')?.status).toBe('failed')
+    sipOk = true          // 修好 SIP server 後
+    eng.retry('GG')       // 手動重試 → 清 failed 任務
+    await eng.runRound() // 下一輪沿用登記表 .105/8005 重跑 → done
+    expect(eng.getTasks().find((t) => t.mac === 'GG')?.status).toBe('done')
+    // 沿用原分機，未重新取號
+    expect(setSip.mock.calls.at(-1)?.[1]).toMatchObject({ user_id: '8005' })
+  })
+
+  // 回歸（adversarial finding 5）：注入的網路 dep 拋例外時，任務轉 failed 而非永久卡住。
+  it('dep 拋例外：configureSip 例外 → failed，不永久卡在 sip_configuring', async () => {
+    const store: ProvisionRegistryFile = { config: null, records: [
+      { mac: 'HH', assignedIp: '192.168.1.105', assignedExt: 8005, status: 'pending', updatedAt: '' }] }
+    const deps = makeDeps({ discover: async () => [dev('HH', '192.168.1.105', '')],
+      loadRegistry: async () => store, saveRegistry: async (d) => { store.records = d.records },
+      getSipConfig: async () => { throw new Error('boom') } })
+    const eng = createProvisionEngine(cfg, deps)
+    await eng.runRound() // 規則3 → 免改IP → configureSip → getSipConfig 拋例外 → failed
+    expect(eng.getTasks().find((t) => t.mac === 'HH')?.status).toBe('failed')
+  })
 })

@@ -46,5 +46,10 @@ export function useAutoProvisioning() {
     store.setRunning(false)
   }
 
-  return { start, stop }
+  /** 手動重試一台失敗設備（沿用原分配，下一輪掃描重跑）。 */
+  function retry(mac: string): void {
+    engine?.retry(mac)
+  }
+
+  return { start, stop, retry }
 }

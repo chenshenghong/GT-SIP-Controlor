@@ -306,5 +306,6 @@ export type ProvisionEvent =
   | { kind: 'task'; task: ProvisionTask }
   | { kind: 'log'; ts: number; message: string }
   | { kind: 'paused'; reason: string }
+  | { kind: 'degraded'; reason: string }
   | { kind: 'pool'; ipUsed: number; ipTotal: number; extUsed: number; extTotal: number }
   | { kind: 'round'; round: number }

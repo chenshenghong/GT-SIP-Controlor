@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { reactive, computed } from 'vue'
-import type { ProvisionConfig } from '@shared/types'
+import { reactive, computed, ref, onMounted, onUnmounted } from 'vue'
+import type { ProvisionConfig, ProvisionTask } from '@shared/types'
 import { useProvisioningStore } from '@/stores/provisioning'
 import { useAutoProvisioning } from '@/composables/useAutoProvisioning'
 
 const store = useProvisioningStore()
-const { start, stop } = useAutoProvisioning()
+const { start, stop, retry } = useAutoProvisioning()
 
 const form = reactive<ProvisionConfig>({
   ipStart: '', ipEnd: '', mask: '255.255.255.0', gateway: '',
@@ -24,7 +24,7 @@ const error = computed<string | null>(() => {
 })
 
 function statusLabel(s: string): string {
-  return { discovered: '已發現', ip_assigning: '改 IP 中', waiting_online: '等待上線',
+  return { discovered: '待重試', ip_assigning: '改 IP 中', waiting_online: '等待上線',
     sip_configuring: '設定 SIP 中', done: '完成', skipped: '已跳過', failed: '失敗' }[s] ?? s
 }
 
@@ -33,8 +33,21 @@ function fmtTime(ts: number): string {
   return d.toLocaleTimeString('zh-TW', { hour12: false })
 }
 
+// 每秒更新的時鐘，讓 waiting_online 倒數即時遞減（deadline 為絕對時間戳）
+const nowTick = ref(Date.now())
+let ticker: ReturnType<typeof setInterval> | null = null
+onMounted(() => { ticker = setInterval(() => { nowTick.value = Date.now() }, 1000) })
+onUnmounted(() => { if (ticker) clearInterval(ticker) })
+
+/** waiting_online 剩餘秒數（下限 0）；無 deadline 回 null。 */
+function countdown(t: ProvisionTask): number | null {
+  if (t.status !== 'waiting_online' || t.deadline === undefined) return null
+  return Math.max(0, Math.ceil((t.deadline - nowTick.value) / 1000))
+}
+
 async function onStart() { if (!error.value) await start({ ...form }) }
 function onStop() { stop() }
+function onRetry(mac: string) { retry(mac) }
 </script>
 
 <template>
@@ -66,21 +79,32 @@ function onStop() { stop() }
       <span v-if="store.paused" class="text-error text-xs font-bold">⚠️ 號碼池用盡，已暫停</span>
     </div>
 
+    <!-- 降級警示：登記表寫入失敗，進度無法保存 -->
+    <div v-if="store.degraded" class="bg-error/20 border border-error/50 text-error text-xs px-4 py-2 rounded-lg font-bold">
+      ⚠️ 進度無法保存（登記表寫入失敗），重開 App 後可能重複供裝，請檢查磁碟空間與權限。
+    </div>
+
     <!-- 任務表 -->
     <div class="bg-surface-container rounded-lg border border-outline-variant/20 overflow-hidden">
       <table class="w-full text-xs">
         <thead class="bg-surface-container-high text-on-surface-variant uppercase tracking-wider">
-          <tr><th class="p-2 text-left">MAC</th><th class="p-2 text-left">狀態</th><th class="p-2 text-left">分配 IP</th><th class="p-2 text-left">分機</th><th class="p-2 text-left">錯誤</th></tr>
+          <tr><th class="p-2 text-left">MAC</th><th class="p-2 text-left">狀態</th><th class="p-2 text-left">分配 IP</th><th class="p-2 text-left">分機</th><th class="p-2 text-left">錯誤</th><th class="p-2 text-left">操作</th></tr>
         </thead>
         <tbody>
           <tr v-for="t in store.tasks" :key="t.mac" class="border-t border-outline-variant/10">
             <td class="p-2 font-mono">{{ t.mac }}</td>
-            <td class="p-2">{{ statusLabel(t.status) }}</td>
+            <td class="p-2">
+              {{ statusLabel(t.status) }}
+              <span v-if="countdown(t) !== null" class="text-on-surface-variant">（{{ countdown(t) }}s）</span>
+            </td>
             <td class="p-2 font-mono">{{ t.assignedIp }}</td>
             <td class="p-2">{{ t.assignedExt }}</td>
             <td class="p-2 text-error">{{ t.error ?? '' }}</td>
+            <td class="p-2">
+              <button v-if="t.status === 'failed'" class="btn-retry" @click="onRetry(t.mac)">重試</button>
+            </td>
           </tr>
-          <tr v-if="store.tasks.length === 0"><td colspan="5" class="p-4 text-center text-on-surface-variant">尚無設備</td></tr>
+          <tr v-if="store.tasks.length === 0"><td colspan="6" class="p-4 text-center text-on-surface-variant">尚無設備</td></tr>
         </tbody>
       </table>
     </div>
@@ -96,4 +120,5 @@ function onStop() { stop() }
 .input { @apply bg-surface border border-outline-variant/30 rounded px-2 py-1 text-on-surface focus:border-primary outline-none; }
 .btn-primary { @apply px-4 py-2 bg-primary/20 text-primary border border-primary/40 rounded uppercase text-xs tracking-wider hover:bg-primary/30 disabled:opacity-40 disabled:cursor-not-allowed; }
 .btn-danger { @apply px-4 py-2 bg-error/20 text-error border border-error/40 rounded uppercase text-xs tracking-wider hover:bg-error/30; }
+.btn-retry { @apply px-2 py-0.5 bg-primary/15 text-primary border border-primary/40 rounded text-[11px] hover:bg-primary/25; }
 </style>

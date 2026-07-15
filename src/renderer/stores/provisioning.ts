@@ -10,6 +10,7 @@ export const useProvisioningStore = defineStore('provisioning', () => {
   const logs = ref<LogLine[]>([])
   const running = ref(false)
   const paused = ref(false)
+  const degraded = ref(false)
   const round = ref(0)
   const pool = ref({ ipUsed: 0, ipTotal: 0, extUsed: 0, extTotal: 0 })
 
@@ -25,12 +26,13 @@ export const useProvisioningStore = defineStore('provisioning', () => {
       logs.value.push({ ts: e.ts, message: e.message })
       if (logs.value.length > 500) logs.value.splice(0, logs.value.length - 500)
     } else if (e.kind === 'paused') paused.value = true
+    else if (e.kind === 'degraded') degraded.value = true
     else if (e.kind === 'pool') pool.value = { ipUsed: e.ipUsed, ipTotal: e.ipTotal, extUsed: e.extUsed, extTotal: e.extTotal }
     else if (e.kind === 'round') round.value = e.round
   }
 
   function setRunning(b: boolean) { running.value = b; if (b) paused.value = false }
-  function reset() { tasks.value = []; logs.value = []; round.value = 0; paused.value = false }
+  function reset() { tasks.value = []; logs.value = []; round.value = 0; paused.value = false; degraded.value = false }
 
-  return { config, tasks, logs, running, paused, round, pool, applyEvent, upsertTask, setRunning, reset }
+  return { config, tasks, logs, running, paused, degraded, round, pool, applyEvent, upsertTask, setRunning, reset }
 })

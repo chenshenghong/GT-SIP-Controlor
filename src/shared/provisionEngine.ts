@@ -67,7 +67,8 @@ export function createProvisionEngine(config: ProvisionConfig, deps: ProvisionDe
     try {
       await deps.saveRegistry(registry)
     } catch (e) {
-      log(`⚠️ 登記表寫入失敗，進入降級模式（進度可能無法保存）：${String(e)}`)
+      deps.emit({ kind: 'degraded', reason: String(e) })
+      log(`⚠️ 登記表寫入失敗，進入降級模式（進度可能無法保存，重開 App 後可能重複供裝）：${String(e)}`)
     }
   }
 
@@ -93,27 +94,33 @@ export function createProvisionEngine(config: ProvisionConfig, deps: ProvisionDe
   }
 
   async function configureSip(mac: string, ip: string, ext: number) {
-    await deps.ensureReachable(ip)
-    const cur = await deps.getSipConfig(ip)
-    const base = cur?.primary_line
-    const merged: SipConfig = {
-      auto_answer: base?.auto_answer ?? DEFAULT_SIP.auto_answer,
-      register_timeout: base?.register_timeout ?? DEFAULT_SIP.register_timeout,
-      transport_protocol: base?.transport_protocol ?? DEFAULT_SIP.transport_protocol,
-      server_address: config.sipServer,
-      server_port: config.sipPort,
-      user_id: String(ext),
-      password: config.sipPassword,
-    }
-    const ok = await deps.setSipPrimary(ip, merged)
-    if (ok) {
-      const t = tasks.get(mac)
-      if (t) { t.status = 'done'; pushTask(t) }
-      await setRecord(mac, { status: 'provisioned', lastError: undefined })
-      log(`✅ ${mac} 供裝完成（IP ${ip}、分機 ${ext}）`)
-    } else {
-      failTask(mac, 'SIP 設定回報失敗')
-      await setRecord(mac, { status: 'failed', lastError: 'SIP 設定回報失敗' })
+    try {
+      await deps.ensureReachable(ip)
+      const cur = await deps.getSipConfig(ip)
+      const base = cur?.primary_line
+      const merged: SipConfig = {
+        auto_answer: base?.auto_answer ?? DEFAULT_SIP.auto_answer,
+        register_timeout: base?.register_timeout ?? DEFAULT_SIP.register_timeout,
+        transport_protocol: base?.transport_protocol ?? DEFAULT_SIP.transport_protocol,
+        server_address: config.sipServer,
+        server_port: config.sipPort,
+        user_id: String(ext),
+        password: config.sipPassword,
+      }
+      const ok = await deps.setSipPrimary(ip, merged)
+      if (ok) {
+        const t = tasks.get(mac)
+        if (t) { t.status = 'done'; pushTask(t) }
+        await setRecord(mac, { status: 'provisioned', lastError: undefined })
+        log(`✅ ${mac} 供裝完成（IP ${ip}、分機 ${ext}）`)
+      } else {
+        failTask(mac, 'SIP 設定回報失敗')
+        await setRecord(mac, { status: 'failed', lastError: 'SIP 設定回報失敗' })
+      }
+    } catch (e) {
+      // 防禦性：任一注入的網路 dep 若拋例外，轉為 failed，避免任務永久卡在 sip_configuring
+      failTask(mac, `SIP 設定例外：${String(e)}`)
+      await setRecord(mac, { status: 'failed', lastError: String(e) })
     }
   }
 
@@ -122,22 +129,28 @@ export function createProvisionEngine(config: ProvisionConfig, deps: ProvisionDe
     pushTask({ mac: d.mac, ip: d.ip, assignedIp: ip, assignedExt: ext, status: 'ip_assigning' })
     return async () => {
       if (stopped) return
-      // 已在分配 IP（重供裝場景）→ 免改 IP，直接設 SIP
-      if (d.ip === ip) {
-        const t = tasks.get(d.mac); if (t) { t.status = 'sip_configuring'; pushTask(t) }
-        await configureSip(d.mac, ip, ext)
-        return
-      }
-      const newName = config.namePrefix + ext
-      log(`→ ${d.mac} 改 IP ${d.ip} → ${ip}（名稱 ${newName}），設備將重開機`)
-      const res = await deps.changeIp({ device: d, newIp: ip, newMask: config.mask, newGateway: config.gateway, autoIp: 0, newName })
-      if (stopped) return
-      if (res.success) {
-        const t = tasks.get(d.mac)
-        if (t) { t.status = 'waiting_online'; t.deadline = deps.now() + ONLINE_TIMEOUT_MS; pushTask(t) }
-      } else {
-        failTask(d.mac, `IP 設定失敗：${res.error ?? '未知'}`)
-        await setRecord(d.mac, { status: 'failed', lastError: res.error })
+      try {
+        // 已在分配 IP（重供裝場景）→ 免改 IP，直接設 SIP
+        if (d.ip === ip) {
+          const t = tasks.get(d.mac); if (t) { t.status = 'sip_configuring'; pushTask(t) }
+          await configureSip(d.mac, ip, ext)
+          return
+        }
+        const newName = config.namePrefix + ext
+        log(`→ ${d.mac} 改 IP ${d.ip} → ${ip}（名稱 ${newName}），設備將重開機`)
+        const res = await deps.changeIp({ device: d, newIp: ip, newMask: config.mask, newGateway: config.gateway, autoIp: 0, newName })
+        if (stopped) return
+        if (res.success) {
+          const t = tasks.get(d.mac)
+          if (t) { t.status = 'waiting_online'; t.deadline = deps.now() + ONLINE_TIMEOUT_MS; pushTask(t) }
+        } else {
+          failTask(d.mac, `IP 設定失敗：${res.error ?? '未知'}`)
+          await setRecord(d.mac, { status: 'failed', lastError: res.error })
+        }
+      } catch (e) {
+        // 防禦性：changeIp 若拋例外，轉為 failed，避免任務永久卡在 ip_assigning
+        failTask(d.mac, `改 IP 例外：${String(e)}`)
+        await setRecord(d.mac, { status: 'failed', lastError: String(e) })
       }
     }
   }
@@ -199,21 +212,25 @@ export function createProvisionEngine(config: ProvisionConfig, deps: ProvisionDe
     round++
     deps.emit({ kind: 'round', round })
     const devices = await deps.discover()
-    const now = deps.now()
 
-    // 1. 逾時檢查：waiting_online 且設備本輪缺席或未認回，超過 deadline → failed
+    // 1. 逐台判定（同步取號避免競態），收集要執行的網路動作。
+    //    waiting_online 的認回也在此發生：帶正確分配 IP 回來的任務會「同步」轉入
+    //    sip_configuring，因此下一步的逾時 sweep 不會再把它們當成未上線。
+    const actions: Array<() => Promise<void>> = []
+    for (const d of devices) {
+      const action = await decide(d, devices)
+      if (action) actions.push(action)
+    }
+
+    // 2. 逾時檢查（**排在認回之後**）：只有本輪認回後「仍」停在 waiting_online
+    //    （設備缺席、或回來但 IP 不等於分配值）且超過 deadline 者才判 failed。
+    //    這修正了「重開機恰好落在 deadline 窗口、已帶正確 IP 回來的健康設備被誤判失敗」。
+    const now = deps.now()
     for (const t of tasks.values()) {
       if (t.status === 'waiting_online' && t.deadline !== undefined && now > t.deadline) {
         failTask(t.mac, '改 IP 後未在時限內上線')
         await setRecord(t.mac, { status: 'failed', lastError: '改 IP 後未在時限內上線' })
       }
-    }
-
-    // 2. 逐台判定（同步取號避免競態），收集要執行的網路動作
-    const actions: Array<() => Promise<void>> = []
-    for (const d of devices) {
-      const action = await decide(d, devices)
-      if (action) actions.push(action)
     }
 
     // 3. 併發閘執行網路動作（上限 5）；等本輪動作全部落定
@@ -251,10 +268,24 @@ export function createProvisionEngine(config: ProvisionConfig, deps: ProvisionDe
     log('⏹ 供裝已停止')
   }
 
+  /**
+   * 手動重試一台失敗的設備：清掉其 failed 任務，讓下一輪掃描由 decide 規則2/3
+   * 依登記表**沿用原分配 IP/分機**重新供裝（不重新取號）。設備需仍能被掃描到。
+   */
+  function retry(mac: string): void {
+    const t = tasks.get(mac)
+    if (!t || t.status !== 'failed') return
+    tasks.delete(mac)
+    log(`🔁 ${mac} 已排入重試，將於下一輪掃描沿用原分配重新供裝`)
+    // 通知 UI 該列進入「待重試」狀態（下一輪認回後會轉 ip_assigning/sip_configuring）
+    deps.emit({ kind: 'task', task: { ...t, status: 'discovered', error: undefined } })
+  }
+
   return {
     runRound,
     start,
     stop,
+    retry,
     getTasks: () => Array.from(tasks.values()).map((t) => ({ ...t })),
     isPaused: () => paused,
   }
