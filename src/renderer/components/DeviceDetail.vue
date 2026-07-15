@@ -58,12 +58,12 @@
       <!-- Audio Tab -->
       <div v-if="activeTab === 'audio'" class="tab-panel">
         <h3>音頻控制</h3>
-        <div class="form-group">
+        <div class="form-group" @input="dirty.audio = true">
           <label>播放音量 (broadcast_volume)</label>
           <input type="range" v-model.number="audioForm.broadcast_volume" min="0" max="100" />
           <span class="vol-value">{{ audioForm.broadcast_volume }}</span>
         </div>
-        <div class="form-group">
+        <div class="form-group" @input="dirty.audio = true">
           <label>麥克風音量 (microphone_volume)</label>
           <input type="range" v-model.number="audioForm.microphone_volume" min="0" max="100" />
           <span class="vol-value">{{ audioForm.microphone_volume }}</span>
@@ -74,7 +74,7 @@
       <!-- SIP Tab -->
       <div v-if="activeTab === 'sip'" class="tab-panel">
         <h3>SIP 設定</h3>
-        <div class="form-grid">
+        <div class="form-grid" @input="dirty.sip = true" @change="dirty.sip = true">
           <div class="form-group">
             <label>SIP Server</label>
             <input v-model="sipForm.server_address" placeholder="192.168.1.11" />
@@ -111,7 +111,7 @@
         <hr class="section-divider" />
 
         <h3>組播接收 (Multicast)</h3>
-        <div class="form-grid">
+        <div class="form-grid" @input="dirty.multicast = true" @change="dirty.multicast = true">
           <div class="form-group">
             <label>Multicast Address</label>
             <input v-model="multicastForm.multicast_address" placeholder="239.168.12.1" />
@@ -153,7 +153,7 @@
       <!-- Network Tab -->
       <div v-if="activeTab === 'network'" class="tab-panel">
         <h3>網路設定</h3>
-        <div class="form-grid">
+        <div class="form-grid" @input="dirty.network = true" @change="dirty.network = true">
           <div class="form-group">
             <label>Network Mode</label>
             <select v-model="networkForm.network_mode">
@@ -236,6 +236,13 @@ const networkForm = reactive({
 })
 const dialNumber = ref('')
 
+// User-edit guard. The device web server is flaky, so the onMounted reads below
+// can resolve SECONDS after the panel opens. Without this, a late read would
+// overwrite whatever the user has already typed/selected — which is exactly why
+// "IP 打了被清掉 / DHCP 選了被改回 Static". Once the user touches a form, we
+// stop letting reads clobber it.
+const dirty = reactive({ network: false, audio: false, sip: false, multicast: false })
+
 // --- Load LIVE config from the device (REST) when the detail opens ---
 // The list values come from DBP discovery (incomplete); the forms below must
 // reflect the device's real current config, which only REST provides.
@@ -263,22 +270,24 @@ onMounted(async () => {
     const net = await tryGet(() => getNetworkConfig(props.device.ip))
     reachable.value = !!net
     if (!net) return
-    networkForm.network_mode = net.network_mode
-    networkForm.ip_address = net.ip_address
-    networkForm.subnet_mask = net.subnet_mask
-    networkForm.gateway = net.gateway
-    networkForm.dns = net.dns
+    if (!dirty.network) {
+      networkForm.network_mode = net.network_mode
+      networkForm.ip_address = net.ip_address
+      networkForm.subnet_mask = net.subnet_mask
+      networkForm.gateway = net.gateway
+      networkForm.dns = net.dns
+    }
 
     polling.startPolling() // start status polling so 狀態監控 fills ASAP
 
     const vol = await tryGet(() => getDeviceVolume(props.device.ip))
-    if (vol) {
+    if (vol && !dirty.audio) {
       audioForm.broadcast_volume = vol.broadcast_volume
       audioForm.microphone_volume = vol.microphone_volume
     }
 
     const sip = await tryGet(() => getSipConfig(props.device.ip))
-    if (sip?.primary_line) {
+    if (sip?.primary_line && !dirty.sip) {
       const pl = sip.primary_line
       sipForm.server_address = pl.server_address ?? sipForm.server_address
       sipForm.server_port = pl.server_port ?? sipForm.server_port
@@ -288,7 +297,7 @@ onMounted(async () => {
       sipForm.register_timeout = pl.register_timeout ?? 3600
       sipForm.transport_protocol = pl.transport_protocol ?? 'UDP'
     }
-    if (sip?.multicast_config) {
+    if (sip?.multicast_config && !dirty.multicast) {
       const mc = sip.multicast_config
       multicastForm.multicast_address = mc.multicast_address || multicastForm.multicast_address
       multicastForm.multicast_port = mc.multicast_port || multicastForm.multicast_port
@@ -327,7 +336,24 @@ async function handleCall(action: 'dial' | 'answer' | 'hangup') {
 
 async function handleSetNetwork() {
   if (!confirm('⚠️ 修改網路設定可能導致設備斷線，確定繼續？')) return
+
+  // The device firmware accepts STATIC only: REST /set/network/config rejects
+  // anything but network_mode "static", and the device exposes no DBP SET
+  // channel (UDP 58001 = discovery only, no TCP DBP port). We still POST it so a
+  // future firmware that supports DHCP would work — but surface the real reason
+  // on rejection instead of pretending or hitting a dead channel.
   const ok = await setNetworkConfig(props.device.ip, networkForm)
+
+  if (networkForm.network_mode === 'dhcp') {
+    if (ok) {
+      alert('✅ 已切換為自動取得 (DHCP)，設備將重啟並向路由器索取新 IP。\n請回設備清單用「設備探測」重新掃描以找出新 IP。')
+      emit('close')
+    } else {
+      alert('❌ 此設備韌體不支援「自動取得 (DHCP)」（REST 僅接受靜態設定，且無 DBP SET 通道）。\n請改用「手動 (Static)」指定一個 IP。')
+    }
+    return
+  }
+
   if (ok && networkForm.ip_address !== props.device.ip) {
     emit('reconnect', networkForm.ip_address)
   } else if (!ok) {
