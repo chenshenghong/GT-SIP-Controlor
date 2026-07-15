@@ -1,0 +1,990 @@
+<!DOCTYPE html>
+<!--
+  GT-SIP-GW — SIP 廣播閘道器 設備內建管理網頁 (Device Embedded Web UI)
+  廠商 Vendor：廣田資訊 Guangtian Information — https://www.guangtian.net.tw
+  ───────────────────────────────────────────────────────────
+  · 產品 GT-SIP-GW；本設備與網頁為「廣田資訊」之產品（Taiwan），非白牌轉售品。
+  · 單檔、零外部相依 (no CDN / no build)，可直接塞進韌體 flash 由設備 :80 提供。
+  · 對應韌體 REST API 19 條 (見 docs/GT-SIP-REST_API.md 與 docs/firmware-reference)。
+  · 安全層級參考 Grandstream 網路設備網頁 (前端能做的部分)；韌體層缺口見 README.md。
+  · 全繁體中文。
+-->
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="application-name" content="GT-SIP-GW">
+<meta name="generator" content="GT-SIP-GW Web UI">
+<meta name="author" content="廣田資訊 Guangtian Information">
+<meta name="vendor" content="Guangtian Information (廣田資訊) / guangtian.net.tw">
+<!-- favicon 內嵌 data URI：單檔零相依，瀏覽器不會再請求 /favicon.ico，韌體無須新增路由 -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%232f81f7'/%3E%3Cpath d='M14 26h8l10-8v28l-10-8h-8z' fill='%23fff'/%3E%3Cpath d='M40 22a14 14 0 0 1 0 20M46 16a22 22 0 0 1 0 32' stroke='%23fff' stroke-width='5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
+<meta name="description" content="GT-SIP-GW SIP broadcast gateway — Guangtian Information 廣田資訊, https://www.guangtian.net.tw">
+<link rel="author" href="https://www.guangtian.net.tw">
+<title>GT-SIP-GW · 設備管理（廣田資訊 Guangtian）</title>
+<style>
+  :root{
+    --bg:#0f141b; --panel:#161d27; --panel-2:#1d2733; --line:#283340;
+    --txt:#e6edf3; --muted:#8b97a7; --brand:#2f81f7; --brand-d:#1f6feb;
+    --ok:#3fb950; --warn:#d29922; --err:#f85149; --chip:#21262d;
+    --radius:8px; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:-apple-system,"Segoe UI","PingFang TC","Microsoft JhengHei",sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--txt);font-family:var(--sans);font-size:14px;line-height:1.5}
+  a{color:var(--brand);text-decoration:none}
+  button{font-family:inherit;cursor:pointer}
+  input,select{font-family:inherit;font-size:14px}
+  .hide{display:none !important}
+
+  /* ── 通用元件 ── */
+  .btn{appearance:none;border:1px solid var(--line);background:var(--panel-2);color:var(--txt);
+       padding:8px 16px;border-radius:var(--radius);font-weight:600;transition:.15s}
+  .btn:hover{border-color:var(--brand)}
+  .btn:disabled{opacity:.5;cursor:not-allowed}
+  .btn.primary{background:var(--brand-d);border-color:var(--brand-d);color:#fff}
+  .btn.primary:hover{background:var(--brand)}
+  .btn.danger{background:transparent;border-color:var(--err);color:var(--err)}
+  .btn.danger:hover{background:rgba(248,81,73,.12)}
+  .btn.sm{padding:5px 11px;font-size:12.5px}
+  .field{margin-bottom:14px}
+  .field label{display:block;color:var(--muted);font-size:12.5px;margin-bottom:6px;font-weight:600}
+  .field .hint{color:var(--muted);font-size:11.5px;margin-top:5px}
+  .input{width:100%;padding:9px 11px;background:var(--bg);border:1px solid var(--line);
+         border-radius:var(--radius);color:var(--txt)}
+  .input:focus{outline:none;border-color:var(--brand)}
+  .input.bad{border-color:var(--err)}
+  .pw-wrap{position:relative}
+  .pw-wrap .eye{position:absolute;right:8px;top:50%;transform:translateY(-50%);
+       background:none;border:none;color:var(--muted);font-size:12px;padding:4px 6px}
+  .row{display:flex;gap:14px;flex-wrap:wrap}
+  .row > .field{flex:1;min-width:180px}
+  .toggle{display:inline-flex;align-items:center;gap:8px;cursor:pointer;user-select:none}
+  .toggle input{width:16px;height:16px;accent-color:var(--brand)}
+  .badge{display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:99px;
+         font-size:12px;font-weight:600;background:var(--chip);color:var(--muted)}
+  .badge.ok{background:rgba(63,185,80,.15);color:var(--ok)}
+  .badge.warn{background:rgba(210,153,34,.15);color:var(--warn)}
+  .badge.err{background:rgba(248,81,73,.15);color:var(--err)}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--muted)}
+  .dot.ok{background:var(--ok)} .dot.err{background:var(--err)} .dot.warn{background:var(--warn)}
+
+  /* ── 登入畫面 ── */
+  #screen-login{min-height:100%;display:flex;align-items:center;justify-content:center;padding:24px}
+  .login-card{width:100%;max-width:380px;background:var(--panel);border:1px solid var(--line);
+       border-radius:14px;padding:30px 28px;box-shadow:0 16px 50px rgba(0,0,0,.45)}
+  .login-card h1{font-size:19px;margin:0 0 2px}
+  .login-card .sub{color:var(--muted);font-size:12.5px;margin-bottom:22px}
+  .login-logo{width:46px;height:46px;border-radius:11px;background:linear-gradient(135deg,var(--brand),#7d4bf0);
+       display:flex;align-items:center;justify-content:center;font-size:22px;margin-bottom:16px}
+  .brand-foot{margin-top:18px;text-align:center;color:var(--muted);font-size:11px;line-height:1.7}
+  .brand-foot a{color:inherit}
+  #brandfoot{position:fixed;left:14px;bottom:11px;z-index:50;font-size:11px;color:var(--muted);
+       opacity:.55;letter-spacing:.2px;pointer-events:none}
+  #brandfoot a{color:inherit;text-decoration:none;pointer-events:auto}
+
+  /* ── 主框架 ── */
+  #screen-app{min-height:100%;display:grid;grid-template-columns:224px 1fr;grid-template-rows:auto 1fr}
+  .topbar{grid-column:1 / -1;display:flex;align-items:center;gap:14px;padding:0 18px;height:54px;
+       background:var(--panel);border-bottom:1px solid var(--line)}
+  .topbar .brand{display:flex;align-items:center;gap:10px;font-weight:700}
+  .topbar .brand .mk{width:26px;height:26px;border-radius:7px;background:linear-gradient(135deg,var(--brand),#7d4bf0);
+       display:flex;align-items:center;justify-content:center;font-size:14px}
+  .topbar .spacer{flex:1}
+  .topbar .who{color:var(--muted);font-size:12.5px}
+  .sidebar{background:var(--panel);border-right:1px solid var(--line);padding:12px 10px}
+  .nav-item{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:var(--radius);
+       color:var(--muted);font-weight:600;cursor:pointer;margin-bottom:2px}
+  .nav-item:hover{background:var(--panel-2);color:var(--txt)}
+  .nav-item.active{background:var(--brand-d);color:#fff}
+  .nav-item .ic{width:18px;text-align:center}
+  .content{padding:22px 26px;overflow:auto}
+  .page-h{display:flex;align-items:center;gap:12px;margin:0 0 4px}
+  .page-h h2{font-size:18px;margin:0}
+  .page-sub{color:var(--muted);font-size:12.5px;margin:0 0 18px}
+
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin-bottom:18px}
+  .card h3{font-size:14px;margin:0 0 14px;display:flex;align-items:center;gap:8px}
+  .card h3 .ln{flex:1;height:1px;background:var(--line)}
+  .grid2{display:grid;grid-template-columns:repeat(2,1fr);gap:12px 22px}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+  @media(max-width:760px){.grid2{grid-template-columns:1fr}.grid3{grid-template-columns:1fr}
+       #screen-app{grid-template-columns:1fr}.sidebar{display:none}}
+  .kv{display:flex;justify-content:space-between;gap:12px;padding:7px 0;border-bottom:1px dashed var(--line)}
+  .kv:last-child{border-bottom:none}
+  .kv .k{color:var(--muted)} .kv .v{font-weight:600;font-family:var(--mono);text-align:right;word-break:break-all}
+  .stat{background:var(--panel-2);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .stat .lbl{color:var(--muted);font-size:12px} .stat .num{font-size:24px;font-weight:700;margin-top:4px}
+  .stat .num small{font-size:13px;color:var(--muted);font-weight:600}
+  .bar{height:6px;background:var(--bg);border-radius:99px;margin-top:8px;overflow:hidden}
+  .bar > i{display:block;height:100%;background:var(--brand);border-radius:99px;transition:.4s}
+
+  /* ── Toast / 遮罩 ── */
+  #toasts{position:fixed;right:18px;bottom:18px;display:flex;flex-direction:column;gap:8px;z-index:60}
+  .toast{background:var(--panel-2);border:1px solid var(--line);border-left:3px solid var(--brand);
+       padding:11px 15px;border-radius:8px;min-width:230px;max-width:340px;box-shadow:0 8px 24px rgba(0,0,0,.4);
+       animation:slidein .2s}
+  .toast.ok{border-left-color:var(--ok)} .toast.err{border-left-color:var(--err)} .toast.warn{border-left-color:var(--warn)}
+  .toast .tt{font-weight:700;margin-bottom:2px} .toast .td{color:var(--muted);font-size:12.5px}
+  @keyframes slidein{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+
+  #overlay{position:fixed;inset:0;background:rgba(8,11,16,.92);z-index:80;display:flex;
+       align-items:center;justify-content:center;flex-direction:column;gap:18px;text-align:center;padding:24px}
+  #overlay .ring{width:74px;height:74px;border:5px solid var(--line);border-top-color:var(--brand);
+       border-radius:50%;animation:spin 1s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  #overlay .ov-t{font-size:18px;font-weight:700} #overlay .ov-d{color:var(--muted);max-width:420px}
+  #overlay .ov-c{font-size:40px;font-weight:800;font-family:var(--mono);color:var(--brand)}
+
+  .modal-back{position:fixed;inset:0;background:rgba(8,11,16,.6);z-index:70;display:flex;
+       align-items:center;justify-content:center;padding:24px}
+  .modal{background:var(--panel);border:1px solid var(--line);border-radius:12px;width:100%;max-width:420px;padding:22px}
+  .modal h3{margin:0 0 6px} .modal p{color:var(--muted);margin:0 0 18px}
+  .modal .acts{display:flex;gap:10px;justify-content:flex-end}
+
+  /* 安全橫幅 */
+  .secbar{display:flex;align-items:center;gap:10px;background:rgba(210,153,34,.1);
+       border:1px solid rgba(210,153,34,.35);color:#e3b341;padding:9px 14px;border-radius:8px;
+       margin-bottom:18px;font-size:12.5px}
+  .secbar .x{margin-left:auto;cursor:pointer;color:var(--muted)}
+
+  /* 密碼強度 */
+  .pwbars{display:flex;gap:5px;margin-top:7px}
+  .pwbars > i{flex:1;height:4px;border-radius:99px;background:var(--line)}
+  .pwbars.s1 > i:nth-child(-n+1){background:var(--err)}
+  .pwbars.s2 > i:nth-child(-n+2){background:var(--warn)}
+  .pwbars.s3 > i:nth-child(-n+3){background:#d8b431}
+  .pwbars.s4 > i{background:var(--ok)}
+</style>
+</head>
+<body>
+
+<!-- ════════════ 登入畫面 ════════════ -->
+<section id="screen-login">
+  <div class="login-card">
+    <div class="login-logo">📡</div>
+    <h1>GT-SIP-GW</h1>
+    <div class="sub">廣田資訊 · SIP 廣播閘道器　設備管理介面</div>
+
+    <form id="form-login" autocomplete="off">
+      <div class="field">
+        <label>帳號</label>
+        <input class="input" id="li-user" value="admin" autocomplete="username" spellcheck="false">
+      </div>
+      <div class="field">
+        <label>密碼</label>
+        <div class="pw-wrap">
+          <input class="input" id="li-pass" type="password" autocomplete="current-password">
+          <button type="button" class="eye" data-eye="li-pass">顯示</button>
+        </div>
+      </div>
+      <div id="li-msg" class="hint" style="color:var(--err);min-height:16px"></div>
+      <button class="btn primary" id="li-submit" style="width:100%;margin-top:6px">登入</button>
+    </form>
+
+    <details style="margin-top:18px">
+      <summary style="color:var(--muted);font-size:12px;cursor:pointer">進階 · 設備位址</summary>
+      <div class="field" style="margin-top:10px">
+        <input class="input" id="li-host" placeholder="留空＝本機 (同源)，或填 http://192.168.1.200">
+        <div class="hint">由設備自身提供網頁時請留空。從電腦/CMS 測試時可指定設備 IP。</div>
+      </div>
+    </details>
+
+    <div class="hint" id="li-http-warn" style="margin-top:16px;color:var(--warn)"></div>
+    <div class="brand-foot">廣田資訊 Guangtian Information<br>
+      <a href="https://www.guangtian.net.tw" target="_blank" rel="noopener noreferrer">www.guangtian.net.tw</a></div>
+  </div>
+</section>
+
+<!-- ════════════ 主應用 ════════════ -->
+<section id="screen-app" class="hide">
+  <header class="topbar">
+    <div class="brand"><span class="mk">📡</span><span>GT-SIP-GW</span><span style="color:var(--muted);font-weight:600;font-size:12px">廣田資訊</span></div>
+    <span class="badge" id="tb-conn"><span class="dot"></span><span>連線中…</span></span>
+    <div class="spacer"></div>
+    <span class="who" id="tb-who"></span>
+    <button class="btn sm" id="tb-pw">修改密碼</button>
+    <button class="btn sm danger" id="tb-logout">登出</button>
+  </header>
+
+  <aside class="sidebar">
+    <div class="nav-item active" data-view="dashboard"><span class="ic">📊</span>儀表板</div>
+    <div class="nav-item" data-view="sip"><span class="ic">☎️</span>SIP / 組播</div>
+    <div class="nav-item" data-view="audio"><span class="ic">🔊</span>音量 / 通話</div>
+    <div class="nav-item" data-view="network"><span class="ic">🌐</span>網路設定</div>
+    <div class="nav-item" data-view="system"><span class="ic">⚙️</span>系統維護</div>
+  </aside>
+
+  <main class="content" id="content"><!-- 動態 --></main>
+</section>
+
+<div id="toasts"></div>
+<div id="brandfoot">GT-SIP-GW · 廣田資訊 <a href="https://www.guangtian.net.tw" target="_blank" rel="noopener noreferrer">www.guangtian.net.tw</a></div>
+
+<script>
+"use strict";
+/* ══════════════════════════════════════════════════════════════════
+   0. 設定常數 (安全策略集中於此，方便依現場調整)
+   ══════════════════════════════════════════════════════════════════ */
+const CFG = {
+  DEFAULT_USER:      "admin",
+  DEFAULT_PASSWORD:  "123456",      // 偵測到此密碼 → 強制修改 (Grandstream 行為)
+  IDLE_LOGOUT_MS:    5 * 60 * 1000, // 閒置自動登出
+  TOKEN_LIFETIME_S:  3600,          // 韌體 token 有效期
+  MAX_LOGIN_TRIES:   5,             // 前端登入鎖定門檻 (韌體未實作 A005)
+  LOCKOUT_MS:        5 * 60 * 1000, // 鎖定時間
+  POLL_MS:           4000,          // 儀表板輪詢 (設備單執行緒，勿過密)
+  REQ_TIMEOUT_MS:    8000,
+  REQ_RETRY:         1,
+  REBOOT_COUNTDOWN:  45,            // 重啟倒數秒
+  PW_MIN_LEN:        8,             // 前端密碼強度政策 (韌體未強制)
+};
+
+/* ══════════════════════════════════════════════════════════════════
+   1. API 層
+      · 同源相對路徑 (由設備提供時)；可用「進階」覆寫 base。
+      · GBK 解碼 + 髒資料(控制字元)清洗 → JSON.parse
+      · 單一 in-flight 佇列 (設備單執行緒) + timeout + 重試
+      · 自動帶 Authorization；A002/A003 → 踢回登入
+   ══════════════════════════════════════════════════════════════════ */
+const Session = {
+  token: null, user: null, base: "",
+  loginPassWasDefault: false,
+  save(){ try{ sessionStorage.setItem("sip_sess", JSON.stringify(
+            {token:this.token,user:this.user,base:this.base,pwd:this.loginPassWasDefault})); }catch(e){} },
+  load(){ try{ const s=JSON.parse(sessionStorage.getItem("sip_sess")||"null");
+            if(s){this.token=s.token;this.user=s.user;this.base=s.base||"";
+                  this.loginPassWasDefault=!!s.pwd;} }catch(e){} },
+  clear(){ this.token=null;this.user=null;this.loginPassWasDefault=false;
+            try{ sessionStorage.removeItem("sip_sess"); }catch(e){} },
+};
+
+const gbk = (typeof TextDecoder!=="undefined") ? new TextDecoder("gbk") : null;
+let _chain = Promise.resolve();        // 序列化佇列
+
+// 韌體 bug 暫時修補 (需求單 FW-01)：/get/device/status 的 broadcast_volume 鍵被韌體輸出成
+//   少了收尾引號與冒號的無效 JSON (websetsip.c 第 572 行格式字串錯字)；下方 cleanDirtyJSON 的
+//   .replace 會還原成合法鍵，對已修正韌體不會誤命中，工廠修好出貨後可移除。
+function cleanDirtyJSON(text){
+  // 韌體 Response 結尾常夾帶非法控制字元 (含 token 尾端的 \n)；移除後才能 parse
+  let t = text.replace(/[\u0000-\u001F\u007F-\u009F]/g, "").replace(/"broadcast_volume:(\s)/g, '"broadcast_volume":$1');
+  // 韌體 bug 暫時修補 (需求單 FW-02)：/get/device/status 少了 root 物件收尾 } (韌體格式字串
+  //   結尾 }} 應為 }}})。僅針對該端點簽章 (起首 "sip_status") 補一個 }，對已修韌體不誤動。
+  t = t.trim();
+  if (/^\{\s*"sip_status"/.test(t) && /\}\}$/.test(t) && !/\}\}\}$/.test(t)) t += "}";
+  return t;
+}
+
+async function rawRequest(method, path, body, tok, base){
+  // tok/base 由 api() 在排隊當下快照傳入；未傳則取現值 (login 直接呼叫時)
+  if(tok===undefined) tok = Session.token;
+  if(base===undefined) base = Session.base;
+  const url = (base||"") + path;
+  const ctrl = new AbortController();
+  const tid = setTimeout(()=>ctrl.abort(), CFG.REQ_TIMEOUT_MS);
+  const headers = { "Accept":"application/json" };
+  if(body!==undefined) headers["Content-Type"] = "application/json";
+  if(tok && path!=="/auth/login") headers["Authorization"] = "Bearer "+tok;
+  let res;
+  try{
+    res = await fetch(url, { method, headers,
+            body: body!==undefined ? JSON.stringify(body) : undefined,
+            signal: ctrl.signal, cache:"no-store" });
+  } finally { clearTimeout(tid); }
+  const buf = await res.arrayBuffer();
+  let text = gbk ? gbk.decode(buf) : new TextDecoder().decode(buf);  // 韌體 charset=GBK
+  text = cleanDirtyJSON(text);
+  let data;
+  try{ data = text ? JSON.parse(text) : {}; }
+  catch(e){ throw new ApiError("RESP_PARSE", "設備回應格式異常", text.slice(0,120)); }
+  // 韌體 bug 修補 (需求單 FW-02b)：/get/device/status 因少了 sip_status 收尾 }，device_info /
+  //   network_info 被誤巢進 sip_status（cleanDirtyJSON 補的 } 只讓它可解析、未解套）。解析後若
+  //   root 缺而 sip_status 內有，hoist 回 root（paintDashboard 讀 st.device_info / st.network_info）。
+  //   對已修韌體（兩者已在 root）條件不成立、不誤動。真機 .147 實測確認生效。
+  if (data && typeof data === "object" && data.sip_status && typeof data.sip_status === "object") {
+    for (const k of ["device_info", "network_info"]) {
+      if (data[k] === undefined && data.sip_status[k] !== undefined) {
+        data[k] = data.sip_status[k];
+        delete data.sip_status[k];
+      }
+    }
+  }
+  return data;
+}
+
+class ApiError extends Error{
+  constructor(code,msg,detail){ super(msg||code); this.code=code; this.detail=detail||""; }
+}
+
+function api(method, path, body){
+  // 串接到佇列：同一時間只送一個請求給設備
+  const tok = Session.token, base = Session.base;          // 排隊當下快照 token/base（避免執行時已被登出清除 → #1）
+  const maxAttempts = (method==="GET") ? CFG.REQ_RETRY : 0; // 只重試冪等 GET；POST timeout 不重送（避免重複撥號/改網路 → #6）
+  const run = async ()=>{
+    let lastErr;
+    for(let attempt=0; attempt<=maxAttempts; attempt++){
+      try{
+        const data = await rawRequest(method, path, body, tok, base);
+        if(data && data.status==="error"){
+          const code = data.error_code || "ERR";
+          if(code==="A002" || code==="A003"){          // token 過期/無效
+            handleAuthExpired(); throw new ApiError(code, data.details||"登入逾時，請重新登入");
+          }
+          throw new ApiError(code, data.message||"操作失敗", data.details);
+        }
+        return data;
+      }catch(e){
+        lastErr = e;
+        if(e instanceof ApiError && e.code!=="RESP_PARSE") break;   // 業務錯誤不重試
+        if(e.name==="AbortError") lastErr = new ApiError("TIMEOUT","設備回應逾時");
+      }
+    }
+    throw lastErr;
+  };
+  _chain = _chain.then(run, run);   // 不論前一個成敗都繼續排隊
+  return _chain;
+}
+const GET  = (p)=>api("GET", p);
+const POST = (p,b)=>api("POST", p, b===undefined?{}:b);
+
+/* ══════════════════════════════════════════════════════════════════
+   2. 安全：閒置登出、登入鎖定、認證過期
+   ══════════════════════════════════════════════════════════════════ */
+let idleTimer=null;
+function resetIdle(){
+  if(!Session.token) return;
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(()=>{ toast("warn","已自動登出","閒置逾時，基於安全已結束工作階段"); doLogout(false); },
+                         CFG.IDLE_LOGOUT_MS);
+}
+["click","keydown","mousemove","touchstart"].forEach(ev=>
+  document.addEventListener(ev, ()=>resetIdle(), {passive:true}));
+
+function handleAuthExpired(){
+  if(!Session.token) return;
+  Session.clear(); stopPolling();
+  toast("err","工作階段已失效","Token 已過期或被其他登入取代，請重新登入");
+  showLogin();
+}
+
+const Lockout = {
+  get(){ try{ return JSON.parse(localStorage.getItem("sip_lock")||"{}"); }catch(e){ return {}; } },
+  set(o){ try{ localStorage.setItem("sip_lock", JSON.stringify(o)); }catch(e){} },
+  fails(){ return this.get().fails||0; },
+  remainMs(){ const o=this.get(); if(!o.until) return 0; return Math.max(0, o.until - Date.now()); },
+  bump(){ const o=this.get(); o.fails=(o.fails||0)+1;
+          if(o.fails>=CFG.MAX_LOGIN_TRIES){ o.until=Date.now()+CFG.LOCKOUT_MS; o.fails=0; }
+          this.set(o); },
+  reset(){ this.set({}); },
+};
+
+/* ══════════════════════════════════════════════════════════════════
+   3. 工具
+   ══════════════════════════════════════════════════════════════════ */
+const $  = (s,r=document)=>r.querySelector(s);
+const $$ = (s,r=document)=>[...r.querySelectorAll(s)];
+const esc = (s)=>String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+function toast(type, title, desc=""){
+  const el=document.createElement("div");
+  el.className="toast "+(type||"");
+  el.innerHTML=`<div class="tt">${esc(title)}</div>${desc?`<div class="td">${esc(desc)}</div>`:""}`;
+  $("#toasts").appendChild(el);
+  setTimeout(()=>{ el.style.opacity="0"; el.style.transform="translateY(8px)";
+                   setTimeout(()=>el.remove(),200); }, type==="err"?5200:3200);
+}
+function setConn(state,label){
+  const b=$("#tb-conn"); if(!b) return;
+  b.className="badge "+(state==="ok"?"ok":state==="err"?"err":"warn");
+  b.innerHTML=`<span class="dot ${state==="ok"?"ok":state==="err"?"err":"warn"}"></span><span>${esc(label)}</span>`;
+}
+function pwStrength(pw){
+  let s=0; if(pw.length>=CFG.PW_MIN_LEN) s++;
+  if(/[a-z]/.test(pw)&&/[A-Z]/.test(pw)) s++;
+  if(/\d/.test(pw)) s++;
+  if(/[^A-Za-z0-9]/.test(pw)) s++;
+  if(pw.length>=12) s=Math.min(4,s+1);
+  return Math.min(4,s);
+}
+function pwPolicyError(pw, user){
+  if(pw.length<CFG.PW_MIN_LEN) return `密碼至少 ${CFG.PW_MIN_LEN} 個字元`;
+  if(pw===CFG.DEFAULT_PASSWORD) return "不可使用預設密碼";
+  if(user && pw===user) return "密碼不可與帳號相同";
+  if(!/[A-Za-z]/.test(pw)||!/\d/.test(pw)) return "需同時包含英文字母與數字";
+  return null;
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   4. 登入流程
+   ══════════════════════════════════════════════════════════════════ */
+function showLogin(){
+  stopPolling();
+  $("#screen-app").classList.add("hide");
+  $("#screen-login").classList.remove("hide");
+  $("#li-pass").value=""; $("#li-msg").textContent="";
+  if(location.protocol==="http:"){
+    $("#li-http-warn").textContent="⚠ 目前以 HTTP 明文連線，帳密與設定皆未加密傳輸，請僅於可信任的內部網路使用。";
+  }
+  refreshLockoutUI();
+}
+function refreshLockoutUI(){
+  const rem=Lockout.remainMs();
+  const btn=$("#li-submit"), msg=$("#li-msg");
+  if(rem>0){
+    btn.disabled=true;
+    const upd=()=>{ const r=Lockout.remainMs();
+      if(r<=0){ btn.disabled=false; msg.textContent=""; return; }
+      btn.disabled=true;  // 鎖定期間維持禁用，避免被 submit 的 finally 重新啟用 (#11)
+      msg.textContent=`登入失敗次數過多，請於 ${Math.ceil(r/1000)} 秒後再試`;
+      setTimeout(upd,1000); };
+    upd();
+  } else btn.disabled=false;
+}
+
+$("#form-login").addEventListener("submit", async (e)=>{
+  e.preventDefault();
+  if(Lockout.remainMs()>0) return;
+  const user=$("#li-user").value.trim();
+  const pass=$("#li-pass").value;
+  let host=$("#li-host").value.trim().replace(/\/+$/,"");
+  if(host && !/^https?:\/\//i.test(host)) host="http://"+host;   // 容許只填 IP，自動補 http://
+  Session.base = host;
+  const btn=$("#li-submit"), msg=$("#li-msg"); msg.textContent="";
+  if(!user||!pass){ msg.textContent="請輸入帳號與密碼"; return; }
+  btn.disabled=true; btn.textContent="登入中…";
+  try{
+    const r = await rawRequest("POST","/auth/login",{username:user,password:pass});
+    if(r.status!=="success" || !r.data || !r.data.token){
+      throw new ApiError(r.error_code||"A001", r.details||r.message||"帳號或密碼錯誤");
+    }
+    Lockout.reset();
+    Session.token = r.data.token;
+    Session.user  = (r.data.user_info&&r.data.user_info.username) || user;
+    Session.loginPassWasDefault = (pass===CFG.DEFAULT_PASSWORD);
+    Session.save();
+    enterApp();
+  }catch(err){
+    // 只有「帳密錯誤(A0xx)」才計入鎖定；連線/CORS/逾時不該消耗登入次數
+    const authFail = err instanceof ApiError && /^A0/.test(err.code||"");
+    if(authFail){
+      Lockout.bump();
+      const left = CFG.MAX_LOGIN_TRIES - Lockout.fails();
+      msg.textContent = (err.detail||err.message||"帳號或密碼錯誤") +
+          (Lockout.remainMs()>0 ? "" : `（剩餘 ${left} 次）`);
+    }else{
+      msg.textContent = "無法連線到設備：請確認位址含 http://、設備已開機，且本頁由設備自身或代理提供（跨來源會被 CORS 擋）";
+    }
+    refreshLockoutUI();
+  }finally{ btn.textContent="登入"; btn.disabled = Lockout.remainMs()>0; }
+});
+
+function doLogout(callApi=true){
+  if(callApi && Session.token){ POST("/auth/logout").catch(()=>{}); }
+  Session.clear(); stopPolling(); clearTimeout(idleTimer);
+  showLogin();
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   5. 進入應用 / 路由
+   ══════════════════════════════════════════════════════════════════ */
+function enterApp(){
+  $("#screen-login").classList.add("hide");
+  $("#screen-app").classList.remove("hide");
+  $("#tb-who").textContent = `${Session.user}（管理員）`;
+  resetIdle();
+  // Grandstream 行為：仍在使用預設密碼 → 強制修改後才放行
+  if(Session.loginPassWasDefault){
+    toast("warn","偵測到預設密碼","為了安全，請先設定新的管理密碼");
+    renderChangePassword(true);
+  }else{
+    navigate("dashboard");
+  }
+}
+
+$$(".nav-item").forEach(n=>n.addEventListener("click",()=>navigate(n.dataset.view)));
+$("#tb-logout").addEventListener("click",()=>confirmModal(
+   "登出","確定要登出設備管理介面嗎？",()=>doLogout(true)));
+$("#tb-pw").addEventListener("click",()=>renderChangePassword(false));
+$$("[data-eye]").forEach(b=>b.addEventListener("click",()=>{
+  const i=$("#"+b.dataset.eye); const sh=i.type==="password";
+  i.type=sh?"text":"password"; b.textContent=sh?"隱藏":"顯示";
+}));
+
+let currentView=null;
+function navigate(view){
+  currentView=view;
+  $$(".nav-item").forEach(n=>n.classList.toggle("active",n.dataset.view===view));
+  stopPolling();
+  const c=$("#content");
+  ({dashboard:renderDashboard, sip:renderSip, audio:renderAudio,
+    network:renderNetwork, system:renderSystem}[view]||renderDashboard)(c);
+}
+
+function securityBanner(){
+  const issues=[];
+  if(location.protocol==="http:") issues.push("連線未加密 (HTTP)");
+  if(Session.loginPassWasDefault) issues.push("使用中為預設密碼");
+  if(!issues.length) return "";
+  return `<div class="secbar"><span>⚠</span><span>安全提醒：${issues.map(esc).join("、")}。建議修改密碼${
+     location.protocol==="http:"?"，並於韌體啟用 HTTPS":""}。</span>
+     <span class="x" onclick="this.parentNode.remove()">✕</span></div>`;
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   6. 視圖：儀表板 (含輪詢)
+   ══════════════════════════════════════════════════════════════════ */
+let pollTimer=null, polling=false;
+function stopPolling(){ polling=false; clearTimeout(pollTimer); }
+
+function renderDashboard(c){
+  c.innerHTML = securityBanner() + `
+    <div class="page-h"><h2>儀表板</h2></div>
+    <p class="page-sub">設備即時狀態 · 每 ${CFG.POLL_MS/1000} 秒自動更新</p>
+    <div class="grid3" id="dash-stats"></div>
+    <div class="grid2">
+      <div class="card"><h3>SIP / 組播<span class="ln"></span></h3><div id="dash-sip">載入中…</div></div>
+      <div class="card"><h3>設備資訊<span class="ln"></span></h3><div id="dash-dev">載入中…</div></div>
+      <div class="card"><h3>網路<span class="ln"></span></h3><div id="dash-net">載入中…</div></div>
+      <div class="card"><h3>通話狀態<span class="ln"></span></h3><div id="dash-call">載入中…</div></div>
+    </div>`;
+  polling=true; pollTick(true);
+}
+
+async function pollTick(first){
+  if(!polling || currentView!=="dashboard") return;
+  try{
+    // 僅輪詢輕量端點；/system/info 是慢端點 (popen top/df)，只放系統頁按需取
+    const st = await GET("/get/device/status");
+    let call=null; try{ call=await GET("/get/call/status"); }catch(e){}
+    if(!polling || currentView!=="dashboard") return;
+    paintDashboard(st, call);
+    setConn("ok","已連線");
+  }catch(e){
+    setConn("err","連線異常");
+    if(first) $("#dash-sip") && ($("#dash-sip").textContent="無法取得狀態："+(e.message||e.code));
+  }finally{
+    if(polling && currentView==="dashboard") pollTimer=setTimeout(()=>pollTick(false), CFG.POLL_MS);
+  }
+}
+
+function paintDashboard(st, call){
+  const sip=st.sip_status||{}, dev=st.device_info||{}, net=st.network_info||{};
+  const mc=sip.multicast_status||{}, pl=sip.primary_line||{},
+        mtx=sip.multicast_tx_status||{};   // 組播發送狀態 (需求單 MTX-03)：韌體未支援時顯示 —
+  const stats=$("#dash-stats");
+  if(stats){
+    stats.innerHTML = [
+      statCard("運行時間", dev.uptime||"—",""),
+      statCard("廣播音量", (dev.broadcast_volume??"—"), ""),
+      statCard("麥克風音量", (dev.microphone_volume??"—"), ""),
+    ].join("");
+  }
+  $("#dash-sip").innerHTML =
+     kv("主線路", statusDot(pl.status), pl.status||"—") +
+     kv("帳號", "", pl.account||"—") +
+     kv("組播接收", statusDot(mc.status), (mc.status||"—")) +
+     kv("接收位址","", mc.address||"—") +
+     kv("音質","", mc.audio_quality||"—") +
+     kv("組播發送", statusDot(mtx.status), (mtx.status||"—")) +
+     kv("發送位址","", mtx.address||"—");
+  $("#dash-dev").innerHTML =
+     kv("廠牌","","廣田資訊 Guangtian") +
+     kv("型號","","GT-SIP-GW") +
+     kv("硬體版本","",dev.hardware_version) +
+     kv("軟體版本","",dev.software_version) +
+     kv("廣播音量","",dev.broadcast_volume) + kv("麥克風音量","",dev.microphone_volume);
+  $("#dash-net").innerHTML =
+     kv("取得方式","",net.ip_allocation) + kv("IP 位址","",net.ip_address) +
+     kv("子網路遮罩","",net.subnet_mask) + kv("閘道","",net.gateway) +
+     kv("DNS","",net.dns) + kv("MAC","",net.mac_address);
+  if(call){
+    const map={idle:"閒置",dialing:"撥號中",ringing:"響鈴中",talking:"通話中",incoming:"來電中"};
+    $("#dash-call").innerHTML =
+       kv("狀態","",map[call.call_status]||call.call_status||"—") +
+       kv("線路","",call.current_line||"—") +
+       kv("對端號碼","",call.remote_number||"—") +
+       kv("通話時長","",(call.call_duration||0)+" 秒");
+  }else $("#dash-call").innerHTML='<div class="hint">通話狀態暫時無法取得</div>';
+}
+function statCard(lbl,num,unit){ return `<div class="stat"><div class="lbl">${esc(lbl)}</div>
+   <div class="num">${esc(num)}${unit?`<small> ${esc(unit)}</small>`:""}</div></div>`; }
+function gaugeCard(lbl,val,unit){ const p=Math.max(0,Math.min(100,val||0));
+  return `<div class="stat"><div class="lbl">${esc(lbl)}</div>
+   <div class="num">${esc(val)}<small> ${esc(unit)}</small></div>
+   <div class="bar"><i style="width:${p}%"></i></div></div>`; }
+function kv(k,dot,v){ return `<div class="kv"><span class="k">${esc(k)}</span>
+   <span class="v">${dot||""} ${esc(v==null||v===""?"—":v)}</span></div>`; }
+function statusDot(s){ s=String(s||""); const ok=/成功|接收|良好|正常|发送中|發送中|talking|idle/.test(s);
+   const err=/失敗|斷|無|錯誤|error/.test(s); return `<span class="dot ${ok?"ok":err?"err":"warn"}"></span>`; }
+
+/* ══════════════════════════════════════════════════════════════════
+   7. 視圖：SIP / 組播
+   ══════════════════════════════════════════════════════════════════ */
+async function renderSip(c){
+  c.innerHTML = `<div class="page-h"><h2>SIP / 組播</h2></div>
+    <p class="page-sub">主線路註冊、組播收發、SIP 參數與音頻編碼</p><div id="sip-body">載入設定中…</div>`;
+  let cfg;
+  try{ cfg = await GET("/get/sip/config"); }
+  catch(e){ const b=$("#sip-body"); if(b) b.innerHTML=errBox("讀取 SIP 設定失敗",e); return; }
+  const body=$("#sip-body"); if(!body) return;   // 切頁/登出後 DOM 已不存在 (#5)
+  const pl=cfg.primary_line||{}, mc=cfg.multicast_config||{}, sp=cfg.sip_parameters||{}, cd=cfg.audio_codecs||{},
+        mt=cfg.multicast_tx_config||{};   // 組播發送 (需求單 MTX)：韌體未支援時為空物件、卡片仍可顯示
+  body.innerHTML = `
+   <div class="card"><h3>主 SIP 線路<span class="ln"></span></h3>
+     <div class="grid2">
+       ${inp("sp-server","伺服器位址",pl.server_address)}
+       ${inp("sp-port","伺服器埠",pl.server_port,"number")}
+       ${inp("sp-uid","帳號 (User ID)",pl.user_id)}
+       ${pwInp("sp-pass","密碼",pl.password)}
+       ${inp("sp-regto","註冊逾時 (秒)",pl.register_timeout,"number")}
+       ${sel("sp-proto","傳輸協定",pl.transport_protocol,["UDP","TCP","TLS"])}
+     </div>
+     ${chk("sp-auto","自動接聽",pl.auto_answer)}
+     <div style="margin-top:14px"><button class="btn primary" id="sp-save">儲存主線路</button>
+       <span class="hint" style="margin-left:8px">儲存後設備將重載 SIP 服務</span></div>
+   </div>
+
+   <div class="card"><h3>組播接收<span class="ln"></span></h3>
+     <div class="grid2">
+       ${inp("mc-addr","組播位址 (224–239)",mc.multicast_address)}
+       ${inp("mc-port","組播埠",mc.multicast_port,"number")}
+       ${sel("mc-codec","音頻編碼",mc.audio_codec,["G.722","G.711U","G.711A","OPUS"])}
+     </div>
+     ${chk("mc-en","啟用組播接收",mc.enabled)}
+     <div style="margin-top:14px"><button class="btn primary" id="mc-save">儲存組播設定</button></div>
+   </div>
+
+   <div class="card"><h3>組播發送（Mic 廣播）<span class="ln"></span></h3>
+     <div class="grid2">
+       ${inp("mt-addr","組播位址 (224–239)",mt.multicast_address)}
+       ${inp("mt-port","組播埠",mt.multicast_port,"number")}
+       ${sel("mt-codec","音頻編碼",mt.audio_codec,["G.722"])}
+     </div>
+     ${chk("mt-en","啟用組播發送",mt.enabled)}
+     <div style="margin-top:14px"><button class="btn primary" id="mt-save">儲存發送設定</button>
+       <span class="hint" style="margin-left:8px">將本機 Mic 音訊編碼後推流至組播位址（需韌體 MTX 支援）。
+       優先級：SIP 通話 ＞ Mic 發送 ＞ 組播接收——啟用發送期間本機不播放組播，通話時發送自動暫停、結束後恢復</span></div>
+   </div>
+
+   <div class="card"><h3>SIP 進階參數<span class="ln"></span></h3>
+     <div class="grid2">
+       ${inp("pa-local","本地埠",sp.local_port,"number")}
+       ${inp("pa-rtps","RTP 起始埠",sp.rtp_start_port,"number")}
+       ${inp("pa-rtpe","RTP 結束埠",sp.rtp_end_port,"number")}
+       ${inp("pa-rtpt","RTP 逾時 (秒)",sp.rtp_timeout,"number")}
+     </div>
+     ${chk("pa-echo","回音消除",sp.echo_cancellation)}
+     <div style="margin-top:14px"><button class="btn primary" id="pa-save">儲存參數</button></div>
+   </div>
+
+   <div class="card"><h3>音頻編碼<span class="ln"></span></h3>
+     <div class="row">
+       ${chk("cd-g722","G.722",cd.g722)} ${chk("cd-opus","OPUS",cd.opus)}
+       ${chk("cd-ulaw","G.711 µ-law (PCMU)",cd.g711_ulaw)} ${chk("cd-alaw","G.711 A-law (PCMA)",cd.g711_alaw)}
+     </div>
+     <div style="margin-top:14px"><button class="btn primary" id="cd-save">儲存編碼</button></div>
+   </div>`;
+
+  $("#sp-save").onclick=()=>{
+     // 韌體用 snprintf("%s") 直接組 JSON、不 escape；含 " \ 或控制字元會讓下次 /get/sip/config 回非法 JSON (#3)
+     if([val("sp-server"),val("sp-uid"),val("sp-pass")].some(v=>/["\\\u0000-\u001f]/.test(v)))
+        return toast("err","含不支援字元",'伺服器 / 帳號 / 密碼不可包含 " \\ 或控制字元');
+     saveGuard("#sp-save",()=>POST("/set/sip/primary",{
+        server_address:val("sp-server"), server_port:num("sp-port"), user_id:val("sp-uid"),
+        password:val("sp-pass"), auto_answer:chkd("sp-auto"), register_timeout:num("sp-regto"),
+        transport_protocol:val("sp-proto") }),"主線路已儲存，設備正在重載 SIP");
+  };
+  $("#mc-save").onclick=()=>{
+     const a=val("mc-addr"); const first=+a.split(".")[0];
+     if(!(first>=224&&first<=239)) return toast("err","組播位址錯誤","必須介於 224.x.x.x – 239.x.x.x");
+     saveGuard("#mc-save",()=>POST("/set/sip/multicast",{
+        multicast_address:a, multicast_port:num("mc-port"),
+        enabled:chkd("mc-en"), audio_codec:val("mc-codec") }),"組播設定已儲存");
+  };
+  $("#mt-save").onclick=()=>{
+     const a=val("mt-addr"); const first=+a.split(".")[0]; const p=num("mt-port");
+     if(!(first>=224&&first<=239)) return toast("err","組播位址錯誤","必須介於 224.x.x.x – 239.x.x.x");
+     if(!(Number.isInteger(p)&&p>=1&&p<=65534)) return toast("err","組播埠錯誤","必須介於 1 – 65534");
+     // 防嘯叫：發送目標 == 本機接收位址會自收自播 (Mic 迴授)，前端先擋一層 (韌體 MTX-06 再擋一層)
+     if(chkd("mt-en") && a===val("mc-addr") && p===num("mc-port"))
+        return toast("err","發送位址與接收位址相同","會造成自收自播迴授，請改用不同的組播位址或埠");
+     saveGuard("#mt-save",()=>POST("/set/multicast/tx",{
+        multicast_address:a, multicast_port:p,
+        enabled:chkd("mt-en"), audio_codec:val("mt-codec") }),"組播發送設定已儲存");
+  };
+  $("#pa-save").onclick=()=>saveGuard("#pa-save",()=>POST("/set/sip/parameters",{
+     local_port:num("pa-local"), rtp_start_port:num("pa-rtps"), rtp_end_port:num("pa-rtpe"),
+     rtp_timeout:num("pa-rtpt"), echo_cancellation:chkd("pa-echo") }),"SIP 參數已儲存");
+  $("#cd-save").onclick=()=>{
+     if(![chkd("cd-g722"),chkd("cd-opus"),chkd("cd-ulaw"),chkd("cd-alaw")].some(Boolean))
+        return toast("err","至少需啟用一種編碼","");
+     saveGuard("#cd-save",()=>POST("/set/sip/codecs",{
+        g722:chkd("cd-g722"), opus:chkd("cd-opus"),
+        g711_ulaw:chkd("cd-ulaw"), g711_alaw:chkd("cd-alaw") }),"音頻編碼已儲存");
+  };
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   8. 視圖：音量 / 通話
+   ══════════════════════════════════════════════════════════════════ */
+async function renderAudio(c){
+  c.innerHTML=`<div class="page-h"><h2>音量 / 通話</h2></div>
+    <p class="page-sub">廣播與麥克風音量 (0–100)，以及軟體撥號控制</p><div id="au-body">載入中…</div>`;
+  let v;
+  try{ v=await GET("/get/device/volume"); }
+  catch(e){ const b=$("#au-body"); if(b) b.innerHTML=errBox("讀取音量失敗",e); return; }
+  const body=$("#au-body"); if(!body) return;   // 切頁/登出後 DOM 已不存在 (#5)
+  body.innerHTML=`
+   <div class="card"><h3>音量設定<span class="ln"></span></h3>
+     <div class="field"><label>廣播音量 <span id="bv-n">${esc(v.broadcast_volume??0)}</span></label>
+       <input class="input" id="bv" type="range" min="0" max="100" value="${esc(v.broadcast_volume??0)}"></div>
+     <div class="field"><label>麥克風音量 <span id="mv-n">${esc(v.microphone_volume??0)}</span></label>
+       <input class="input" id="mv" type="range" min="0" max="100" value="${esc(v.microphone_volume??0)}"></div>
+     <button class="btn primary" id="vol-save">儲存音量</button>
+   </div>
+   <div class="card"><h3>通話控制<span class="ln"></span></h3>
+     <div class="row" style="align-items:flex-end">
+       ${inp("call-num","撥打號碼","")}
+       <div><button class="btn primary" id="call-dial">撥號</button></div>
+       <div><button class="btn" id="call-ans">接聽</button></div>
+       <div><button class="btn danger" id="call-hang">掛斷</button></div>
+     </div>
+   </div>`;
+  $("#bv").oninput=e=>$("#bv-n").textContent=e.target.value;
+  $("#mv").oninput=e=>$("#mv-n").textContent=e.target.value;
+  $("#vol-save").onclick=()=>saveGuard("#vol-save",()=>POST("/set/device/volume",{
+     broadcast_volume:num("bv"), microphone_volume:num("mv") }),"音量已儲存");
+  $("#call-dial").onclick=()=>{ const n=val("call-num"); if(!n) return toast("err","請輸入號碼","");
+     callCtl({action:"dial",number:n},"撥號"); };
+  $("#call-ans").onclick=()=>callCtl({action:"answer"},"接聽");
+  $("#call-hang").onclick=()=>callCtl({action:"hangup"},"掛斷");
+}
+async function callCtl(payload,label){
+  try{ await POST("/call/control",payload); toast("ok",label+"指令已送出",""); }
+  catch(e){ toast("err",label+"失敗",e.detail||e.message); }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   9. 視圖：網路 (改 IP → 倒數 + 重新導向)
+   ══════════════════════════════════════════════════════════════════ */
+async function renderNetwork(c){
+  c.innerHTML=`<div class="page-h"><h2>網路設定</h2></div>
+    <p class="page-sub">設備僅支援靜態 IP；變更後設備將自動重啟並套用</p><div id="nw-body">載入中…</div>`;
+  let n;
+  try{ n=await GET("/get/network/config"); }
+  catch(e){ const b=$("#nw-body"); if(b) b.innerHTML=errBox("讀取網路設定失敗",e); return; }
+  const body=$("#nw-body"); if(!body) return;   // 切頁/登出後 DOM 已不存在 (#5)
+  body.innerHTML=`
+   <div class="card"><h3>IP 設定<span class="ln"></span></h3>
+     <div class="secbar"><span>⚠</span><span>此韌體僅支援 <b>靜態 IP</b>。儲存後連線會中斷，請確保新位址與本機同網段。</span></div>
+     <div class="grid2">
+       ${inp("nw-ip","IP 位址",n.ip_address)}
+       ${inp("nw-mask","子網路遮罩",n.subnet_mask)}
+       ${inp("nw-gw","預設閘道",n.gateway)}
+       ${inp("nw-dns","DNS",n.dns)}
+     </div>
+     <div style="margin-top:14px"><button class="btn primary" id="nw-save">儲存並套用</button></div>
+   </div>`;
+  $("#nw-save").onclick=()=>{
+    const ip=val("nw-ip");
+    if(!/^(\d{1,3}\.){3}\d{1,3}$/.test(ip)) return toast("err","IP 格式錯誤","");
+    confirmModal("變更網路設定",
+      `設備將套用 IP <b>${esc(ip)}</b> 並重啟，目前連線會中斷。確定繼續？`,
+      ()=>applyNetwork(ip));
+  };
+}
+async function applyNetwork(newIp){
+  try{
+    await POST("/set/network/config",{ network_mode:"static", ip_address:newIp,
+       subnet_mask:val("nw-mask"), gateway:val("nw-gw"), dns:val("nw-dns") });
+  }catch(e){
+    if(e.code!=="TIMEOUT"){ toast("err","設定失敗",e.detail||e.message); return; }
+  }
+  // 設備將重啟並切換 IP → 倒數後「探測可達才導向」
+  // protocol：若由「設備位址」指定了絕對網址，沿用其 protocol；否則用目前頁面 (#7)
+  let proto = location.protocol==="https:" ? "https:" : "http:";
+  try{ if(Session.base) proto = new URL(Session.base).protocol; }catch(e){}
+  const target=`${proto}//${newIp}/`;
+  countdownOverlay(CFG.REBOOT_COUNTDOWN, "設備正在套用新網路設定",
+     `套用後會自動探測 ${target} 並導向；若未自動跳轉，請點下方連結。`,
+     ()=>probeAndGo(target), target);
+}
+async function probeAndGo(target){
+  // no-cors 探測：成功 resolve 視為可達才跳轉；逾時則保留遮罩上的手動連結，不強制導向 (#7)
+  for(let i=0;i<20;i++){
+    try{ await fetch(target+"get/device/status",{mode:"no-cors",cache:"no-store"});
+         location.href=target; return; }
+    catch(e){ await new Promise(r=>setTimeout(r,1500)); }
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   10. 視圖：系統維護
+   ══════════════════════════════════════════════════════════════════ */
+async function renderSystem(c){
+  c.innerHTML=`<div class="page-h"><h2>系統維護</h2></div>
+    <p class="page-sub">系統資源、安全與設備重啟</p>
+    <div class="grid3" id="sys-stats"></div>
+    <div class="card"><h3>系統資訊<span class="ln"></span></h3><div id="sys-info">載入中…</div></div>
+    <div class="card"><h3>安全<span class="ln"></span></h3>
+      <div class="kv"><span class="k">目前帳號</span><span class="v">${esc(Session.user)}</span></div>
+      <div class="kv"><span class="k">連線加密</span><span class="v">${location.protocol==="https:"
+         ?'<span class="badge ok">HTTPS</span>':'<span class="badge warn">HTTP 明文</span>'}</span></div>
+      <div class="kv"><span class="k">工作階段</span><span class="v">閒置 ${CFG.IDLE_LOGOUT_MS/60000} 分自動登出</span></div>
+      <div style="margin-top:14px"><button class="btn" id="sys-pw">修改管理密碼</button></div>
+    </div>
+    <div class="card"><h3>重啟設備<span class="ln"></span></h3>
+      <p class="hint">重啟期間設備離線，所有通話與組播將中斷，約需 ${CFG.REBOOT_COUNTDOWN} 秒。</p>
+      <button class="btn danger" id="sys-reboot">重新啟動設備</button>
+    </div>`;
+  $("#sys-pw").onclick=()=>renderChangePassword(false);
+  $("#sys-reboot").onclick=()=>confirmModal("重新啟動設備",
+     "確定要立即重啟設備嗎？重啟期間將無法提供服務。",()=>doReboot());
+  try{
+    const s=await GET("/system/info");
+    const stats=$("#sys-stats"), info=$("#sys-info"); if(!info) return;  // 切頁/登出後 DOM 已不存在 (#5)
+    if(stats) stats.innerHTML=[ gaugeCard("CPU",+s.cpu_usage||0,"%"),
+       gaugeCard("記憶體",+s.memory_usage||0,"%"), statCard("溫度",s.temperature,"°C") ].join("");
+    info.innerHTML = kv("CPU 使用率","",(s.cpu_usage??"—")+" %") +
+       kv("記憶體使用","",(s.memory_usage??"—")+" %") + kv("磁碟使用","",(s.disk_usage??"—")+" %") +
+       kv("溫度","",(s.temperature??"—")+" °C") + kv("運行時間","",s.uptime);
+  }catch(e){ const info=$("#sys-info"); if(info) info.innerHTML=errBox("讀取系統資訊失敗",e); }
+}
+async function doReboot(){
+  try{ await POST("/system/restart",{confirm:true}); }
+  catch(e){ if(e.code!=="TIMEOUT"){ toast("err","重啟指令失敗",e.detail||e.message); return; } }
+  countdownOverlay(CFG.REBOOT_COUNTDOWN,"設備重新啟動中","請稍候，完成後將自動重新整理頁面",
+     ()=>location.reload());
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   11. 修改密碼 (forced=true 為預設密碼強制流程，不可跳過)
+   ══════════════════════════════════════════════════════════════════ */
+function renderChangePassword(forced){
+  const c=$("#content");
+  $$(".nav-item").forEach(n=>n.classList.remove("active"));
+  stopPolling();
+  c.innerHTML=`
+   <div class="page-h"><h2>${forced?"設定新密碼":"修改管理密碼"}</h2></div>
+   <p class="page-sub">${forced?"偵測到仍在使用預設密碼，請先設定專屬的管理密碼":"變更後請使用新密碼重新登入"}</p>
+   <div class="card" style="max-width:460px">
+     ${forced?"":pwInp("cp-old","目前密碼","")}
+     <div class="field"><label>新密碼</label>
+       <div class="pw-wrap"><input class="input" id="cp-new" type="password" autocomplete="new-password">
+         <button type="button" class="eye" data-eye="cp-new">顯示</button></div>
+       <div class="pwbars" id="cp-bars"><i></i><i></i><i></i><i></i></div>
+       <div class="hint">至少 ${CFG.PW_MIN_LEN} 字元，需含英文與數字，勿用預設密碼。</div>
+     </div>
+     <div class="field"><label>確認新密碼</label>
+       <input class="input" id="cp-new2" type="password" autocomplete="new-password"></div>
+     <div id="cp-msg" class="hint" style="color:var(--err);min-height:16px"></div>
+     <div style="margin-top:6px">
+       <button class="btn primary" id="cp-save">${forced?"設定並繼續":"確認修改"}</button>
+       ${forced?"":'<button class="btn" id="cp-cancel" style="margin-left:8px">取消</button>'}
+     </div>
+   </div>`;
+  $$("[data-eye]",c).forEach(b=>b.addEventListener("click",()=>{
+    const i=$("#"+b.dataset.eye); const sh=i.type==="password";
+    i.type=sh?"text":"password"; b.textContent=sh?"隱藏":"顯示"; }));
+  const np=$("#cp-new");
+  np.addEventListener("input",()=>{ const s=pwStrength(np.value);
+     $("#cp-bars").className="pwbars s"+s; });
+  if(!forced) $("#cp-cancel").onclick=()=>navigate(currentView||"dashboard");
+  $("#cp-save").onclick=async ()=>{
+    const oldp = forced ? CFG.DEFAULT_PASSWORD : val("cp-old");
+    const n1=val("cp-new"), n2=val("cp-new2"), msg=$("#cp-msg"); msg.textContent="";
+    if(!forced && !oldp){ msg.textContent="請輸入目前密碼"; return; }
+    const perr=pwPolicyError(n1, Session.user);
+    if(perr){ msg.textContent=perr; return; }
+    if(n1!==n2){ msg.textContent="兩次輸入的新密碼不一致"; return; }
+    const btn=$("#cp-save"); btn.disabled=true; btn.textContent="處理中…";
+    try{
+      await POST("/auth/change_password",{old_password:oldp,new_password:n1});
+      Session.loginPassWasDefault=false; Session.save();
+      toast("ok","密碼已更新","為了安全，請使用新密碼重新登入");
+      doLogout(true);
+    }catch(e){
+      msg.textContent = e.detail||e.message||"修改失敗";
+      btn.disabled=false; btn.textContent=forced?"設定並繼續":"確認修改";
+    }
+  };
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   12. 共用 UI 元件 / 表單 helper
+   ══════════════════════════════════════════════════════════════════ */
+function inp(id,label,v,type="text"){ return `<div class="field"><label>${esc(label)}</label>
+   <input class="input" id="${id}" type="${type}" value="${esc(v??"")}"></div>`; }
+function pwInp(id,label,v){ return `<div class="field"><label>${esc(label)}</label>
+   <div class="pw-wrap"><input class="input" id="${id}" type="password" value="${esc(v??"")}" autocomplete="off">
+   <button type="button" class="eye" data-eye-dyn="${id}">顯示</button></div></div>`; }
+function sel(id,label,v,opts){ return `<div class="field"><label>${esc(label)}</label>
+   <select class="input" id="${id}">${opts.map(o=>`<option ${o===v?"selected":""}>${esc(o)}</option>`).join("")}</select></div>`; }
+function chk(id,label,v){ return `<label class="toggle" style="margin:8px 16px 8px 0">
+   <input type="checkbox" id="${id}" ${v?"checked":""}><span>${esc(label)}</span></label>`; }
+function val(id){ const e=$("#"+id); return e?e.value.trim():""; }
+function num(id){ const e=$("#"+id); return e?Number(e.value):0; }
+function chkd(id){ const e=$("#"+id); return !!(e&&e.checked); }
+function errBox(t,e){ return `<div class="secbar" style="background:rgba(248,81,73,.1);border-color:rgba(248,81,73,.35);color:var(--err)">
+   <span>✕</span><span>${esc(t)}：${esc(e.detail||e.message||e.code||"未知錯誤")}</span></div>`; }
+
+// 動態插入的密碼眼睛 (表單 helper 產生的)
+document.addEventListener("click",(e)=>{
+  const b=e.target.closest("[data-eye-dyn]"); if(!b) return;
+  const i=$("#"+b.getAttribute("data-eye-dyn")); if(!i) return;
+  const sh=i.type==="password"; i.type=sh?"text":"password"; b.textContent=sh?"隱藏":"顯示";
+});
+
+async function saveGuard(btnSel, fn, okMsg){
+  const btn=$(btnSel); if(!btn) return;
+  const old=btn.textContent; btn.disabled=true; btn.textContent="儲存中…";
+  try{ await fn(); toast("ok","已儲存",okMsg||""); }
+  catch(e){ toast("err","儲存失敗",e.detail||e.message||e.code); }
+  finally{ btn.disabled=false; btn.textContent=old; }
+}
+
+function confirmModal(title, html, onYes){
+  const back=document.createElement("div"); back.className="modal-back";
+  back.innerHTML=`<div class="modal"><h3>${esc(title)}</h3><p>${html}</p>
+     <div class="acts"><button class="btn" data-no>取消</button>
+       <button class="btn primary" data-yes>確定</button></div></div>`;
+  document.body.appendChild(back);
+  const close=()=>back.remove();
+  back.querySelector("[data-no]").onclick=close;
+  back.onclick=(e)=>{ if(e.target===back) close(); };
+  back.querySelector("[data-yes]").onclick=()=>{ close(); onYes&&onYes(); };
+}
+
+function countdownOverlay(sec, title, desc, onDone, link){
+  const ov=document.createElement("div"); ov.id="overlay";
+  ov.innerHTML=`<div class="ring"></div><div class="ov-t">${esc(title)}</div>
+     <div class="ov-d">${esc(desc)}</div><div class="ov-c" id="ov-c">${sec}</div>
+     ${link?`<a class="btn" href="${esc(link)}">立即前往新位址</a>`:""}`;
+  document.body.appendChild(ov);
+  let n=sec; const t=setInterval(()=>{ n--; const e=$("#ov-c"); if(e) e.textContent=Math.max(0,n);
+     if(n<=0){ clearInterval(t); onDone&&onDone(); } }, 1000);
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   13. 啟動
+   ══════════════════════════════════════════════════════════════════ */
+(function init(){
+  // 預填進階主機 (?host= 或既有 session)
+  const qs=new URLSearchParams(location.search);
+  Session.load();
+  if(qs.get("host")) Session.base=qs.get("host").replace(/\/+$/,"");
+  if(Session.base) $("#li-host").value=Session.base;
+
+  if(Session.token){
+    // 既有 session → 驗證 token 是否仍有效
+    GET("/auth/verify").then(()=>enterApp())
+      .catch(()=>{ Session.clear(); showLogin(); });
+  }else{
+    showLogin();
+  }
+})();
+</script>
+</body>
+</html>
