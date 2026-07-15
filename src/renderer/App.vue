@@ -32,6 +32,11 @@
         />
       </template>
 
+      <!-- Auto Provisioning View -->
+      <template v-if="currentView === 'provision'">
+        <AutoProvisionView />
+      </template>
+
     </AppLayout>
 
     <!-- IP Change Modal -->
@@ -89,6 +94,7 @@ import ReconnectOverlay from '@/components/ReconnectOverlay.vue'
 import BatchSyncModal from '@/components/BatchSyncModal.vue'
 import AddDeviceModal from '@/components/AddDeviceModal.vue'
 import RestScanModal from '@/components/RestScanModal.vue'
+import AutoProvisionView from '@/components/AutoProvisionView.vue'
 
 const deviceStore = useDeviceStore()
 
@@ -129,7 +135,7 @@ async function enrichRegStatus(devices: DeviceNode[]) {
 }
 
 // Navigation
-const currentView = ref<'radar' | 'devices'>('radar')
+const currentView = ref<'radar' | 'devices' | 'provision'>('radar')
 
 function handleNavigate(view: string) {
   if (view === 'batch') {
@@ -138,7 +144,7 @@ function handleNavigate(view: string) {
     currentView.value = 'devices'
     return
   }
-  if (view === 'radar' || view === 'devices') {
+  if (view === 'radar' || view === 'devices' || view === 'provision') {
     currentView.value = view
     if (view !== 'devices') selectedDevice.value = null
   }
