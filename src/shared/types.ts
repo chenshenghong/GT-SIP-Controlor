@@ -243,4 +243,69 @@ export interface IpChangeRequest {
   newMask: string
   newGateway: string
   autoIp: 0 | 1
+  /** 供裝時順帶把設備名稱設為分機號（帶入 DBP SET 的 Name: 欄位）；省略則沿用 device.name */
+  newName?: string
 }
+
+// ============================================
+// Auto-Provisioning
+// ============================================
+
+/** 使用者填的供裝範本（持久化於 registry 檔） */
+export interface ProvisionConfig {
+  ipStart: string
+  ipEnd: string
+  mask: string
+  gateway: string
+  extStart: number
+  extEnd: number
+  sipPassword: string
+  sipServer: string
+  sipPort: number
+  namePrefix: string
+}
+
+/** 登記表一筆記錄（MAC 為主鍵） */
+export interface ProvisionRecord {
+  mac: string
+  assignedIp: string
+  assignedExt: number
+  status: 'pending' | 'provisioned' | 'failed'
+  updatedAt: string // ISO 8601
+  lastError?: string
+}
+
+/** registry 檔內容 */
+export interface ProvisionRegistryFile {
+  config: ProvisionConfig | null
+  records: ProvisionRecord[]
+}
+
+/** 執行期任務狀態（只在記憶體，不落地） */
+export type ProvisionTaskStatus =
+  | 'discovered'
+  | 'ip_assigning'
+  | 'waiting_online'
+  | 'sip_configuring'
+  | 'done'
+  | 'skipped'
+  | 'failed'
+
+export interface ProvisionTask {
+  mac: string
+  ip: string // 目前觀測到的 IP
+  assignedIp: string
+  assignedExt: number
+  status: ProvisionTaskStatus
+  deadline?: number // waiting_online 逾時的絕對時間戳 (ms)
+  error?: string
+}
+
+/** 引擎對外事件（driver 綁到 store） */
+export type ProvisionEvent =
+  | { kind: 'task'; task: ProvisionTask }
+  | { kind: 'log'; ts: number; message: string }
+  | { kind: 'paused'; reason: string }
+  | { kind: 'degraded'; reason: string }
+  | { kind: 'pool'; ipUsed: number; ipTotal: number; extUsed: number; extTotal: number }
+  | { kind: 'round'; round: number }

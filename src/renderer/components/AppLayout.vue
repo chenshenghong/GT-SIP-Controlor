@@ -6,6 +6,7 @@ const navItems = [
   { id: 'radar', label: '設備探測', icon: 'sensors' },
   { id: 'devices', label: '設備清單', icon: 'router' },
   { id: 'batch', label: '批次設定', icon: 'tune' },
+  { id: 'provision', label: '自動供裝', icon: 'auto_mode' },
 ]
 </script>
 
