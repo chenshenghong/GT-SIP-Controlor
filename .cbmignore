@@ -1,0 +1,12 @@
+# codebase-memory-mcp ignore — exclude vendored/decompiled/build noise.
+# Keep docs/ + markdown. Mirror your .gitignore's vendored dirs here.
+**/vendor/
+legacy_reference/
+node_modules/
+dist/
+build/
+.next/
+.venv/
+venv/
+coverage/
+**/backups/

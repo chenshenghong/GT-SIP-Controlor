@@ -34,3 +34,18 @@ graphify-out/
 # Local code intelligence artifacts
 semantic-vector-index/
 scripts/node_modules/
+
+# Personal Claude Code settings (machine-specific)
+.claude/settings.local.json
+
+# hermes byproducts — must not land in repo (may contain factory docs)
+.hermes/
+
+# Factory delivery / test packages (binary deliverables, keep local)
+GT-SIP-GW-*.zip
+
+# Spec-book project (kept local — factory-adjacent, not published)
+GT-SIP-GW-規格書/
+
+# TypeScript incremental build info
+*.tsbuildinfo
