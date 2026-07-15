@@ -15,22 +15,30 @@
 import { exec } from 'child_process'
 import { promisify } from 'util'
 import * as os from 'os'
+import * as net from 'net'
 
 const execAsync = promisify(exec)
 
 /** Track which routes we've added so we can clean up */
 const addedRoutes: string[] = []
 
+/** Track secondary IP aliases we've added: targetSubnet -> { aliasIp, iface } */
+const addedAliases = new Map<string, { aliasIp: string; iface: string }>()
+
 /**
  * Detect the primary network interface and local IP.
  * Returns { iface, ip, subnet } or null.
+ *
+ * Skips any secondary IP WE added (see addSubnetAlias) so detection always
+ * reflects the host's real primary network, never an alias of our own making.
  */
 export function detectLocalNetwork(): { iface: string; ip: string; subnet: string } | null {
+  const ourAliasIps = new Set(Array.from(addedAliases.values()).map((a) => a.aliasIp))
   const interfaces = os.networkInterfaces()
   for (const [iface, addrs] of Object.entries(interfaces)) {
     if (!addrs) continue
     for (const addr of addrs) {
-      if (addr.family === 'IPv4' && !addr.internal) {
+      if (addr.family === 'IPv4' && !addr.internal && !ourAliasIps.has(addr.address)) {
         const parts = addr.address.split('.')
         return {
           iface,
@@ -41,6 +49,51 @@ export function detectLocalNetwork(): { iface: string; ip: string; subnet: strin
     }
   }
   return null
+}
+
+/**
+ * Every (iface, ip, subnet) the host natively holds (excludes our own aliases).
+ * Unlike detectLocalNetwork() (first match only), this returns ALL of them —
+ * needed on multi-homed hosts where two NICs coincidentally sit on the same
+ * /24 range but lead to different physical LANs (see probeReachable below).
+ */
+function allLocalIfaces(): Array<{ iface: string; ip: string; subnet: string }> {
+  const ourAliasIps = new Set(Array.from(addedAliases.values()).map((a) => a.aliasIp))
+  const result: Array<{ iface: string; ip: string; subnet: string }> = []
+  for (const [iface, addrs] of Object.entries(os.networkInterfaces())) {
+    for (const addr of addrs ?? []) {
+      if (addr.family === 'IPv4' && !addr.internal && !ourAliasIps.has(addr.address)) {
+        const p = addr.address.split('.')
+        result.push({ iface, ip: addr.address, subnet: `${p[0]}.${p[1]}.${p[2]}` })
+      }
+    }
+  }
+  return result
+}
+
+/**
+ * Quick TCP probe (device REST port 80) — used to tell whether a device is
+ * ACTUALLY reachable, not just whether its /24 happens to number-match some
+ * local interface (which can be a false positive on multi-homed hosts).
+ */
+function probeReachable(ip: string, timeoutMs = 400): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = new net.Socket()
+    socket.setTimeout(timeoutMs)
+    socket.once('connect', () => {
+      socket.destroy()
+      resolve(true)
+    })
+    socket.once('timeout', () => {
+      socket.destroy()
+      resolve(false)
+    })
+    socket.once('error', () => {
+      socket.destroy()
+      resolve(false)
+    })
+    socket.connect(80, ip)
+  })
 }
 
 /**
@@ -104,11 +157,12 @@ export async function addOnLinkRoute(
       cmd = `route add ${networkAddr} mask 255.255.255.0 ${localIp} metric 1`
     } else if (platform === 'darwin') {
       // macOS: route add -net <network>/24 -interface <iface>
-      // Requires sudo in production; in dev may need passwordless sudo
-      cmd = `route add -net ${networkAddr}/24 -interface ${iface}`
+      // Modifying the routing table needs root — requires passwordless sudo.
+      cmd = `sudo -n route add -net ${networkAddr}/24 -interface ${iface}`
     } else {
       // Linux: ip route add <network>/24 dev <iface>
-      cmd = `ip route add ${networkAddr}/24 dev ${iface}`
+      // Needs CAP_NET_ADMIN — requires passwordless sudo.
+      cmd = `sudo -n ip route add ${networkAddr}/24 dev ${iface}`
     }
 
     console.log(`[Route] Adding on-link route: ${cmd}`)
@@ -143,9 +197,9 @@ export async function removeOnLinkRoute(targetSubnet: string): Promise<void> {
     if (platform === 'win32') {
       cmd = `route delete ${networkAddr}`
     } else if (platform === 'darwin') {
-      cmd = `route delete -net ${networkAddr}/24`
+      cmd = `sudo -n route delete -net ${networkAddr}/24`
     } else {
-      cmd = `ip route delete ${networkAddr}/24`
+      cmd = `sudo -n ip route delete ${networkAddr}/24`
     }
 
     console.log(`[Route] Removing route: ${cmd}`)
@@ -184,5 +238,152 @@ export async function cleanupAllRoutes(): Promise<void> {
 
   if (routes.length > 0) {
     console.log(`[Route] Cleaned up ${routes.length} temporary routes`)
+  }
+}
+
+// ============================================
+// Secondary IP aliases — the real cross-subnet fix
+//
+// On-link routes (above) only help when the device's gateway routes replies
+// back to the host subnet. On networks where it does NOT, the device's TCP
+// reply goes to its own gateway and never returns — so REST/control still fail
+// even though UDP-broadcast discovery finds the device.
+//
+// Adding a secondary host IP IN the device's subnet makes the path on-link in
+// BOTH directions (verified on real hardware: REST went from 0% to working).
+// ============================================
+
+/**
+ * Add a same-subnet secondary IP (alias) on the host NIC so a cross-subnet
+ * device becomes directly reachable over TCP/REST. No-op if the host is already
+ * on that subnet or we've already added an alias for it.
+ *
+ *   Windows: netsh interface ipv4 add address name="<iface>" <ip> 255.255.255.0 store=active
+ *   macOS:   sudo ifconfig <iface> alias <ip> 255.255.255.0
+ *   Linux:   sudo ip addr add <ip>/24 dev <iface>
+ *
+ * darwin/linux need root (passwordless sudo) — Windows elevation is handled by
+ * requestedExecutionLevel: requireAdministrator instead (see electron-builder.yml).
+ *
+ * `force` skips the "already on this subnet" shortcut — needed when a subnet
+ * number coincidentally already exists on a DIFFERENT physical interface (see
+ * ensureReachableForIps) and we deliberately alias it onto `iface` anyway.
+ */
+export async function addSubnetAlias(
+  targetSubnet: string,
+  hostIp: string,
+  iface: string,
+  force = false
+): Promise<boolean> {
+  const hostParts = hostIp.split('.')
+  const hostSubnet = `${hostParts[0]}.${hostParts[1]}.${hostParts[2]}`
+  if (!force && targetSubnet === hostSubnet) return true  // already on this subnet
+  if (addedAliases.has(targetSubnet)) return true          // already aliased
+
+  // Mirror the host's last octet — collision-unlikely vs factory defaults (.10/.200)
+  const aliasIp = `${targetSubnet}.${hostParts[3]}`
+  const platform = process.platform
+
+  try {
+    let cmd: string
+    if (platform === 'win32') {
+      cmd = `netsh interface ipv4 add address name="${iface}" ${aliasIp} 255.255.255.0 store=active`
+    } else if (platform === 'darwin') {
+      cmd = `sudo -n ifconfig ${iface} alias ${aliasIp} 255.255.255.0`
+    } else {
+      cmd = `sudo -n ip addr add ${aliasIp}/24 dev ${iface}`
+    }
+
+    console.log(`[Alias] Adding secondary IP: ${cmd}`)
+    await execAsync(cmd)
+    addedAliases.set(targetSubnet, { aliasIp, iface })
+    console.log(`[Alias] ✅ ${aliasIp}/24 on ${iface}`)
+    return true
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (/already|exists|EEXIST/i.test(msg)) {
+      addedAliases.set(targetSubnet, { aliasIp, iface })
+      console.log(`[Alias] ${aliasIp}/24 already present (OK)`)
+      return true
+    }
+    console.log(`[Alias] ⚠️ Failed to add ${aliasIp}/24: ${msg}`)
+    return false
+  }
+}
+
+/** Remove a previously added secondary IP alias. */
+async function removeSubnetAlias(info: { aliasIp: string; iface: string }): Promise<void> {
+  const platform = process.platform
+  try {
+    let cmd: string
+    if (platform === 'win32') {
+      cmd = `netsh interface ipv4 delete address name="${info.iface}" address=${info.aliasIp}`
+    } else if (platform === 'darwin') {
+      cmd = `sudo -n ifconfig ${info.iface} -alias ${info.aliasIp}`
+    } else {
+      cmd = `sudo -n ip addr del ${info.aliasIp}/24 dev ${info.iface}`
+    }
+    console.log(`[Alias] Removing: ${cmd}`)
+    await execAsync(cmd)
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.log(`[Alias] ⚠️ Failed to remove ${info.aliasIp}: ${msg}`)
+  }
+}
+
+/**
+ * For each device IP that isn't actually reachable, add a same-subnet secondary
+ * IP so the device list can read/control it. Best-effort; needs admin. Returns
+ * the subnets that got an alias.
+ *
+ * Reachability is decided by PROBING the device, not by whether its /24 number
+ * happens to match a local interface. On a multi-homed host, the same /24 range
+ * can exist on two different physical NICs (e.g. two independent lab networks
+ * that both number themselves 192.168.1.0/24) — trusting the number alone would
+ * wrongly conclude the device is already reachable when it's actually sitting on
+ * the OTHER NIC. When that happens, alias the subnet onto a different local
+ * interface than the one that already natively owns it.
+ */
+export async function ensureReachableForIps(deviceIps: string[]): Promise<string[]> {
+  const local = detectLocalNetwork()
+  if (!local) return []
+  const ifaces = allLocalIfaces()
+  const nativeSubnets = new Map<string, string>() // subnet -> iface that owns it natively
+  for (const { iface, subnet } of ifaces) {
+    if (!nativeSubnets.has(subnet)) nativeSubnets.set(subnet, iface)
+  }
+
+  const added: string[] = []
+  for (const ip of deviceIps) {
+    const p = ip.split('.')
+    if (p.length !== 4) continue
+    const subnet = `${p[0]}.${p[1]}.${p[2]}`
+    if (addedAliases.has(subnet)) continue
+
+    const nativeIface = nativeSubnets.get(subnet)
+    if (nativeIface && (await probeReachable(ip))) continue // genuinely reachable already
+
+    if (nativeIface) {
+      // Subnet number collides with a local NIC that can't actually reach this
+      // device — alias it onto a different interface instead.
+      const altIface = ifaces.find((f) => f.iface !== nativeIface)?.iface
+      if (!altIface) continue // no other NIC to try
+      if (await addSubnetAlias(subnet, local.ip, altIface, true)) added.push(subnet)
+    } else {
+      if (await addSubnetAlias(subnet, local.ip, local.iface)) added.push(subnet)
+    }
+  }
+  return added
+}
+
+/** Clean up all secondary IP aliases we added. Call on app shutdown. */
+export async function cleanupAllAliases(): Promise<void> {
+  const entries = Array.from(addedAliases.values())
+  addedAliases.clear()
+  for (const info of entries) {
+    await removeSubnetAlias(info)
+  }
+  if (entries.length > 0) {
+    console.log(`[Alias] Cleaned up ${entries.length} secondary IPs`)
   }
 }
