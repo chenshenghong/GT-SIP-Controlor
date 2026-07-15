@@ -74,7 +74,7 @@ function buildSetPacket(req: IpChangeRequest, cseq: number): Buffer {
     `Treble: 0`,
     `Bass: 0`,
     `Encrypt: 1`,
-    `Name: ${d.name}`,
+    `Name: ${req.newName ?? d.name}`,
     `GROUP: ${d.group}`,
     `AGC: ${d.tbAgc}`,
     `VOL: ${d.playVol}`,
