@@ -1,7 +1,7 @@
 // ============================================
 // SIP CMS — Electron Main Process
 // ============================================
-import { app, shell, BrowserWindow, ipcMain } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, session } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { IPC_CHANNELS } from '@shared/constants'
@@ -191,6 +191,17 @@ app.commandLine.appendSwitch('no-sandbox')
 // ---- App Lifecycle ----
 app.whenReady().then(() => {
   electronApp.setAppUserModelId('com.tcfnet.sip-cms')
+
+  // Devices ship a per-device self-signed cert (SEC-03 hardening — see
+  // docs/SEC-03-HTTPS-自簽憑證實作說明.md); :80 redirects to :443 with it.
+  // A browser tab lets you click through the "certificate authority invalid"
+  // warning, but this app talks to devices via programmatic fetch/XHR (no
+  // click-through UI exists for that) — without this, every REST call to a
+  // SEC-03 device fails with net::ERR_CERT_AUTHORITY_INVALID. This is a
+  // LAN-only device management tool; trust is scoped to that use case.
+  session.defaultSession.setCertificateVerifyProc((_request, callback) => {
+    callback(0)
+  })
 
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)

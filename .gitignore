@@ -31,3 +31,6 @@ graphify-out/
 
 # GitNexus local index
 .gitnexus/
+# Local code intelligence artifacts
+semantic-vector-index/
+scripts/node_modules/

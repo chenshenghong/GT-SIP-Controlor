@@ -12,5 +12,15 @@ win:
     - dir
   icon: build/icon.png
   artifactName: ${productName}-${version}.${ext}
+  # The app adds temporary secondary IPs / routes (netsh) to reach cross-subnet
+  # devices — that needs elevation. Without this the app runs un-elevated under
+  # UAC and all network-config commands fail silently.
+  requestedExecutionLevel: requireAdministrator
+linux:
+  target:
+    - dir
+  icon: build/icon.png
+  category: Network
+  artifactName: ${productName}-${version}.${ext}
 asar: true
 npmRebuild: false
