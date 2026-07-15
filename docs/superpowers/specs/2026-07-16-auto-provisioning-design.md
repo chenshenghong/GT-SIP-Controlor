@@ -132,7 +132,7 @@ loop:
 
 ### 6.3 單台供裝（狀態機）
 
-**執行模型**：每台設備的任務是一個由掃描循環與計時器驅動的**狀態機物件**，`waiting_online` 期間**不佔用任何併發槽**。只有實際打網路的步驟（DBP SET、REST 設定）才短暫掛進 `usePromiseQueue`（併發上限沿用 `MAX_CONCURRENT_SYNC` = 5），做完即釋放。這避免 5 台設備同時等重開機把整條管線堵死。**取號器在掃描循環的單一執行緒內同步執行**，兩台設備不會搶到同一號。
+**執行模型**：每台設備的任務是一個由掃描循環與計時器驅動的**狀態機物件**，`waiting_online` 期間**不佔用任何併發槽**。只有實際打網路的步驟（DBP SET、REST 設定）才短暫經過一支小型併發閘 `createLimiter`（上限沿用 `MAX_CONCURRENT_SYNC` = 5），做完即釋放。（**不用既有 `usePromiseQueue`**：它是批次型 `runQueue(tasks[])`，跑完即返回，不適合長駐、跨掃描輪的串流狀態機；改用 submit-one-at-a-time 的 limiter。）這避免 5 台設備同時等重開機把整條管線堵死。**取號器在掃描循環的單一執行緒內同步執行**，兩台設備不會搶到同一號。
 
 1. `ip_assigning`：（入列）`changeDeviceIp({device, newIp, newMask, newGateway, newName: prefix+ext})` — DBP SET，設備收到後重開機。送出即出列。
 2. `waiting_online`：（不佔槽）任務建立 `onlineSignal` Promise 與一個 **120 秒真實計時器**，`await Promise.race([onlineSignal, timeout])`。掃描循環認回設備（MAC 相符**且 IP == 分配值**）時 resolve `onlineSignal`；計時器先到 → `failed`（原因「改 IP 後未上線」）。UI 倒數以計時器 deadline 計算，精準顯示。
@@ -155,7 +155,7 @@ loop:
 啟動時計算分配池所屬網段：
 
 - 若不在本機任一網卡網段 → 呼叫既有 `ensureReachableForIps`（次要 IP 別名）確保 REST 打得到（對應 HK-WSDK 韌體 REST-static、無 DHCP 的限制）
-- 停止供裝時**只清除本次供裝 session 自己加的別名**（記錄自己加了哪些），不得一律 `cleanupAllAliases` 波及其他功能加的別名
+- **停止供裝時不清別名**：`ensureReachableForIps` 的別名與探測功能共用模組級 `addedAliases`，探測本來就把別名留到 app 退出（`will-quit`）才由 `cleanupAllAliases` 統一清。供裝比照——停止時不碰別名，避免誤清探測加的別名（比「只清自己加的」更簡單且無誤清 bug）
 
 ## 7. UI（AutoProvisionView）
 
