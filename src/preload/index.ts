@@ -4,7 +4,7 @@
 // ============================================
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC_CHANNELS } from '@shared/constants'
-import type { ScanProgress, ScanResult, RestScanProgress, DeviceNode, IpChangeRequest } from '@shared/types'
+import type { ScanProgress, ScanResult, RestScanProgress, DeviceNode, IpChangeRequest, ProvisionRegistryFile } from '@shared/types'
 
 export type ElectronAPI = {
   // Scanner (mode=0: subnet scan)
@@ -28,6 +28,10 @@ export type ElectronAPI = {
   changeIp: (request: IpChangeRequest) => Promise<{ success: boolean; error?: string }>
   // Device operations
   pingDevice: (ip: string) => Promise<boolean>
+  // Provisioning registry (persisted JSON in userData)
+  readRegistry: () => Promise<{ success: boolean; data?: ProvisionRegistryFile; error?: string }>
+  writeRegistry: (data: ProvisionRegistryFile) => Promise<{ success: boolean; error?: string }>
+  ensureReachable: (ip: string) => Promise<{ success: boolean; error?: string }>
 }
 
 const electronAPI: ElectronAPI = {
@@ -95,6 +99,18 @@ const electronAPI: ElectronAPI = {
 
   pingDevice: (ip: string) => {
     return ipcRenderer.invoke(IPC_CHANNELS.PING_DEVICE, ip)
+  },
+
+  readRegistry: () => {
+    return ipcRenderer.invoke(IPC_CHANNELS.REGISTRY_READ)
+  },
+
+  writeRegistry: (data: ProvisionRegistryFile) => {
+    return ipcRenderer.invoke(IPC_CHANNELS.REGISTRY_WRITE, data)
+  },
+
+  ensureReachable: (ip: string) => {
+    return ipcRenderer.invoke(IPC_CHANNELS.PROVISION_ENSURE_REACHABLE, ip)
   },
 }
 

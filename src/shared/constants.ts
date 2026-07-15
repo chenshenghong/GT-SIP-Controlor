@@ -28,6 +28,11 @@ export const IPC_CHANNELS = {
   // TaskServer
   TASKSERVER_QUERY: 'taskserver:query',
 
+  // Provisioning registry (persisted JSON in userData)
+  REGISTRY_READ: 'provision:registry-read',
+  REGISTRY_WRITE: 'provision:registry-write',
+  PROVISION_ENSURE_REACHABLE: 'provision:ensure-reachable',
+
   // System
   RESTART_DEVICE: 'device:restart',
   PING_DEVICE: 'device:ping',

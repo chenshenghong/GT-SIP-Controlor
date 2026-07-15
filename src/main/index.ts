@@ -175,6 +175,37 @@ function registerIpcHandlers(mainWindow: BrowserWindow): void {
       socket.connect(80, ip)
     })
   })
+
+  ipcMain.handle(IPC_CHANNELS.REGISTRY_READ, async () => {
+    const { loadRegistry } = await import('./provisionRegistry')
+    const file = join(app.getPath('userData'), 'provision-registry.json')
+    try {
+      return { success: true, data: await loadRegistry(file) }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.REGISTRY_WRITE, async (_event, data) => {
+    const { saveRegistry } = await import('./provisionRegistry')
+    const file = join(app.getPath('userData'), 'provision-registry.json')
+    try {
+      await saveRegistry(file, data)
+      return { success: true }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.PROVISION_ENSURE_REACHABLE, async (_event, ip: string) => {
+    try {
+      const { ensureReachableForIps } = await import('./routeManager')
+      await ensureReachableForIps([ip])
+      return { success: true }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
 }
 
 // ---- GPU / sandbox hardening for headless / elevated Windows Server ----
