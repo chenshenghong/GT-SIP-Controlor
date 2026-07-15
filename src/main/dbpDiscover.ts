@@ -82,6 +82,10 @@ function parseDbpReply(raw: string): DeviceNode | null {
           if (s.OutVol != null && s.OutVol !== '') d.outVol = parseInt(s.OutVol, 10)
           if (s.MicVol != null && s.MicVol !== '') d.micVol = parseInt(s.MicVol, 10)
           if (s.ConnectMode) d.connectMode = s.ConnectMode
+          // Preserve so IP-change (DBP SET) can echo them back untouched.
+          if (s.PTT != null) d.ptt = s.PTT
+          if (s.COR != null) d.cor = s.COR
+          if (s.ROLE != null) d.role = s.ROLE
         } catch { /* ignore malformed IFCFG-APP */ }
         break
       }

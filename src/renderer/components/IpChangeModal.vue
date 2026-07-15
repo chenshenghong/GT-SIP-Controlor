@@ -72,7 +72,6 @@
 <script setup lang="ts">
 import { ref, reactive, computed } from 'vue'
 import type { DeviceNode, IpChangeRequest } from '@shared/types'
-import { loginToDevice, setNetworkConfig } from '@/composables/deviceApi'
 
 const props = defineProps<{
   visible: boolean
@@ -87,11 +86,14 @@ const emit = defineEmits<{
 
 const isDuplicateIp = computed(() => props.duplicateCount > 1)
 
-const form = reactive<Omit<IpChangeRequest, 'targetIp'>>({
+// Local form state. DNS is kept for the UI but is NOT part of the factory DBP
+// SET (the captured factory packet carries no DNS lines — DNS is managed via
+// REST post-provisioning), so it isn't forwarded in the changeIp request.
+const form = reactive({
   newIp: '',
   newMask: props.device.mask || '255.255.255.0',
   newGateway: props.device.gateway || '192.168.1.1',
-  autoIp: 0,
+  autoIp: 0 as 0 | 1,
   dns1: props.device.dns1 || '',
   dns2: props.device.dns2 || '',
 })
@@ -111,32 +113,23 @@ async function handleSubmit() {
   resultMsg.value = ''
 
   try {
-    // REST-first: works on REST-only devices (static mode only).
-    // Falls back to DBP for legacy devices sharing a factory IP.
-    if (form.autoIp === 0 && (await loginToDevice(props.device.ip))) {
-      const ok = await setNetworkConfig(props.device.ip, {
-        network_mode: 'static',
-        ip_address: form.newIp,
-        subnet_mask: form.newMask,
-        gateway: form.newGateway,
-        dns: form.dns1 || '',
-      })
-      if (ok) {
-        resultMsg.value = `✅ (REST) IP 已修改為 ${form.newIp}，等待設備重啟...`
-        resultOk.value = true
-        setTimeout(() => emit('success', form.newIp), 1500)
-        return
-      }
-    }
-
-    // DBP fallback (legacy devices / DHCP mode)
+    // Initial provisioning always goes through DBP (UDP broadcast, addressed by
+    // MAC — works even when the device is on a foreign subnet). REST needs the
+    // device already reachable on the management subnet, which isn't guaranteed
+    // here since this modal runs against devices still on their factory/
+    // discovered IP. REST only takes over post-provisioning (DeviceDetail.vue).
     const result = await window.electronAPI.changeIp({
-      targetIp: props.device.ip,
-      ...form,
+      // props.device is a Vue reactive proxy; Electron IPC (structured clone)
+      // can't clone a proxy → "object could not be cloned". Send a plain copy.
+      device: JSON.parse(JSON.stringify(props.device)) as DeviceNode,
+      newIp: form.newIp,
+      newMask: form.newMask,
+      newGateway: form.newGateway,
+      autoIp: form.autoIp,
     } as IpChangeRequest)
 
     if (result.success) {
-      resultMsg.value = `✅ (DBP) IP 已修改為 ${form.newIp}，等待設備重啟...`
+      resultMsg.value = `✅ IP 已修改為 ${form.newIp}，等待設備重啟...`
       resultOk.value = true
       setTimeout(() => emit('success', form.newIp), 1500)
     } else {

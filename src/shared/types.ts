@@ -59,6 +59,12 @@ export interface DeviceNode {
   outVol?: number        // 輸出/播放音量設定 (OutVol)
   micVol?: number        // 麥克風音量設定 (MicVol)
   connectMode?: string   // 連線模式 (ConnectMode)
+  // PTT/COR/ROLE — echoed verbatim into the DBP SET's IFCFG-APP on IP change so
+  // the operation never wipes them (the factory tool does the same). Discovery
+  // reports them via IFCFG-APP; default "0" (firmware default) when absent.
+  ptt?: string           // PTT 觸發設定 (IFCFG-APP)
+  cor?: string           // COR 設定 (IFCFG-APP)
+  role?: string          // ROLE 設定 (IFCFG-APP)
 
   // --- Runtime (added by CMS, not from DBP) ---
   status: 'ONLINE' | 'DISCONNECTED' | 'RECONNECTING'
@@ -228,11 +234,13 @@ export interface NetworkConfig {
 
 /** IP change request via DBP SET command */
 export interface IpChangeRequest {
-  targetIp: string   // current IP to connect to
+  // Full current device config from discovery. The DBP SET is a UDP BROADCAST
+  // addressed by MAC (see ipChanger.ts), and it echoes the device's existing
+  // fields so nothing but IP/Mask/Gateway/AutoIP changes — exactly like the
+  // factory QueryTool. So we need the whole device, not just a target IP.
+  device: DeviceNode
   newIp: string
   newMask: string
   newGateway: string
   autoIp: 0 | 1
-  dns1?: string
-  dns2?: string
 }
