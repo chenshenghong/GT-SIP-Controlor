@@ -387,3 +387,58 @@ export async function cleanupAllAliases(): Promise<void> {
     console.log(`[Alias] Cleaned up ${entries.length} secondary IPs`)
   }
 }
+
+// ============================================
+// Multi-NIC broadcast targets
+//
+// A limited broadcast (255.255.255.255) is sent out only ONE interface on a
+// multi-homed host (the default-route NIC), so devices on other NICs' segments
+// are missed. Sending each NIC's subnet-directed broadcast (e.g. 192.168.1.255)
+// instead lets the routing table deliver to the correct NIC per subnet — thus
+// covering every NIC with no interface binding and no user configuration.
+// ============================================
+
+/** Subnet-directed broadcast for an IPv4 addr + netmask (or null if malformed). */
+function directedBroadcast(ip: string, netmask: string): string | null {
+  const ipParts = ip.split('.').map(Number)
+  const maskParts = netmask.split('.').map(Number)
+  if (ipParts.length !== 4 || maskParts.length !== 4) return null
+  if (ipParts.some(Number.isNaN) || maskParts.some(Number.isNaN)) return null
+  return ipParts.map((o, i) => o | (~maskParts[i] & 0xff)).join('.')
+}
+
+/**
+ * Pure: build the DBP broadcast target list from an interface list. Always
+ * includes 255.255.255.255; adds each non-internal IPv4 interface's directed
+ * broadcast. Excludes our own alias IPs. Deduped.
+ *
+ * Known limitation: two NICs on the IDENTICAL subnet share one directed
+ * broadcast, and Node dgram can't pin a broadcast to an egress interface, so
+ * only the routed NIC is reached. Vanishingly rare in production.
+ */
+export function broadcastTargetsFrom(
+  addrs: Array<{ address: string; netmask: string; family: string; internal: boolean }>,
+  aliasIps: Set<string> = new Set()
+): string[] {
+  const targets = new Set<string>(['255.255.255.255'])
+  for (const a of addrs) {
+    if (a.family !== 'IPv4' || a.internal) continue
+    if (aliasIps.has(a.address)) continue
+    if (!a.netmask) continue
+    const b = directedBroadcast(a.address, a.netmask)
+    if (b) targets.add(b)
+  }
+  return Array.from(targets)
+}
+
+/** DBP broadcast targets for THIS host (limited + per-NIC directed broadcast). */
+export function getBroadcastTargets(): string[] {
+  const aliasIps = new Set(Array.from(addedAliases.values()).map((a) => a.aliasIp))
+  const addrs: Array<{ address: string; netmask: string; family: string; internal: boolean }> = []
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const a of list ?? []) {
+      addrs.push({ address: a.address, netmask: a.netmask, family: a.family as string, internal: a.internal })
+    }
+  }
+  return broadcastTargetsFrom(addrs, aliasIps)
+}
