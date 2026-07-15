@@ -396,6 +396,9 @@ export async function cleanupAllAliases(): Promise<void> {
 // are missed. Sending each NIC's subnet-directed broadcast (e.g. 192.168.1.255)
 // instead lets the routing table deliver to the correct NIC per subnet — thus
 // covering every NIC with no interface binding and no user configuration.
+//
+// ⚠️ 演算法與 scripts/verify-broadcast-targets.mjs 同步（無測試框架下的可執行
+//    規格）；改動下面的 directedBroadcast/broadcastTargetsFrom 必重跑該腳本。
 // ============================================
 
 /** Subnet-directed broadcast for an IPv4 addr + netmask (or null if malformed). */
