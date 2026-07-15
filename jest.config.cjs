@@ -8,6 +8,19 @@ module.exports = {
     '^@/(.*)$': '<rootDir>/src/renderer/$1',
   },
   transform: {
-    '^.+\\.ts$': ['ts-jest', { tsconfig: { esModuleInterop: true, module: 'commonjs' } }],
+    '^.+\\.ts$': [
+      'ts-jest',
+      {
+        tsconfig: {
+          esModuleInterop: true,
+          module: 'commonjs',
+          baseUrl: '.',
+          paths: {
+            '@shared/*': ['src/shared/*'],
+            '@/*': ['src/renderer/*'],
+          },
+        },
+      },
+    ],
   },
 }
