@@ -123,34 +123,39 @@ loop:
 
 依序：
 
-1. **MAC 有進行中任務** → 交給該任務狀態機處理（如 `waiting_online` 的認回，見 6.3 步驟 2）
-2. **MAC 在登記表、status=provisioned、且現況 `regUser` == 分配的分機** → 已供裝，跳過
-3. **MAC 在登記表但現況不符**（`regUser` 空白或不等於分配值，即被恢復出廠或外部改動）→ **沿用原分配的 IP＋分機**重跑供裝流程，不重新取號
+1. **MAC 有進行中任務** → 交給該任務狀態機處理（`waiting_online` 的認回即 resolve 該任務的 `onlineSignal`，見 6.3）
+2. **MAC 在登記表、且現況 `regUser` == 分配的分機** → 已供裝，跳過；若登記表 status 仍為 `pending`/`failed`（如上次 App 在 SIP 設定成功後、登記表回寫前 crash），**補標為 `provisioned`**。此規則不看 status、只看現況相符，堵住 crash 後的判定真空。
+3. **MAC 在登記表但現況不符**（`regUser` 空白或不等於分配值，即被恢復出廠或外部改動）→ **沿用原分配的 IP＋分機**重跑供裝流程，不重新取號。重跑前檢查：若原分配 IP 已被**其他 MAC** 的設備佔用（在本輪掃描結果中），不自行改號，直接標 `failed`＋原因「分配 IP 被其他設備佔用」，留給人工處理。
 4. **MAC 不在登記表** → 新設備：取號器分配下一個未用 IP＋分機，**立即寫登記表佔位**（status = `pending`，完成後改 `provisioned`、失敗改 `failed`），進供裝流程
+
+登記表中 status=`pending`/`failed` 但本輪掃描沒出現的設備：不做任何動作（無法對不在場的設備供裝），任務表持續顯示其記錄，待其重新出現時由規則 2/3 接手。
 
 ### 6.3 單台供裝（狀態機）
 
-任務掛進 `usePromiseQueue`（併發上限沿用 `MAX_CONCURRENT_SYNC` = 5）。**取號器本身在掃描循環的單一執行緒內同步執行**，兩台設備不會搶到同一號。
+**執行模型**：每台設備的任務是一個由掃描循環與計時器驅動的**狀態機物件**，`waiting_online` 期間**不佔用任何併發槽**。只有實際打網路的步驟（DBP SET、REST 設定）才短暫掛進 `usePromiseQueue`（併發上限沿用 `MAX_CONCURRENT_SYNC` = 5），做完即釋放。這避免 5 台設備同時等重開機把整條管線堵死。**取號器在掃描循環的單一執行緒內同步執行**，兩台設備不會搶到同一號。
 
-1. `ip_assigning`：`changeDeviceIp({device, newIp, newMask, newGateway, newName: prefix+ext})` — DBP SET，設備收到後重開機
-2. `waiting_online`：等後續掃描輪認回 —— MAC 相符**且 IP == 分配值**才算上線；逾時 **120 秒** → `failed`（原因「改 IP 後未上線」）
-3. `sip_configuring`：`getSipConfig(ip)` 讀現值 → 只覆蓋 `user_id / password / server_address / server_port` 四欄（read-modify-write，不動 transport、auto_answer 等其他欄位）→ `setSipPrimary(ip, merged)`。401 由 `deviceApi` 既有攔截器自動用預設帳密登入重試，新設備免手動 login
+1. `ip_assigning`：（入列）`changeDeviceIp({device, newIp, newMask, newGateway, newName: prefix+ext})` — DBP SET，設備收到後重開機。送出即出列。
+2. `waiting_online`：（不佔槽）任務建立 `onlineSignal` Promise 與一個 **120 秒真實計時器**，`await Promise.race([onlineSignal, timeout])`。掃描循環認回設備（MAC 相符**且 IP == 分配值**）時 resolve `onlineSignal`；計時器先到 → `failed`（原因「改 IP 後未上線」）。UI 倒數以計時器 deadline 計算，精準顯示。
+3. `sip_configuring`：（入列）`getSipConfig(ip)` 讀現值 → 只覆蓋 `user_id / password / server_address / server_port` 四欄（read-modify-write，不動 transport、auto_answer 等其他欄位）→ `setSipPrimary(ip, merged)`。401 由 `deviceApi` 既有攔截器自動用預設帳密登入重試，新設備免手動 login
 4. 回報 `success` → 登記表標 `provisioned`，任務標 `done`
 
 **特例（重供裝且 IP 已正確）**：設備現有 IP 恰好 == 分配 IP 時，跳過步驟 1-2 直接設 SIP。此時名稱不更新（DBP SET 會觸發整機重開機，只為改名不值得），接受名稱維持原狀。
 
 ### 6.4 號碼池取號器
 
-- IP 池與分機池各自獨立依序取用：從範圍起點往後找第一個「登記表未佔用**且**不在本輪掃描既有設備 IP 清單」的號碼
+- IP 池與分機池各自獨立依序取用：從範圍起點往後找第一個「登記表未佔用**且**不在本輪掃描既有設備 IP 清單」的號碼。**佔用判斷以登記表為主**（永久記錄，已供裝設備暫時離線不會導致其號碼被重配）；本輪掃描 IP 清單僅作即時衝突預防的輔助，**每輪從 `dbpDiscover` 回傳結果即時萃取，不跨輪快取**。
+- 注意：IP 池與分機池的序號各自獨立——第 N 台設備拿第 N 個**可用** IP 與第 N 個**可用**分機，IP 尾碼與分機號之間**沒有**對應關係。
 - 已分配的號碼永久佔用（記在登記表），即使該任務 failed 也保留（重試沿用）
 - 任一池用盡 → 引擎**自動暫停**：停止對新設備派工，進行中任務照跑，UI 紅色警示
 
 ### 6.5 跨網段可達性
 
+**前提**：DBP 發現走 UDP 廣播，所有待供裝設備必須與本機在**同一 broadcast domain（同 L2）**；本功能不支援跨 L3 的設備發現。
+
 啟動時計算分配池所屬網段：
 
 - 若不在本機任一網卡網段 → 呼叫既有 `ensureReachableForIps`（次要 IP 別名）確保 REST 打得到（對應 HK-WSDK 韌體 REST-static、無 DHCP 的限制）
-- 停止供裝時清除別名（既有 `cleanupAllAliases`）
+- 停止供裝時**只清除本次供裝 session 自己加的別名**（記錄自己加了哪些），不得一律 `cleanupAllAliases` 波及其他功能加的別名
 
 ## 7. UI（AutoProvisionView）
 
@@ -170,9 +175,11 @@ loop:
 | DBP SET 後 120 秒未上線 | `failed`＋原因；登記表保留分配；手動重試沿用原號 |
 | `setSipPrimary` 回 `error` | 沿用 `postRetry` 語意重試，仍失敗 → `failed`＋原因 |
 | 分配的 IP 已被其他設備佔用 | 取號時跳過（比對登記表＋本輪掃描結果），記日誌 |
-| 使用者按「停止」 | 停掃描循環；進行中任務跑完當前步驟後中止，狀態留在任務表 |
-| App 中途被關 | 取號當下已落地佔位：重開後已完成的不重做；卡半途的由 6.2 規則 3 自動判定重跑 |
-| registry 檔損壞 | JSON 解析失敗 → 視為空表、原壞檔改名備份（`.corrupt-<timestamp>`），日誌警示 |
+| 使用者按「停止」 | 停掃描循環；正在打網路的步驟（入列中）跑完即中止；`waiting_online` 的任務**立即取消**（reject `onlineSignal`、清計時器），任務標「已中止」，登記表維持 `pending`（重新啟動後由 6.2 規則 2/3 接手） |
+| App 中途被關 | 取號當下已落地佔位：重開後已完成（含 crash 前已寫入設備但未回寫登記表）的由 6.2 規則 2 補標；卡半途的由規則 3 自動判定重跑 |
+| registry 檔損壞 | JSON 解析失敗 → 視為空表、原壞檔改名備份（`.corrupt-<YYYYMMDDTHHmmss>`），日誌警示 |
+| registry 寫入失敗（磁碟滿、權限錯誤等） | 引擎進入**降級模式**：記憶體內繼續運作、UI 明顯警示「進度無法保存，重開 App 後可能重複供裝」；每次寫入都 try-catch，不讓 IO 例外炸掉引擎 |
+| 使用者停止後改了範圍再啟動 | 舊記錄仍有效（設備已供裝的不動）；取號只在新範圍內取；登記表中超出新範圍的記錄 log 警示但保留 |
 | 混網段 | 見 6.5 |
 
 ## 9. 測試策略
@@ -181,10 +188,14 @@ loop:
   - 取號器：依序取號、跳過已佔用、跳過掃描現存 IP、池用盡
   - 判定邏輯：6.2 四分支各一案例（含恢復出廠重供裝）
   - registry：原子寫入、壞檔容錯與備份
-- **狀態機測試**：注入 mock（`dbpDiscover` / `changeDeviceIp` / `deviceApi` 抽成可注入介面），模擬掃描輪序列（發現 → 消失 → 以新 IP 出現 → SIP 成功/失敗），驗證狀態轉移、120 秒逾時、停止行為
+- **狀態機測試**：依賴注入方式明確為——`useAutoProvisioning(deps)` 接受一個 deps 物件 `{discover, changeIp, getSipConfig, setSipPrimary, registry}`，正式碼傳入真實實作、測試傳入 jest mock（不依賴 `jest.mock` 模組替換，也不需 provide/inject）。模擬掃描輪序列（發現 → 消失 → 以新 IP 出現 → SIP 成功/失敗），驗證狀態轉移、120 秒逾時（jest fake timers）、停止取消行為
+- **registry 測試**：`provisionRegistry` 的檔案路徑設計為可注入參數（正式碼傳 `app.getPath('userData')`），測試用 tmp 目錄跑真實 fs，不 mock electron
 - **真機 E2E**（實作完成後）：.147 測試環境走恢復出廠 → 自動供裝全流程（遵守既有 E2E 環境注意事項：勿動 .146、單 session）
 
 ## 10. 實作前置檢查
 
 - 改動 `ipChanger.ts`、`deviceApi.ts` 相關符號前，先 `bash scripts/gitnexus-fresh.sh` 並跑 `impact` 分析（專案規範）
 - 提交前 `detect_changes()` 核對影響範圍
+- 核對 `ensureReachableForIps` 是否冪等（別名已存在時不 throw）、是否能追蹤「本次加了哪些別名」；不足則先補強 routeManager
+- 核對 `postRetry` 的實際重試次數/間隔語意，§8 的重試描述以程式碼為準對齊
+- `provisionRegistry` 的 temp 檔必須與目標檔**同目錄**（同 volume）才能保證 rename 原子性
