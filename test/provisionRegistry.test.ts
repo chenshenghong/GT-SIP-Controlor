@@ -34,4 +34,20 @@ describe('provisionRegistry', () => {
     const files = await fs.readdir(dir)
     expect(files.some((n) => n.includes('.corrupt-'))).toBe(true)
   })
+
+  // 回歸（實測 .184 降級 banner）：多台設備同時完成 → 並發 persist，
+  // 不可因搶同一 temp 檔而拋錯；最終檔案須為有效 JSON。
+  it('並發寫入不 race：20 次同時 save 全部成功、檔案有效', async () => {
+    const f = await tmpFile()
+    const writes = Array.from({ length: 20 }, (_, i) =>
+      saveRegistry(f, { config: null, records: [
+        { mac: `M${i}`, assignedIp: `10.0.0.${i}`, assignedExt: 8000 + i, status: 'provisioned', updatedAt: '' }] }))
+    await expect(Promise.all(writes)).resolves.toBeDefined() // 無任何一次 reject
+    const loaded = await loadRegistry(f)
+    expect(Array.isArray(loaded.records)).toBe(true)
+    expect(loaded.records.length).toBe(1) // 每次寫整份，最後一次勝出
+    // 目錄不應殘留 .tmp- 檔
+    const leftover = (await fs.readdir(path.dirname(f))).filter((n) => n.includes('.tmp-'))
+    expect(leftover).toEqual([])
+  })
 })
