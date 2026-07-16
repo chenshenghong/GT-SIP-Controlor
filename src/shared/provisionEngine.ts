@@ -47,6 +47,7 @@ const DEFAULT_SIP: Omit<SipConfig, 'server_address' | 'server_port' | 'user_id' 
 
 export function createProvisionEngine(config: ProvisionConfig, deps: ProvisionDeps) {
   const tasks = new Map<string, ProvisionTask>()
+  const ignoredMacs = new Set<string>() // 已記過「非工廠預設、略過」日誌的 MAC（避免每輪重複記）
   const limiter = createLimiter(MAX_CONCURRENT)
   let registry: ProvisionRegistryFile = { config, records: [] }
   let loaded = false
@@ -190,6 +191,15 @@ export function createProvisionEngine(config: ProvisionConfig, deps: ProvisionDe
       return beginProvision(d, rec.assignedIp, rec.assignedExt)
     }
     // 規則 4：新設備 → 取號 + 佔位
+    // 工廠預設 IP 保護：若有設定，只對現況 IP == 工廠預設的設備做首次供裝，
+    // 不在該 IP 的既有現役設備一律不碰（共用網段防劫持）。留空＝不設限。
+    if (config.factoryDefaultIp && d.ip !== config.factoryDefaultIp) {
+      if (!ignoredMacs.has(d.mac)) {
+        ignoredMacs.add(d.mac)
+        log(`· 略過 ${d.mac}（IP ${d.ip} 非工廠預設 ${config.factoryDefaultIp}，非新設備）`)
+      }
+      return null
+    }
     const alloc = allocate(config, registry.records, new Set(devices.map((x) => x.ip).filter(Boolean)))
     if (!alloc) {
       if (!paused) { paused = true; deps.emit({ kind: 'paused', reason: '號碼池已用盡，供裝暫停' }); log('⏸ 號碼池已用盡，暫停對新設備派工') }

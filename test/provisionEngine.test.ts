@@ -172,6 +172,30 @@ describe('provisionEngine', () => {
     expect(setSip.mock.calls.at(-1)?.[1]).toMatchObject({ user_id: '8005' })
   })
 
+  // 工廠預設 IP 保護：只對現況 IP == 工廠預設的新設備供裝，既有現役設備不碰。
+  it('工廠預設 IP 保護：只有在 .200 的新設備被供裝，.101 現役設備被略過', async () => {
+    const gatedCfg: ProvisionConfig = { ...cfg, factoryDefaultIp: '192.168.1.200' }
+    const changeIp = jest.fn<Promise<{ success: boolean }>, [IpChangeRequest]>(async () => ({ success: true }))
+    // 同輪：FRESH 在工廠預設 .200；LIVE 是既有設備在 .101（範圍內、非工廠預設）
+    const deps = makeDeps({ changeIp,
+      discover: async () => [dev('FRESH', '192.168.1.200'), dev('LIVE', '192.168.1.101', '')] })
+    const eng = createProvisionEngine(gatedCfg, deps)
+    await eng.runRound()
+    // 只有 FRESH 被改 IP（供裝）；LIVE 完全沒被碰
+    expect(changeIp).toHaveBeenCalledTimes(1)
+    expect(changeIp.mock.calls[0][0].device.mac).toBe('FRESH')
+    expect(eng.getTasks().some((t) => t.mac === 'LIVE')).toBe(false)
+  })
+
+  // 未設工廠預設 IP → 維持原行為（對任何新設備供裝）。
+  it('未設工廠預設 IP：任何新設備都供裝（向後相容）', async () => {
+    const changeIp = jest.fn<Promise<{ success: boolean }>, [IpChangeRequest]>(async () => ({ success: true }))
+    const deps = makeDeps({ changeIp, discover: async () => [dev('ANY', '192.168.9.9')] })
+    const eng = createProvisionEngine(cfg, deps) // cfg 無 factoryDefaultIp
+    await eng.runRound()
+    expect(changeIp).toHaveBeenCalledTimes(1)
+  })
+
   // 回歸（adversarial finding 5）：注入的網路 dep 拋例外時，任務轉 failed 而非永久卡住。
   it('dep 拋例外：configureSip 例外 → failed，不永久卡在 sip_configuring', async () => {
     const store: ProvisionRegistryFile = { config: null, records: [

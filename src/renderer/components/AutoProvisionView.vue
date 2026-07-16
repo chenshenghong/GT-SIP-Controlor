@@ -10,6 +10,7 @@ const { start, stop, retry } = useAutoProvisioning()
 const form = reactive<ProvisionConfig>({
   ipStart: '', ipEnd: '', mask: '255.255.255.0', gateway: '',
   extStart: 8001, extEnd: 8100, sipPassword: '', sipServer: '', sipPort: 5060, namePrefix: '',
+  factoryDefaultIp: '',
 })
 
 const error = computed<string | null>(() => {
@@ -66,6 +67,7 @@ function onRetry(mac: string) { retry(mac) }
       <label class="flex flex-col gap-1 text-xs">SIP Port<input v-model.number="form.sipPort" :disabled="store.running" type="number" class="input" /></label>
       <label class="flex flex-col gap-1 text-xs">SIP 密碼<input v-model="form.sipPassword" :disabled="store.running" type="password" class="input" /></label>
       <label class="flex flex-col gap-1 text-xs">名稱前綴<input v-model="form.namePrefix" :disabled="store.running" class="input" placeholder="GT-" /></label>
+      <label class="flex flex-col gap-1 text-xs">工廠預設 IP<input v-model="form.factoryDefaultIp" :disabled="store.running" class="input" placeholder="192.168.1.200（留空=不設限）" /></label>
     </div>
 
     <!-- 啟停 + 狀態列 -->

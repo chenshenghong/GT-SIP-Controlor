@@ -263,6 +263,9 @@ export interface ProvisionConfig {
   sipServer: string
   sipPort: number
   namePrefix: string
+  // 工廠預設 IP：只對「現況 IP == 此值」的設備做首次供裝，避免在共用網段上
+  // 誤把既有現役設備當新設備劫持。留空＝不設限（對任何新發現的設備供裝）。
+  factoryDefaultIp?: string
 }
 
 /** 登記表一筆記錄（MAC 為主鍵） */
