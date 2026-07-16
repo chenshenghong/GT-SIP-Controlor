@@ -7,7 +7,11 @@
         <span v-if="duplicateIps.length" class="duplicate-alert">
           ⚠️ {{ duplicateIps.length }} 組 IP 衝突
         </span>
-        <button class="add-btn" @click="$emit('restScan')" title="掃描網段自動發現 REST SIP 終端">
+        <button class="scan-btn" :disabled="scanning" @click="$emit('scan')"
+          title="DBP 廣播掃描（跨網段、不需 TLS），並自動抓取即時分機/伺服器/註冊狀態">
+          {{ scanning ? '掃描中…' : '📡 掃描' }}
+        </button>
+        <button class="add-btn" @click="$emit('restScan')" title="REST 網段掃描（找不支援 DBP 的 REST-only 設備）">
           🔎 REST 掃描
         </button>
         <button class="add-btn" @click="$emit('add')" title="手動輸入 IP 加入設備">
@@ -93,12 +97,13 @@
 import { computed } from 'vue'
 import type { DeviceNode } from '@shared/types'
 
-const props = defineProps<{ devices: DeviceNode[] }>()
+const props = defineProps<{ devices: DeviceNode[]; scanning?: boolean }>()
 defineEmits<{
   select: [device: DeviceNode]
   changeIp: [device: DeviceNode]
   add: []
   restScan: []
+  scan: []
 }>()
 
 const onlineCount = computed(() => props.devices.filter(d => d.status === 'ONLINE').length)
@@ -139,6 +144,9 @@ function getIpCount(ip: string): number {
 .duplicate-alert { background: rgba(255,82,82,0.15); color: #ff8a80; padding: 4px 12px; border-radius: 12px; font-size: 0.8rem; animation: pulse 2s infinite; }
 .add-btn { background: rgba(78,222,163,0.1); border: 1px solid rgba(78,222,163,0.3); color: #4edea3; padding: 5px 14px; border-radius: 8px; cursor: pointer; font-size: 0.8rem; transition: all 0.2s; }
 .add-btn:hover { background: rgba(78,222,163,0.2); transform: translateY(-1px); }
+.scan-btn { background: rgba(78,222,163,0.85); border: 1px solid #4edea3; color: #06231a; font-weight: 600; padding: 5px 16px; border-radius: 8px; cursor: pointer; font-size: 0.8rem; transition: all 0.2s; }
+.scan-btn:hover:not(:disabled) { background: #4edea3; transform: translateY(-1px); }
+.scan-btn:disabled { opacity: 0.5; cursor: default; }
 
 .table-scroll { overflow-x: auto; border-radius: 12px; border: 1px solid rgba(78,222,163,0.1); }
 table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }

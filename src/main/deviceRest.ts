@@ -12,7 +12,7 @@ import * as https from 'https'
 import * as http from 'http'
 import * as crypto from 'crypto'
 import { DEVICE_DEFAULT_USERNAME, DEVICE_DEFAULT_PASSWORD } from '@shared/constants'
-import type { SipConfig, SipConfigResponse } from '@shared/types'
+import type { SipConfig, SipConfigResponse, DeviceStatus } from '@shared/types'
 
 /** 放寬 legacy renegotiation + 忽略自簽憑證（設備 https 用自簽）。 */
 const legacyAgent = new https.Agent({
@@ -115,14 +115,24 @@ async function request(ip: string, method: string, path: string, body?: unknown)
   throw lastErr
 }
 
-/** GET /get/sip/config（巢狀結構）。失敗回 null。 */
-export async function restGetSipConfig(ip: string): Promise<SipConfigResponse | null> {
+/** 通用 GET：回已解析物件（含 401 自動登入重試）。失敗回 null。 */
+export async function restGetJson(ip: string, apiPath: string): Promise<unknown | null> {
   try {
-    const r = await request(ip, 'GET', '/get/sip/config')
-    return r.data && typeof r.data === 'object' ? (r.data as SipConfigResponse) : null
+    const r = await request(ip, 'GET', apiPath)
+    return r.data && typeof r.data === 'object' ? r.data : null
   } catch {
     return null
   }
+}
+
+/** GET /get/sip/config（巢狀結構）。失敗回 null。 */
+export async function restGetSipConfig(ip: string): Promise<SipConfigResponse | null> {
+  return (await restGetJson(ip, '/get/sip/config')) as SipConfigResponse | null
+}
+
+/** GET /get/device/status（含即時 SIP 註冊狀態 account）。失敗回 null。 */
+export async function restGetDeviceStatus(ip: string): Promise<DeviceStatus | null> {
+  return (await restGetJson(ip, '/get/device/status')) as DeviceStatus | null
 }
 
 /** POST /set/sip/primary。韌體恆回 HTTP 200，看 body status；error=確定拒絕不重試。回 true/false。 */

@@ -35,6 +35,7 @@ export const IPC_CHANNELS = {
   // 設備 REST 走主行程（Node TLS，放寬 legacy renegotiation，供 fresh 韌體 https）
   DEVICE_GET_SIP_CONFIG: 'device:get-sip-config',
   DEVICE_SET_SIP_PRIMARY: 'device:set-sip-primary',
+  DEVICE_GET_STATUS: 'device:get-status',
 
   // System
   RESTART_DEVICE: 'device:restart',

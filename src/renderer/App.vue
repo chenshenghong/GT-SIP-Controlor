@@ -19,6 +19,8 @@
         <DeviceTable
           v-if="!selectedDevice"
           :devices="deviceStore.devices"
+          :scanning="isScanning"
+          @scan="startScan"
           @select="handleSelectDevice"
           @change-ip="handleOpenIpChange"
           @add="showAddDevice = true"
@@ -83,8 +85,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useDeviceStore } from '@/stores/devices'
-import type { DeviceNode } from '@shared/types'
-import { getDeviceStatus } from '@/composables/deviceApi'
+import type { DeviceNode, DeviceStatus } from '@shared/types'
 import AppLayout from '@/components/AppLayout.vue'
 import NetworkRadar from '@/components/NetworkRadar.vue'
 import DeviceTable from '@/components/DeviceTable.vue'
@@ -103,20 +104,23 @@ const deviceStore = useDeviceStore()
 async function enrichRegStatus(devices: DeviceNode[]) {
   // Per device, in parallel — a cross-subnet device's login timeout must not
   // block reachable devices from filling in (different IPs = independent).
+  //
+  // 走「主行程」REST（Node TLS 放寬 legacy renegotiation）：fresh GT-SIP-GW 韌體的
+  // https 不支援 RFC 5746，renderer 的 Chromium 一律握手失敗 → 舊版此處會全「連線
+  // 失敗」。改走主行程後才讀得到即時狀態。
   await Promise.all(devices.map(async (d) => {
     if (!d.ip || !d.mac) return
-    // /get/device/status needs NO auth — call it directly. (login is a flaky
-    // POST and unnecessary for reads.) null after retries = unreachable.
-    let st: Awaited<ReturnType<typeof getDeviceStatus>> = null
-    for (let i = 0; i < 6 && !st; i++) st = await getDeviceStatus(d.ip)
+    let st: DeviceStatus | null = null
+    for (let i = 0; i < 6 && !st; i++) st = await window.electronAPI.deviceGetStatus(d.ip)
     if (!st) {
       deviceStore.patchDevice(d.mac, { sipRegStatus: '連線失敗' })
       return
     }
     const pl = st?.sip_status?.primary_line as Record<string, unknown> | undefined
     const patch: Partial<DeviceNode> = { sipRegStatus: pl?.status ? String(pl.status) : '未知' }
-    // account = "30101@192.168.0.155:5060" — the LIVE registered identity, which
-    // overrides the device's stale DBP RegUser (the two config stores differ).
+    // account = "101@192.168.1.203:5060" — the LIVE registered identity, which
+    // overrides the device's stale DBP RegUser (IFCFG-APP 與 primary_line 是兩個
+    // 分開的儲存區；DBP 讀 IFCFG-APP，REST /set/sip/primary 只動 primary_line)。
     const account = pl?.account ? String(pl.account) : ''
     const m = account.match(/^([^@]+)@([^:]+)(?::(\d+))?/)
     if (m) {
@@ -131,6 +135,19 @@ async function enrichRegStatus(devices: DeviceNode[]) {
       if (di.microphone_volume != null) patch.micVol = Number(di.microphone_volume)
     }
     deviceStore.patchDevice(d.mac, patch)
+
+    // 若尚未註冊（account 空），改讀「已設定」的 primary_line，讓清單顯示我們供裝的
+    // 分機/伺服器（101/.203）而非 DBP 舊值，才能確認供裝設定已寫入。
+    if (!m) {
+      const sip = await window.electronAPI.deviceGetSipConfig(d.ip)
+      const cfg = sip?.primary_line
+      if (cfg) {
+        const p2: Partial<DeviceNode> = {}
+        if (cfg.user_id) p2.regUser = String(cfg.user_id)
+        if (cfg.server_address) { p2.regAddr = String(cfg.server_address); p2.regPort = String(cfg.server_port || 5060) }
+        if (Object.keys(p2).length) deviceStore.patchDevice(d.mac, p2)
+      }
+    }
   }))
 }
 

@@ -4,7 +4,7 @@
 // ============================================
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC_CHANNELS } from '@shared/constants'
-import type { ScanProgress, ScanResult, RestScanProgress, DeviceNode, IpChangeRequest, ProvisionRegistryFile, SipConfig, SipConfigResponse } from '@shared/types'
+import type { ScanProgress, ScanResult, RestScanProgress, DeviceNode, IpChangeRequest, ProvisionRegistryFile, SipConfig, SipConfigResponse, DeviceStatus } from '@shared/types'
 
 export type ElectronAPI = {
   // Scanner (mode=0: subnet scan)
@@ -35,6 +35,7 @@ export type ElectronAPI = {
   // 設備 REST 走主行程（Node TLS 放寬 legacy renegotiation，供 fresh 韌體 https）
   deviceGetSipConfig: (ip: string) => Promise<SipConfigResponse | null>
   deviceSetSipPrimary: (ip: string, cfg: SipConfig) => Promise<boolean>
+  deviceGetStatus: (ip: string) => Promise<DeviceStatus | null>
 }
 
 const electronAPI: ElectronAPI = {
@@ -120,6 +121,9 @@ const electronAPI: ElectronAPI = {
   },
   deviceSetSipPrimary: (ip: string, cfg: SipConfig) => {
     return ipcRenderer.invoke(IPC_CHANNELS.DEVICE_SET_SIP_PRIMARY, ip, cfg)
+  },
+  deviceGetStatus: (ip: string) => {
+    return ipcRenderer.invoke(IPC_CHANNELS.DEVICE_GET_STATUS, ip)
   },
 }
 

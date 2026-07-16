@@ -10,26 +10,8 @@
 // Runs in main (Node http) so there is no CORS / renderer flakiness.
 // ============================================
 import * as net from 'net'
-import * as http from 'http'
+import { restGetJson } from './deviceRest'
 import type { DeviceNode, RestScanProgress } from '@shared/types'
-
-const gbk = new TextDecoder('gbk')
-
-/** GBK decode + firmware dirty-JSON repair (broadcast_volume quote + missing brace) */
-function cleanParse(buf: Buffer): Record<string, unknown> | null {
-  try {
-    let t = gbk
-      .decode(new Uint8Array(buf))
-      .replace(/"broadcast_volume:/g, '"broadcast_volume":')
-      .trim()
-    const opens = (t.match(/{/g) || []).length
-    const closes = (t.match(/}/g) || []).length
-    if (opens > closes) t += '}'.repeat(opens - closes)
-    return JSON.parse(t)
-  } catch {
-    return null
-  }
-}
 
 /** Fast, reliable "is there a web server here" check. */
 function tcpOpen(ip: string, port: number, timeoutMs: number): Promise<boolean> {
@@ -43,25 +25,19 @@ function tcpOpen(ip: string, port: number, timeoutMs: number): Promise<boolean> 
   })
 }
 
-function httpGet(ip: string, path: string, timeoutMs: number): Promise<Record<string, unknown> | null> {
-  return new Promise((resolve) => {
-    const req = http.get({ host: ip, port: 80, path, timeout: timeoutMs }, (res) => {
-      const chunks: Buffer[] = []
-      res.on('data', (c) => chunks.push(c as Buffer))
-      res.on('end', () => resolve(cleanParse(Buffer.concat(chunks))))
-    })
-    req.on('error', () => resolve(null))
-    req.on('timeout', () => { req.destroy(); resolve(null) })
-  })
-}
-
-/** Retry an HTTP GET — the device times out often, so try a few times. */
+/**
+ * REST GET 走 deviceRest 的主行程通道（https-first + legacy renegotiation + http
+ * fallback + GBK/髒JSON + 401 自動登入）。舊碼用純 http:80，但 fresh GT-SIP-GW 韌體
+ * :80 會 301 轉 https、且需 token → 掃描全失敗；改走這條後新舊韌體都讀得到。
+ * 設備 web 常逾時，重試數次。
+ * (timeoutMs 參數保留簽名相容，實際逾時由 deviceRest 內建。)
+ */
 async function httpGetRetry(
-  ip: string, path: string, timeoutMs: number, tries: number
+  ip: string, path: string, _timeoutMs: number, tries: number
 ): Promise<Record<string, unknown> | null> {
   for (let i = 0; i < tries; i++) {
-    const r = await httpGet(ip, path, timeoutMs)
-    if (r) return r
+    const r = await restGetJson(ip, path)
+    if (r && typeof r === 'object') return r as Record<string, unknown>
   }
   return null
 }

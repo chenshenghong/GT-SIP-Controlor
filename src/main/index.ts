@@ -216,6 +216,10 @@ function registerIpcHandlers(mainWindow: BrowserWindow): void {
     const { restSetSipPrimary } = await import('./deviceRest')
     return restSetSipPrimary(ip, cfg)
   })
+  ipcMain.handle(IPC_CHANNELS.DEVICE_GET_STATUS, async (_event, ip: string) => {
+    const { restGetDeviceStatus } = await import('./deviceRest')
+    return restGetDeviceStatus(ip)
+  })
 }
 
 // ---- GPU / sandbox hardening for headless / elevated Windows Server ----
