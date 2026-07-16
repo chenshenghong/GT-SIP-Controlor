@@ -15,7 +15,6 @@
 import { exec } from 'child_process'
 import { promisify } from 'util'
 import * as os from 'os'
-import * as net from 'net'
 
 const execAsync = promisify(exec)
 
@@ -55,7 +54,7 @@ export function detectLocalNetwork(): { iface: string; ip: string; subnet: strin
  * Every (iface, ip, subnet) the host natively holds (excludes our own aliases).
  * Unlike detectLocalNetwork() (first match only), this returns ALL of them —
  * needed on multi-homed hosts where two NICs coincidentally sit on the same
- * /24 range but lead to different physical LANs (see probeReachable below).
+ * /24 range but lead to different physical LANs (see ensureReachableForIps).
  */
 function allLocalIfaces(): Array<{ iface: string; ip: string; subnet: string }> {
   const ourAliasIps = new Set(Array.from(addedAliases.values()).map((a) => a.aliasIp))
@@ -69,31 +68,6 @@ function allLocalIfaces(): Array<{ iface: string; ip: string; subnet: string }> 
     }
   }
   return result
-}
-
-/**
- * Quick TCP probe (device REST port 80) — used to tell whether a device is
- * ACTUALLY reachable, not just whether its /24 happens to number-match some
- * local interface (which can be a false positive on multi-homed hosts).
- */
-function probeReachable(ip: string, timeoutMs = 400): Promise<boolean> {
-  return new Promise((resolve) => {
-    const socket = new net.Socket()
-    socket.setTimeout(timeoutMs)
-    socket.once('connect', () => {
-      socket.destroy()
-      resolve(true)
-    })
-    socket.once('timeout', () => {
-      socket.destroy()
-      resolve(false)
-    })
-    socket.once('error', () => {
-      socket.destroy()
-      resolve(false)
-    })
-    socket.connect(80, ip)
-  })
 }
 
 /**
@@ -361,17 +335,20 @@ export async function ensureReachableForIps(deviceIps: string[]): Promise<string
     if (addedAliases.has(subnet)) continue
 
     const nativeIface = nativeSubnets.get(subnet)
-    if (nativeIface && (await probeReachable(ip))) continue // genuinely reachable already
-
     if (nativeIface) {
-      // Subnet number collides with a local NIC that can't actually reach this
-      // device — alias it onto a different interface instead.
-      const altIface = ifaces.find((f) => f.iface !== nativeIface)?.iface
-      if (!altIface) continue // no other NIC to try
-      if (await addSubnetAlias(subnet, local.ip, altIface, true)) added.push(subnet)
-    } else {
-      if (await addSubnetAlias(subnet, local.ip, local.iface)) added.push(subnet)
+      // 主機已原生持有此子網（如 enp4s0 的 192.168.1.203/24）→ 交給原生路由，
+      // 絕不把子網別名到「另一張網卡」。
+      //
+      // ⚠️ 為何不再 probe＋fallback 到 altIface（實測 2026-07-16 .184 事故）：
+      // 供裝流程中設備剛被 DBP 改 IP、正在重開機，此刻 TCP probe 必然失敗——
+      // 這是「設備還沒開機好」，不是「設備在另一條實體線」。舊碼一 probe 失敗就
+      // 把子網 force-alias 到 altIface（enp5s0），造成 (a) 同一 IP 出現在兩張網卡
+      // (duplicate)、(b) 192.168.1.0/24 在 enp5s0 的路由 metric 較低而劫持流量，
+      // 設備即使開機好也永遠連不到。原生子網一律信任原生路由即可。
+      continue
     }
+    // 無任何網卡原生持有此子網 → 真正跨網段，別名到本機主介面才打得到
+    if (await addSubnetAlias(subnet, local.ip, local.iface)) added.push(subnet)
   }
   return added
 }
