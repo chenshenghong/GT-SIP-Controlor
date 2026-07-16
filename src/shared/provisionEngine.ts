@@ -115,6 +115,18 @@ export function createProvisionEngine(config: ProvisionConfig, deps: ProvisionDe
         await setRecord(mac, { status: 'provisioned', lastError: undefined })
         log(`✅ ${mac} 供裝完成（IP ${ip}、分機 ${ext}）`)
       } else {
+        // SIP 設定失敗多半是設備改 IP 重開後 web server 還沒起來（DBP 早於 REST 就緒）。
+        // 在 deadline 內退回 waiting_online，下一輪掃描自動重試，撐過 web 啟動時間，
+        // 真正做到全自動；超過 deadline 才判 failed（保留手動重試）。
+        const t = tasks.get(mac)
+        if (t) {
+          if (t.deadline === undefined) t.deadline = deps.now() + ONLINE_TIMEOUT_MS // 首次失敗開重試窗
+          if (deps.now() < t.deadline) {
+            t.status = 'waiting_online'; pushTask(t)
+            log(`⏳ ${mac} SIP 未就緒（web 可能還在啟動），下一輪自動重試`)
+            return
+          }
+        }
         failTask(mac, 'SIP 設定回報失敗')
         await setRecord(mac, { status: 'failed', lastError: 'SIP 設定回報失敗' })
       }

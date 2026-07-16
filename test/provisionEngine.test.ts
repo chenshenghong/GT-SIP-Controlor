@@ -154,15 +154,18 @@ describe('provisionEngine', () => {
   // 回歸（adversarial finding 2）：retry 清掉 failed 任務，下一輪沿用原分配重供裝。
   // 預置登記表讓 GG 已在分配 IP .105（規則3、免改 IP、直接設 SIP）。
   it('retry：失敗後重試 → 下一輪沿用原分配重跑並完成', async () => {
+    const clock = { t: 1_000_000 }
     const store: ProvisionRegistryFile = { config: null, records: [
       { mac: 'GG', assignedIp: '192.168.1.105', assignedExt: 8005, status: 'failed', updatedAt: '' }] }
     let sipOk = false
     const setSip = jest.fn<Promise<boolean>, [string, SipConfig]>(async () => sipOk)
-    const deps = makeDeps({ discover: async () => [dev('GG', '192.168.1.105', '')],
+    const deps = makeDeps({ clock, discover: async () => [dev('GG', '192.168.1.105', '')],
       loadRegistry: async () => store, setSipPrimary: setSip,
       saveRegistry: async (d) => { store.records = d.records } })
     const eng = createProvisionEngine(cfg, deps)
-    await eng.runRound() // 規則3 沿用 .105/8005 → 免改IP → SIP 失敗 → failed
+    await eng.runRound() // 規則3 免改IP → SIP 失敗 → 開重試窗、退回 waiting_online
+    clock.t += 130_000    // 超過 deadline，讓自動重試收斂為 failed
+    await eng.runRound() // 再試仍失敗 → 過 deadline → failed
     expect(eng.getTasks().find((t) => t.mac === 'GG')?.status).toBe('failed')
     sipOk = true          // 修好 SIP server 後
     eng.retry('GG')       // 手動重試 → 清 failed 任務
@@ -194,6 +197,41 @@ describe('provisionEngine', () => {
     const eng = createProvisionEngine(cfg, deps) // cfg 無 factoryDefaultIp
     await eng.runRound()
     expect(changeIp).toHaveBeenCalledTimes(1)
+  })
+
+  // SIP 未就緒自動重試：設備改 IP 重開後 web 慢起，首輪設 SIP 失敗應自動隔輪重試、
+  // 撐過 web 啟動而非立刻判死（全自動、免手動重試）。
+  it('SIP 未就緒自動重試：先失敗一輪、下一輪成功 → done', async () => {
+    const clock = { t: 1_000_000 }
+    let sipCalls = 0
+    const setSip = jest.fn<Promise<boolean>, [string, SipConfig]>(async () => { sipCalls++; return sipCalls >= 2 })
+    const seq = [[dev('AA', '192.168.0.50')], [dev('AA', '192.168.1.101')], [dev('AA', '192.168.1.101')]]
+    let round = 0
+    const deps = makeDeps({ clock, setSipPrimary: setSip, discover: async () => seq[round++] ?? [] })
+    const eng = createProvisionEngine(cfg, deps)
+    await eng.runRound() // changeIp → waiting_online（deadline t+120000）
+    clock.t += 3000
+    await eng.runRound() // 認回 → 設 SIP 第1次失敗 → 退回 waiting_online（仍在 deadline 內）
+    expect(eng.getTasks().find((t) => t.mac === 'AA')?.status).toBe('waiting_online')
+    clock.t += 3000
+    await eng.runRound() // 再認回 → 設 SIP 第2次成功 → done
+    expect(setSip).toHaveBeenCalledTimes(2)
+    expect(eng.getTasks().find((t) => t.mac === 'AA')?.status).toBe('done')
+  })
+
+  // 逾時上限：SIP 一直失敗且超過 deadline → 最終 failed（不無限重試）。
+  it('SIP 一直失敗且過 deadline → 最終 failed', async () => {
+    const clock = { t: 1_000_000 }
+    const setSip = jest.fn<Promise<boolean>, [string, SipConfig]>(async () => false)
+    const deps = makeDeps({ clock, setSipPrimary: setSip,
+      discover: async () => [dev('AA', '192.168.1.101', '')],
+      loadRegistry: async () => ({ config: null, records: [
+        { mac: 'AA', assignedIp: '192.168.1.101', assignedExt: 8001, status: 'failed', updatedAt: '' }] }) })
+    const eng = createProvisionEngine(cfg, deps)
+    await eng.runRound()      // 規則3 免改IP → 設 SIP 失敗 → 開重試窗、退回 waiting_online
+    clock.t += 130_000        // 超過 deadline
+    await eng.runRound()      // 再認回設 SIP 失敗 → 過 deadline → failed
+    expect(eng.getTasks().find((t) => t.mac === 'AA')?.status).toBe('failed')
   })
 
   // 回歸（adversarial finding 5）：注入的網路 dep 拋例外時，任務轉 failed 而非永久卡住。
