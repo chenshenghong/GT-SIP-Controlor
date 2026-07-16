@@ -9,7 +9,7 @@ import { scanSubnet, scanMultiSubnet, autoDetectPort, resetDetectedPort, getActi
 import { scanViaTaskServer } from './taskServerClient'
 import { changeDeviceIp } from './ipChanger'
 import { cleanupAllRoutes, cleanupAllAliases } from './routeManager'
-import type { IpChangeRequest } from '@shared/types'
+import type { IpChangeRequest, SipConfig } from '@shared/types'
 
 function createWindow(): BrowserWindow {
   const mainWindow = new BrowserWindow({
@@ -205,6 +205,16 @@ function registerIpcHandlers(mainWindow: BrowserWindow): void {
     } catch (error) {
       return { success: false, error: String(error) }
     }
+  })
+
+  // 設備 REST 走主行程（Node OpenSSL 放寬 legacy renegotiation；Chromium 做不到）
+  ipcMain.handle(IPC_CHANNELS.DEVICE_GET_SIP_CONFIG, async (_event, ip: string) => {
+    const { restGetSipConfig } = await import('./deviceRest')
+    return restGetSipConfig(ip)
+  })
+  ipcMain.handle(IPC_CHANNELS.DEVICE_SET_SIP_PRIMARY, async (_event, ip: string, cfg: SipConfig) => {
+    const { restSetSipPrimary } = await import('./deviceRest')
+    return restSetSipPrimary(ip, cfg)
   })
 }
 

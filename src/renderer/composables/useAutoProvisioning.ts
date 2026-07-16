@@ -1,6 +1,5 @@
 import { createProvisionEngine, type ProvisionDeps } from '@shared/provisionEngine'
 import type { ProvisionConfig, ProvisionRegistryFile } from '@shared/types'
-import { getSipConfig, setSipPrimary } from '@/composables/deviceApi'
 import { useProvisioningStore } from '@/stores/provisioning'
 
 export function useAutoProvisioning() {
@@ -22,8 +21,10 @@ export function useAutoProvisioning() {
       },
       changeIp: (req) => window.electronAPI.changeIp(req),
       ensureReachable: async (ip) => { await window.electronAPI.ensureReachable(ip) },
-      getSipConfig: (ip) => getSipConfig(ip),
-      setSipPrimary: (ip, cfg) => setSipPrimary(ip, cfg),
+      // REST 走主行程（Node TLS 放寬 legacy renegotiation；renderer 的 Chromium
+      // 對不支援 RFC 5746 重協商的 fresh 韌體 https 會直接握手失敗）
+      getSipConfig: (ip) => window.electronAPI.deviceGetSipConfig(ip),
+      setSipPrimary: (ip, cfg) => window.electronAPI.deviceSetSipPrimary(ip, cfg),
       loadRegistry: async () => {
         const res = await window.electronAPI.readRegistry()
         return res.success && res.data ? res.data : { config, records: [] }

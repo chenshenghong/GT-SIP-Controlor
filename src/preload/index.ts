@@ -4,7 +4,7 @@
 // ============================================
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC_CHANNELS } from '@shared/constants'
-import type { ScanProgress, ScanResult, RestScanProgress, DeviceNode, IpChangeRequest, ProvisionRegistryFile } from '@shared/types'
+import type { ScanProgress, ScanResult, RestScanProgress, DeviceNode, IpChangeRequest, ProvisionRegistryFile, SipConfig, SipConfigResponse } from '@shared/types'
 
 export type ElectronAPI = {
   // Scanner (mode=0: subnet scan)
@@ -32,6 +32,9 @@ export type ElectronAPI = {
   readRegistry: () => Promise<{ success: boolean; data?: ProvisionRegistryFile; error?: string }>
   writeRegistry: (data: ProvisionRegistryFile) => Promise<{ success: boolean; error?: string }>
   ensureReachable: (ip: string) => Promise<{ success: boolean; error?: string }>
+  // 設備 REST 走主行程（Node TLS 放寬 legacy renegotiation，供 fresh 韌體 https）
+  deviceGetSipConfig: (ip: string) => Promise<SipConfigResponse | null>
+  deviceSetSipPrimary: (ip: string, cfg: SipConfig) => Promise<boolean>
 }
 
 const electronAPI: ElectronAPI = {
@@ -111,6 +114,12 @@ const electronAPI: ElectronAPI = {
 
   ensureReachable: (ip: string) => {
     return ipcRenderer.invoke(IPC_CHANNELS.PROVISION_ENSURE_REACHABLE, ip)
+  },
+  deviceGetSipConfig: (ip: string) => {
+    return ipcRenderer.invoke(IPC_CHANNELS.DEVICE_GET_SIP_CONFIG, ip)
+  },
+  deviceSetSipPrimary: (ip: string, cfg: SipConfig) => {
+    return ipcRenderer.invoke(IPC_CHANNELS.DEVICE_SET_SIP_PRIMARY, ip, cfg)
   },
 }
 

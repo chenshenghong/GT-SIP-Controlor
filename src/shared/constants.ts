@@ -32,6 +32,9 @@ export const IPC_CHANNELS = {
   REGISTRY_READ: 'provision:registry-read',
   REGISTRY_WRITE: 'provision:registry-write',
   PROVISION_ENSURE_REACHABLE: 'provision:ensure-reachable',
+  // 設備 REST 走主行程（Node TLS，放寬 legacy renegotiation，供 fresh 韌體 https）
+  DEVICE_GET_SIP_CONFIG: 'device:get-sip-config',
+  DEVICE_SET_SIP_PRIMARY: 'device:set-sip-primary',
 
   // System
   RESTART_DEVICE: 'device:restart',
