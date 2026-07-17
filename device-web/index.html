@@ -215,6 +215,7 @@
     <div class="nav-item" data-view="audio"><span class="ic">🔊</span>音量 / 通話</div>
     <div class="nav-item" data-view="network"><span class="ic">🌐</span>網路設定</div>
     <div class="nav-item" data-view="io"><span class="ic">🔌</span>IO 觸點</div>
+    <div class="nav-item" data-view="mzone"><span class="ic">📡</span>組播監聽區</div>
     <div class="nav-item" data-view="system"><span class="ic">⚙️</span>系統維護</div>
   </aside>
 
@@ -520,7 +521,8 @@ function navigate(view){
   stopPolling();
   const c=$("#content");
   ({dashboard:renderDashboard, sip:renderSip, audio:renderAudio,
-    network:renderNetwork, io:renderIO, system:renderSystem}[view]||renderDashboard)(c);
+    network:renderNetwork, io:renderIO, mzone:renderMulticastZones,
+    system:renderSystem}[view]||renderDashboard)(c);
 }
 
 function securityBanner(){
@@ -647,7 +649,8 @@ async function renderSip(c){
        <span class="hint" style="margin-left:8px">儲存後設備將重載 SIP 服務</span></div>
    </div>
 
-   <div class="card"><h3>組播接收<span class="ln"></span></h3>
+   <div class="card"><h3>組播接收（＝zone 1 快速設定）<span class="ln"></span></h3>
+     <p class="page-sub" style="margin:0 0 12px">此處等同「📡 組播監聽區」頁的 zone 1；完整 16 區多監聽區（優先權搶佔）請至該頁設定。</p>
      <div class="grid2">
        ${inp("mc-addr","組播位址 (224–239)",mc.multicast_address)}
        ${inp("mc-port","組播埠",mc.multicast_port,"number")}
@@ -905,6 +908,118 @@ function ioRow(rec){
     ${kv(`IO${id} 即時狀態（唯讀）`, hasState?statusDot(rec.state===1?"觸發":"閒置"):"",
          hasState?(rec.state===1?"1（觸發）":"0（閒置）"):null)}
   </div>`;
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   9c. 視圖：組播多監聽區（multi-zone，需求單《組播多監聽區需求單.md》定案）
+   ══════════════════════════════════════════════════════════════════ */
+const MZ_COUNT = 16;                                    // 需求單 §一：區數定死 16，非可配置
+const MZ_CODEC_PAIRS = [["G.711U","G.711 µ-law"],["G.722","G.722"]];
+
+async function renderMulticastZones(c){
+  c.innerHTML=`<div class="page-h"><h2>組播監聽區</h2></div>
+    <p class="page-sub">16 區多監聽區，依優先權即時搶佔、不混音；zone 1 亦可於「SIP / 組播」頁快速設定</p>
+    <div id="mz-body">載入中…</div>`;
+  let cfg;
+  try{ cfg=await GET("/get/sip/multicast/zones"); }
+  catch(e){ const b=$("#mz-body"); if(b) b.innerHTML=errBox("讀取組播監聽區設定失敗",e); return; }
+  const body=$("#mz-body"); if(!body) return;   // 切頁/登出後 DOM 已不存在 (#5，同 renderIO 模式)
+  const raw=Array.isArray(cfg.zones)?cfg.zones:[];   // 韌體未支援時為空陣列，卡片仍可顯示不崩潰
+  if(!raw.length){
+    body.innerHTML=`<div class="card"><h3>組播監聽區（16 區）<span class="ln"></span></h3>
+      <p class="page-sub" style="margin:0">此韌體未回報多監聽區設定，或尚未支援此功能。</p></div>`;
+    return;
+  }
+  // 韌體只回已配置區數時，補滿至 16 筆（zone_id 缺漏補停用佔位列），避免半張表無法新增
+  const byId=new Map(raw.filter(z=>z&&z.zone_id!=null).map(z=>[z.zone_id,z]));
+  const zones=[];
+  for(let i=1;i<=MZ_COUNT;i++)
+    zones.push(byId.get(i)||{zone_id:i,multicast_address:"",multicast_port:"",priority:"",enabled:false,audio_codec:""});
+
+  body.innerHTML=`<div class="card"><h3>組播監聽區（16 區）<span class="ln"></span></h3>
+    <div id="mz-prio-warn"></div>
+    ${zones.map(mzRow).join("")}
+    <div style="margin-top:14px"><button class="btn primary" id="mz-save">儲存全部監聽區</button>
+      <span class="hint" style="margin-left:8px">整表覆寫、儲存後即時生效免重啟</span></div>
+  </div>`;
+
+  for(const z of zones){
+    const el=$(`#mz${z.zone_id}-prio`); if(el) el.addEventListener("input", checkMzPriority);
+    const en=$(`#mz${z.zone_id}-en`); if(en) en.addEventListener("change", checkMzPriority);
+  }
+  checkMzPriority();
+
+  $("#mz-save").onclick=()=>{
+    const rows=[];
+    for(const z of zones){
+      const id=z.zone_id, en=chkd(`mz${id}-en`), addr=val(`mz${id}-addr`),
+            port=num(`mz${id}-port`), prio=num(`mz${id}-prio`), codec=val(`mz${id}-codec`);
+      // 全空＝尚未配置的佔位列，停用時可略過驗證直接送出；一旦有任何欄位曾填值，
+      // 即使目前停用也要走完整驗證，避免半成品垃圾值殘留、日後重新啟用時才炸開 (需求單 §四 4.2)
+      const touched = en || !!addr || !!port || !!prio || !!codec;
+      if(touched){
+        const first=+addr.split(".")[0];
+        if(!(addr && first>=224 && first<=239))
+          return toast("err",`Zone ${id} 組播位址錯誤`,"必須介於 224.x.x.x – 239.x.x.x");
+        if(!(Number.isInteger(port) && port>=1024 && port<=65535))
+          return toast("err",`Zone ${id} 埠錯誤`,"必須介於 1024 – 65535");
+        if(!(Number.isInteger(prio) && prio>=1 && prio<=MZ_COUNT))
+          return toast("err",`Zone ${id} 優先權錯誤`,`必須介於 1 – ${MZ_COUNT} 的整數`);
+        if(!codec)
+          return toast("err",`Zone ${id} 未選編碼`,"已填入位址／埠／優先權的區需選擇音頻編碼；若不使用此區請清空全部欄位");
+      }
+      rows.push({ zone_id:id, multicast_address:addr, multicast_port:port||0,
+                  priority:prio||0, enabled:en, audio_codec:codec||"G.722" });
+    }
+    // 全域優先權唯一性（僅計入已啟用區，同需求單 §一）——伺服器端仍會再驗一次，前端先擋一層
+    const seen=new Map(), dup=[];
+    for(const r of rows){ if(!r.enabled) continue;
+      if(seen.has(r.priority)) dup.push(r.priority); else seen.set(r.priority, r.zone_id); }
+    if(dup.length)
+      return toast("err","優先權重複",`優先權 ${[...new Set(dup)].join("、")} 被多個已啟用區使用，需全域唯一`);
+    saveGuard("#mz-save",()=>POST("/set/sip/multicast/zones",{ zones: rows }),"組播監聽區已儲存");
+  };
+}
+
+function mzRow(z){
+  const id=z.zone_id;
+  // 韌體回空/未知 codec 時插入「（請選擇）」哨兵並選中，避免 <select> 靜默 fallback 到第一項覆蓋現場設定 (同 IO 頁教訓)
+  const codecPairs = MZ_CODEC_PAIRS.some(([v])=>v===z.audio_codec) ? MZ_CODEC_PAIRS
+    : [["","（請選擇編碼）"]].concat(MZ_CODEC_PAIRS);
+  return `<div style="border-top:1px solid var(--line);padding-top:14px;margin-top:14px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <b>Zone ${esc(id)}</b>${id===1?'<span class="hint">＝SIP / 組播頁「組播接收」同一份設定</span>':""}
+    </div>
+    <div class="grid2">
+      ${inp(`mz${id}-addr`,"組播位址 (224–239)",z.multicast_address)}
+      ${inp(`mz${id}-port`,"組播埠 (1024–65535)",z.multicast_port,"number")}
+      ${inp(`mz${id}-prio`,"優先權 (1–16，全域唯一，數字越小優先權越高)",z.priority,"number")}
+      ${selKV(`mz${id}-codec`,"音頻編碼", MZ_CODEC_PAIRS.some(([v])=>v===z.audio_codec)?z.audio_codec:"", codecPairs)}
+    </div>
+    ${chk(`mz${id}-en`,"啟用此監聽區",z.enabled)}
+  </div>`;
+}
+
+// 即時掃描全部 16 區，已啟用區之間 priority 重複者標紅並於卡頭列出警示（不阻擋輸入，儲存時才擋）
+function checkMzPriority(){
+  const warn=$("#mz-prio-warn"); if(!warn) return;
+  const seen=new Map(), dupPriorities=new Set();
+  for(let i=1;i<=MZ_COUNT;i++){
+    const enEl=$(`#mz${i}-en`);
+    if(!enEl || !enEl.checked) continue;
+    const p=num(`mz${i}-prio`);
+    if(!p) continue;
+    if(seen.has(p)) dupPriorities.add(p); else seen.set(p, i);
+  }
+  for(let i=1;i<=MZ_COUNT;i++){
+    const el=$(`#mz${i}-prio`); if(!el) continue;
+    const enEl=$(`#mz${i}-en`);
+    el.classList.toggle("bad", !!(enEl && enEl.checked && dupPriorities.has(Number(el.value))));
+  }
+  warn.innerHTML = dupPriorities.size
+    ? `<div class="hint" style="color:var(--err);margin-bottom:6px">⚠ 優先權重複：${
+        [...dupPriorities].sort((a,b)=>a-b).join("、")}（已啟用區的優先權須全域唯一，儲存前請修正）</div>`
+    : "";
 }
 
 /* ══════════════════════════════════════════════════════════════════
