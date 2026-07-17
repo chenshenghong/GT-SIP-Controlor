@@ -1,8 +1,8 @@
-# IO 觸點功能需求單（GT-SIP-GW / 板 v6.1.3 · GK7205V300）
+# IO 觸點功能需求單（GT-SIP-GW / 板 v6.1.3）
 
 > 提交對象：設備/韌體原廠
 > 背景：板卡背面已引出 5 路乾接點 IO（絲印 `0-4 / 1-4 / 1-5 / 1-6 / 5-5` + `GND`），現況韌體未賦予功能。本版次要求原廠實作**可配置的 IO 觸點功能**，讓現場可用實體按鈕/接點觸發組播、撥號、掛斷等動作。
-> 依據：板卡實物照片（背面絲印）＋ SoC 假設為 **GOKE GK7205V300**（Cortex-A7，PL061 GPIO，Linux 4.9 系 osdrv）。**若實際 SoC 型號或 GPIO 對映與本單不符，請於回覆時更正**，本單的 Linux 編號/暫存器欄以貴廠 datasheet 為準。
+> 依據：板卡實物照片（背面絲印引出 5 路 IO）＋ 標準 ARM/Linux GPIO 慣例（PL061 相容控制器、DTS/gpio-keys）。本單以邏輯埠 IO1–IO5 描述功能需求；具體 GPIO 對映、pinmux 與電氣特性請貴廠對照 BSP 確認回填（見 §二）。
 > 提出日期：2026-07-17
 > 優先序：🔴 P0 本版次核心　🟠 P1 應做　🟡 P2 後續可排
 
@@ -31,13 +31,13 @@ websetsip.c（控制面）──（原廠：新增 2 條路由，照既有 reque
 
 ---
 
-## 二、硬體前提（GK7205V300 · 請原廠核對回填）
+## 二、硬體前提（請原廠對照 BSP 確認回填）
 
 ### 2.1 GPIO 對映
 
-GK7205V300 為 PL061 相容控制器，每 bank 8 腳，Linux 全域編號 = `bank×8 + pin`：
+本板 GPIO 控制器為 PL061 相容、每 bank 8 腳，Linux 全域編號依標準慣例 = `bank×8 + pin`。依板背絲印推得下表，請貴廠對照 BSP 確認：
 
-| 板上絲印 | GPIO | Linux 編號（推定） | sysfs 路徑（推定） |
+| 板上絲印 | GPIO | Linux 編號 | sysfs 路徑 |
 |---|---|---|---|
 | `0-4` | GPIO0_4 | 4 | `/sys/class/gpio/gpio4` |
 | `1-4` | GPIO1_4 | 12 | `/sys/class/gpio/gpio12` |
@@ -45,11 +45,11 @@ GK7205V300 為 PL061 相容控制器，每 bank 8 腳，Linux 全域編號 = `ba
 | `1-6` | GPIO1_6 | 14 | `/sys/class/gpio/gpio14` |
 | `5-5` | GPIO5_5 | 45 | `/sys/class/gpio/gpio45` |
 
-> ⚠ **請原廠回填確認**：上表 Linux 編號為依家族慣例推定。以貴廠 BSP/datasheet 實際值為準，若不同請於回覆更正。
+> ⚠ **請貴廠對照 BSP 確認**：上表 Linux 編號依標準 PL061 慣例由絲印推得，以貴廠 BSP 實際值為準，若不同請於回覆更正。
 
 ### 2.2 需原廠回填的表（pinmux / 電氣）
 
-| GPIO | pinmux(muxctrl) 暫存器值 | 預設複用功能 | 是否 boot-strap 腳 | 可否配置為輸出 | 內部上/下拉 |
+| GPIO | pinmux 暫存器值 | 預設複用功能 | 是否 boot-strap 腳 | 可否配置為輸出 | 內部上/下拉 |
 |---|---|---|---|---|---|
 | GPIO0_4 | ☐ | ☐ | ☐ | ☐ | ☐ |
 | GPIO1_4 | ☐ | ☐ | ☐ | ☐ | ☐ |
@@ -57,7 +57,7 @@ GK7205V300 為 PL061 相容控制器，每 bank 8 腳，Linux 全域編號 = `ba
 | GPIO1_6 | ☐ | ☐ | ☐ | ☐ | ☐ |
 | GPIO5_5 | ☐ | ☐ | ☐ | ☐ | ☐ |
 
-> **重點提醒**：GPIO1_4~1_6 在此家族常與 UART/SPI/SENSOR 介面複用；GPIO0/GPIO5 部分腳可能與 boot/JTAG 相關。**若任一腳為 boot-strap 腳，開機瞬間外部接點電平可能改變啟動模式**——此類腳只能配置為輸出或需外部隔離，請務必在上表明確標示。
+> **重點提醒**：GPIO1_4~1_6 常見與 UART/SPI/SENSOR 介面複用；GPIO0/GPIO5 部分腳可能與 boot/JTAG 相關。**若任一腳為 boot-strap 腳，開機瞬間外部接點電平可能改變啟動模式**——此類腳只能配置為輸出或需外部隔離，請務必在上表明確標示。
 
 ### 2.3 電氣前提（設計依據，供評估）
 
@@ -156,7 +156,7 @@ Payload：`{ "io_config":[ {id,mode,contact,trigger,debounce_ms,action:{type,par
 | **IO-01** | 輸入腳用 kernel **`gpio-keys`** driver（DTS 配置腳位/極性/去抖），產生 `/dev/input/eventX` 事件，**中斷驅動、禁止 app 層輪詢 sysfs**。`NO/NC` 即 DTS/config 的 active-low 位元翻轉。 |
 | **IO-02** | **開機安全**：輸出腳（GPIO5_5）於 DTS/u-boot 階段即預設為 `output-low` 或高阻，杜絕上電到 app 就緒前的毛刺誤觸發外部設備。所有輸入在 app 就緒前不得誤發動作。 |
 | **IO-03** | `multicast_ptt` 語意在 app 層實作：`press→開始組播發送`、`release→啟動 tail timer（預設 300ms 可配置）→停止`。與 SIP 通話的**優先序**：SIP 通話 ＞ 組播發送 ＞ 組播接收，且可配置。PTT 按住時來電，依優先序處理。 |
-| **IO-04** | **效能護欄**：action dispatcher 全部非同步（發訊息給 SIP/組播模組），**禁止在 input 事件回呼裡做網路 I/O**（否則 REGISTER 逾時會卡死按鍵事件）。GK7205V300 為單核 900MHz，此點對音訊即時性關鍵。 |
+| **IO-04** | **效能護欄**：action dispatcher 全部非同步（發訊息給 SIP/組播模組），**禁止在 input 事件回呼裡做網路 I/O**（否則 REGISTER 逾時會卡死按鍵事件）。本平台為資源受限之單核嵌入式 CPU，此點對音訊即時性關鍵。 |
 | **IO-05** | `io_config` 存獨立 config（`/etc/ifcfg-sip` 新增 key 或獨立分區），開機自動恢復；改綁定**免重啟生效**。 |
 | **IO-06** | IO 的配置與即時 `state` 須進 DBP 能力清單與 REST 回報（見 §七一致性要求）；輸入觸發事件建議主動上報 CMS（便於日誌/聯動）。 |
 
