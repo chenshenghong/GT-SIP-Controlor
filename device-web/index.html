@@ -214,6 +214,7 @@
     <div class="nav-item" data-view="sip"><span class="ic">☎️</span>SIP / 組播</div>
     <div class="nav-item" data-view="audio"><span class="ic">🔊</span>音量 / 通話</div>
     <div class="nav-item" data-view="network"><span class="ic">🌐</span>網路設定</div>
+    <div class="nav-item" data-view="io"><span class="ic">🔌</span>IO 觸點</div>
     <div class="nav-item" data-view="system"><span class="ic">⚙️</span>系統維護</div>
   </aside>
 
@@ -519,7 +520,7 @@ function navigate(view){
   stopPolling();
   const c=$("#content");
   ({dashboard:renderDashboard, sip:renderSip, audio:renderAudio,
-    network:renderNetwork, system:renderSystem}[view]||renderDashboard)(c);
+    network:renderNetwork, io:renderIO, system:renderSystem}[view]||renderDashboard)(c);
 }
 
 function securityBanner(){
@@ -818,6 +819,92 @@ async function probeAndGo(target){
          location.href=target; return; }
     catch(e){ await new Promise(r=>setTimeout(r,1500)); }
   }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   9b. 視圖：IO 觸點配置
+   ══════════════════════════════════════════════════════════════════ */
+// 動作類型（11 項，與需求單 §3.2 列舉一致）。「停用該腳」是 mode=disabled 的職責，action 不含 disabled，避免雙重語意
+const IO_ACTION_TYPES = ["multicast_ptt","call_toggle","call_preset","hangup","answer","sos",
+   "volume_up","volume_down","call_status","multicast_status","remote_control"];
+// 中文顯示標籤（POST 送出的仍是上方英文代碼，契約不變）
+const IO_ACTION_LABELS = { multicast_ptt:"按住廣播 (PTT)", call_toggle:"一鍵撥號／掛斷",
+   call_preset:"撥打預設號碼", hangup:"掛斷", answer:"接聽", sos:"緊急求助 (SOS)",
+   volume_up:"音量＋", volume_down:"音量－", call_status:"通話狀態輸出",
+   multicast_status:"組播狀態輸出", remote_control:"遠端控制輸出" };
+// 輸出型動作（僅限硬體允許輸出的腳）；input 模式綁這些也沒意義，反向擋
+const IO_OUTPUT_ACTIONS = ["call_status","multicast_status","remote_control"];
+const IO_MODE_PAIRS    = [["input","輸入"],["output","輸出"],["disabled","停用"]];
+const IO_CONTACT_PAIRS = [["NO","常開 (NO)"],["NC","常閉 (NC)"]];
+const IO_TRIGGER_PAIRS = [["edge","邊沿（按一下）"],["level","電平（按住）"],["long_press","長按"]];
+// value/label 分離的下拉：option 帶 value=代碼、顯示中文；val() 讀 .value 仍回代碼
+function selKV(id,label,v,pairs){ return `<div class="field"><label>${esc(label)}</label>
+   <select class="input" id="${id}">${pairs.map(([val,txt])=>
+     `<option value="${esc(val)}" ${val===v?"selected":""}>${esc(txt)}</option>`).join("")}</select></div>`; }
+// 需要按鍵/接點觸發才有意義的「輸入型」動作；output 模式綁這些沒有意義，前端先擋一層
+const IO_INPUT_TRIGGER_ACTIONS = ["multicast_ptt","call_toggle","call_preset","hangup","answer","sos","volume_up","volume_down"];
+// 需要填號碼的動作類型（call_*／sos）；multicast_ptt 的 param 是尾音 ms，可留空
+const IO_NUMBER_PARAM_ACTIONS = ["call_toggle","call_preset","sos"];
+
+async function renderIO(c){
+  c.innerHTML=`<div class="page-h"><h2>IO 觸點</h2></div>
+    <p class="page-sub">5 路乾接點輸入／輸出，觸發動作與 SIP 通話 / 組播聯動</p><div id="io-body">載入中…</div>`;
+  let cfg;
+  try{ cfg=await GET("/get/io/config"); }
+  catch(e){ const b=$("#io-body"); if(b) b.innerHTML=errBox("讀取 IO 設定失敗",e); return; }
+  const body=$("#io-body"); if(!body) return;   // 切頁/登出後 DOM 已不存在 (#5)
+  const list=Array.isArray(cfg.io_config)?cfg.io_config:[];   // 韌體未支援時為空陣列，卡片仍可顯示不崩潰
+  if(!list.length){
+    body.innerHTML=`<div class="card"><h3>IO 觸點配置（5 路乾接點）<span class="ln"></span></h3>
+      <p class="page-sub" style="margin:0">此韌體未回報 IO 設定，或尚未支援此功能。</p></div>`;
+    return;
+  }
+  body.innerHTML=`<div class="card"><h3>IO 觸點配置（5 路乾接點）<span class="ln"></span></h3>
+    ${list.map(ioRow).join("")}
+    <div style="margin-top:14px"><button class="btn primary" id="io-save">儲存 IO 設定</button>
+      <span class="hint" style="margin-left:8px">儲存後即時生效、免重啟</span></div>
+  </div>`;
+  $("#io-save").onclick=()=>{
+    for(const rec of list){
+      const id=rec.id, mode=val(`io${id}-mode`), atype=val(`io${id}-atype`), aparam=val(`io${id}-aparam`);
+      if(mode==="disabled") continue;   // 停用的腳不檢查動作綁定
+      if(!atype)
+        return toast("err",`IO${id} 未選動作`,"啟用的腳需選擇動作類型；若要停用此腳請把「模式」設為停用");
+      if(mode==="output" && IO_INPUT_TRIGGER_ACTIONS.includes(atype))
+        return toast("err",`IO${id} 設定衝突`,"output 模式不應綁定輸入型動作（PTT／撥號／SOS／接聽／音量），請確認設定");
+      if(mode==="input" && IO_OUTPUT_ACTIONS.includes(atype))
+        return toast("err",`IO${id} 設定衝突`,"input 模式不應綁定輸出型動作（通話／組播狀態、遠端控制輸出），請確認設定");
+      if(IO_NUMBER_PARAM_ACTIONS.includes(atype) && !aparam)
+        return toast("err",`IO${id} 缺少參數`,"此動作類型需要填入號碼參數");
+    }
+    saveGuard("#io-save",()=>POST("/set/io/config",{ io_config: list.map(rec=>({
+       id:rec.id, mode:val(`io${rec.id}-mode`), contact:val(`io${rec.id}-contact`),
+       trigger:val(`io${rec.id}-trigger`), debounce_ms:num(`io${rec.id}-debounce`),
+       action:{ type:val(`io${rec.id}-atype`), param:val(`io${rec.id}-aparam`) } })) }),
+       "IO 設定已儲存，即時生效、免重啟");
+  };
+}
+
+function ioRow(rec){
+  const id=rec.id, act=rec.action||{}, hasState=rec.state!=null;
+  return `<div style="border-top:1px solid var(--line);padding-top:14px;margin-top:14px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <b>IO${esc(id)} · ${esc(rec.gpio||"—")}</b>
+    </div>
+    <div class="grid2">
+      ${selKV(`io${id}-mode`,"模式",rec.mode,IO_MODE_PAIRS)}
+      ${selKV(`io${id}-contact`,"接點類型",rec.contact,IO_CONTACT_PAIRS)}
+      ${selKV(`io${id}-trigger`,"觸發方式",rec.trigger,IO_TRIGGER_PAIRS)}
+      ${inp(`io${id}-debounce`,"防彈跳 (ms)",rec.debounce_ms,"number")}
+      ${selKV(`io${id}-atype`,"動作類型",
+         IO_ACTION_TYPES.includes(act.type)?act.type:"",
+         // 韌體回空/未知 action 時，插入「（請選擇）」哨兵選項並選中它，避免 <select> 靜默 fallback 到第一項而把設定悄悄覆蓋
+         (IO_ACTION_TYPES.includes(act.type)?[]:[["","（請選擇動作）"]]).concat(IO_ACTION_TYPES.map(t=>[t,IO_ACTION_LABELS[t]])))}
+      ${inp(`io${id}-aparam`,"參數（號碼／tail_ms）",act.param)}
+    </div>
+    ${kv(`IO${id} 即時狀態（唯讀）`, hasState?statusDot(rec.state===1?"觸發":"閒置"):"",
+         hasState?(rec.state===1?"1（觸發）":"0（閒置）"):null)}
+  </div>`;
 }
 
 /* ══════════════════════════════════════════════════════════════════
