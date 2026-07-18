@@ -854,7 +854,16 @@ async function renderIO(c){
     <p class="page-sub">5 路乾接點輸入／輸出，觸發動作與 SIP 通話 / 組播聯動</p><div id="io-body">載入中…</div>`;
   let cfg;
   try{ cfg=await GET("/get/io/config"); }
-  catch(e){ const b=$("#io-body"); if(b) b.innerHTML=errBox("讀取 IO 設定失敗",e); return; }
+  catch(e){
+    const b=$("#io-body"); if(!b) return;
+    // 同組播監聽區頁：舊韌體對未知路徑回非 JSON（RESP_PARSE）＝尚未支援，顯示容錯卡而非紅色錯誤
+    if(e instanceof ApiError && e.code==="RESP_PARSE"){
+      b.innerHTML=`<div class="card"><h3>IO 觸點配置（5 路乾接點）<span class="ln"></span></h3>
+        <p class="page-sub" style="margin:0">此韌體未回報 IO 設定，或尚未支援此功能。</p></div>`;
+      return;
+    }
+    b.innerHTML=errBox("讀取 IO 設定失敗",e); return;
+  }
   const body=$("#io-body"); if(!body) return;   // 切頁/登出後 DOM 已不存在 (#5)
   const list=Array.isArray(cfg.io_config)?cfg.io_config:[];   // 韌體未支援時為空陣列，卡片仍可顯示不崩潰
   if(!list.length){
@@ -922,7 +931,17 @@ async function renderMulticastZones(c){
     <div id="mz-body">載入中…</div>`;
   let cfg;
   try{ cfg=await GET("/get/sip/multicast/zones"); }
-  catch(e){ const b=$("#mz-body"); if(b) b.innerHTML=errBox("讀取組播監聽區設定失敗",e); return; }
+  catch(e){
+    const b=$("#mz-body"); if(!b) return;
+    // 舊韌體無此端點：對未知路徑回非 JSON（404 頁/純文字）→ RESP_PARSE。
+    // 這是「尚未支援」而非故障，顯示容錯卡；TIMEOUT/認證/業務錯誤照舊紅色報錯。
+    if(e instanceof ApiError && e.code==="RESP_PARSE"){
+      b.innerHTML=`<div class="card"><h3>組播監聽區（16 區）<span class="ln"></span></h3>
+        <p class="page-sub" style="margin:0">此韌體未回報多監聽區設定，或尚未支援此功能。</p></div>`;
+      return;
+    }
+    b.innerHTML=errBox("讀取組播監聽區設定失敗",e); return;
+  }
   const body=$("#mz-body"); if(!body) return;   // 切頁/登出後 DOM 已不存在 (#5，同 renderIO 模式)
   const raw=Array.isArray(cfg.zones)?cfg.zones:[];   // 韌體未支援時為空陣列，卡片仍可顯示不崩潰
   if(!raw.length){
