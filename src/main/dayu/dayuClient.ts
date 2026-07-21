@@ -12,7 +12,8 @@
 // ============================================
 import * as http from 'http'
 import * as crypto from 'crypto'
-import type { DayuResult } from '@shared/types'
+import type { DayuResult, DayuMediaInfo } from '@shared/types'
+import { enqueueDayu } from './dayuQueue'
 
 export interface DayuSession {
   ip: string
@@ -125,7 +126,7 @@ const CODEC_RE = /name="DSP_CodecSets_RW"[^>]*\bvalue="([^"]*)"/
 
 export async function getMediaInfo(
   session: DayuSession, tries = 4
-): Promise<DayuResult<import('@shared/types').DayuMediaInfo>> {
+): Promise<DayuResult<DayuMediaInfo>> {
   let lastDetail = ''
   for (let i = 0; i < tries; i++) {
     let resp: RawResp
@@ -144,4 +145,41 @@ export async function getMediaInfo(
     await sleep(1500) // 讀取最小間隔（Global Constraints）
   }
   return { ok: false, reason: 'parse-failed', detail: lastDetail }
+}
+
+const sessions = new Map<string, DayuSession>() // ip -> 有效 session
+
+/** 登入檢查（AddDeviceModal 用）。全部經佇列。 */
+export function dayuLoginCheck(
+  ip: string, username = 'admin', password = 'admin', port = 80
+): Promise<DayuResult<Record<string, never>>> {
+  return enqueueDayu(ip, async () => {
+    const r = await dayuLogin(ip, username, password, port)
+    if (!r.ok) return r
+    sessions.set(ip, r.value)
+    return { ok: true as const, value: {} }
+  })
+}
+
+/** 讀音量/codec。session 失效（auth-failed）自動重登一次。 */
+export function dayuGetMedia(
+  ip: string, username = 'admin', password = 'admin', port = 80
+): Promise<DayuResult<DayuMediaInfo>> {
+  return enqueueDayu(ip, async () => {
+    let session = sessions.get(ip)
+    if (!session) {
+      const login = await dayuLogin(ip, username, password, port)
+      if (!login.ok) return login
+      session = login.value
+      sessions.set(ip, session)
+    }
+    let r = await getMediaInfo(session)
+    if (!r.ok && r.reason === 'auth-failed') {
+      const relogin = await dayuLogin(ip, username, password, port)
+      if (!relogin.ok) return relogin
+      sessions.set(ip, relogin.value)
+      r = await getMediaInfo(relogin.value)
+    }
+    return r
+  })
 }
