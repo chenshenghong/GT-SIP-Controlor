@@ -9,7 +9,7 @@ const cfg: ProvisionConfig = {
 }
 
 function dev(mac: string, ip: string, regUser = ''): DeviceNode {
-  return { id: 1, type: 'SIP', mac, sn: '', name: '', hostName: '', ip, mask: '', gateway: '',
+  return { deviceKind: 'gt-sip-gw', id: 1, type: 'SIP', mac, sn: '', name: '', hostName: '', ip, mask: '', gateway: '',
     autoIp: 0, dns1: '', dns2: '', useDns: 0, server: '', server2: '', mode: '', isBroadcast: 1,
     version: '', playVol: 50, captureVol: 50, treble: 0, bass: 0, tbAgc: 4, tbLinein: 0, group: 9999,
     speed: 0, encrypt: 0, reboot: '', website: '', svcConfig: '', localSet: '', regUser,

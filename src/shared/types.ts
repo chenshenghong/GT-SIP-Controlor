@@ -4,12 +4,17 @@
 // and GT-SIP REST API specification
 // ============================================
 
+/** 設備家族。'gt-sip-gw' 涵蓋 GT-SIP-GW / SIP-Player-2024 全系（DBP + GT REST）。 */
+export type DeviceKind = 'gt-sip-gw' | 'dayu-ot300'
+
 /**
  * Device node discovered via DBP/1.0 TCP scan
  * Fields mapped from "Key: Value" response format
  */
 export interface DeviceNode {
   // --- Core identity ---
+  /** 設備家族 discriminator — 所有依型號分派行為的唯一依據 */
+  deviceKind: DeviceKind
   id: number
   type: string              // e.g. "SIP-Speaker", "SIP-Intercom"
   mac: string

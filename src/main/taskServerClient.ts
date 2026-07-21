@@ -122,7 +122,7 @@ function probeDeviceIp(ip: string, port: number): Promise<DeviceNode | null> {
 
 /** Minimal DBP response parser (reused from scanner logic) */
 function parseTaskServerDeviceResponse(raw: string): DeviceNode | null {
-  const device: Partial<DeviceNode> = { status: 'ONLINE' }
+  const device: Partial<DeviceNode> = { status: 'ONLINE', deviceKind: 'gt-sip-gw' }
   const lines = raw.split(/[\r\n]+/).filter(Boolean)
   let hasMAC = false
 

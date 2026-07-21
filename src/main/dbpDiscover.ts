@@ -32,6 +32,7 @@ const REQUEST = Buffer.from(
 
 function createDefaultDevice(): DeviceNode {
   return {
+    deviceKind: 'gt-sip-gw',
     id: 0, type: '', mac: '', sn: '', name: '', hostName: '',
     ip: '', mask: '255.255.255.0', gateway: '', autoIp: 0, dns1: '', dns2: '', useDns: 0,
     server: '', server2: '', mode: '', isBroadcast: 0, version: '',

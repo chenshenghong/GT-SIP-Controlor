@@ -77,6 +77,7 @@ const IPV4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/
 
 function makeNode(ip: string): DeviceNode {
   return {
+    deviceKind: 'gt-sip-gw',
     id: 0, type: 'SIP-Player', mac: '', sn: '', name: form.name || ip, hostName: '',
     ip, mask: '255.255.255.0', gateway: '', autoIp: 0, dns1: '', dns2: '', useDns: 0,
     server: '', server2: '', mode: '', isBroadcast: 0, version: '',
