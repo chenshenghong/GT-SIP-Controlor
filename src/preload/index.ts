@@ -4,7 +4,7 @@
 // ============================================
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC_CHANNELS } from '@shared/constants'
-import type { ScanProgress, ScanResult, RestScanProgress, DeviceNode, IpChangeRequest, ProvisionRegistryFile, SipConfig, SipConfigResponse, DeviceStatus, DayuResult, DayuMediaInfo } from '@shared/types'
+import type { ScanProgress, ScanResult, RestScanProgress, DeviceNode, IpChangeRequest, ProvisionRegistryFile, SipConfig, SipConfigResponse, DeviceStatus, DayuResult, DayuMediaInfo, DayuWriteOutcome, DayuSipConfig } from '@shared/types'
 
 export type ElectronAPI = {
   // Scanner (mode=0: subnet scan)
@@ -41,6 +41,8 @@ export type ElectronAPI = {
   onDayuScanProgress: (callback: (progress: RestScanProgress) => void) => () => void
   dayuLoginCheck: (ip: string, username: string, password: string) => Promise<DayuResult<Record<string, never>>>
   dayuGetMedia: (ip: string, username: string, password: string) => Promise<DayuResult<DayuMediaInfo>>
+  dayuSetVolume: (ip: string, volume: number, username: string, password: string) => Promise<DayuWriteOutcome>
+  dayuSetSip: (ip: string, config: DayuSipConfig, username: string, password: string) => Promise<DayuWriteOutcome>
 }
 
 const electronAPI: ElectronAPI = {
@@ -147,6 +149,12 @@ const electronAPI: ElectronAPI = {
   },
   dayuGetMedia: (ip: string, username: string, password: string) => {
     return ipcRenderer.invoke(IPC_CHANNELS.DAYU_GET_MEDIA, ip, username, password)
+  },
+  dayuSetVolume: (ip: string, volume: number, username: string, password: string) => {
+    return ipcRenderer.invoke(IPC_CHANNELS.DAYU_SET_VOLUME, ip, volume, username, password)
+  },
+  dayuSetSip: (ip: string, config: DayuSipConfig, username: string, password: string) => {
+    return ipcRenderer.invoke(IPC_CHANNELS.DAYU_SET_SIP, ip, config, username, password)
   },
 }
 

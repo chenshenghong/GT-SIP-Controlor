@@ -42,6 +42,8 @@ export const IPC_CHANNELS = {
   DAYU_SCAN_PROGRESS: 'dayu:scan-progress',
   DAYU_LOGIN_CHECK: 'dayu:login-check',
   DAYU_GET_MEDIA: 'dayu:get-media',
+  DAYU_SET_VOLUME: 'dayu:set-volume',
+  DAYU_SET_SIP: 'dayu:set-sip',
 
   // System
   RESTART_DEVICE: 'device:restart',
