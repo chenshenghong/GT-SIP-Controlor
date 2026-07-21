@@ -116,3 +116,32 @@ export async function dayuLogin(
   if (isLoginPage(resp.body)) return { ok: false, reason: 'auth-failed' }
   return { ok: true, value: { ip, port, cookie } }
 }
+
+// media.htm 是唯一「值 inline 在 HTML」可正則讀取的頁面（lines.htm 的 value
+// 由 JS 動態填入、讀了是假值 — 實機驗證）。但重複 fetch 有時回半頁（無音量
+// 欄位）→ 必須驗證頁面完整性後才信，否則 retry。
+const VOL_RE = /name="DSP_HandfreeVolume_RW"[^>]*\bvalue="(\d)"/
+const CODEC_RE = /name="DSP_CodecSets_RW"[^>]*\bvalue="([^"]*)"/
+
+export async function getMediaInfo(
+  session: DayuSession, tries = 4
+): Promise<DayuResult<import('@shared/types').DayuMediaInfo>> {
+  let lastDetail = ''
+  for (let i = 0; i < tries; i++) {
+    let resp: RawResp
+    try {
+      resp = await rawGet(session.ip, session.port, '/media.htm', session.cookie)
+    } catch (e) {
+      return { ok: false, reason: 'unreachable', detail: String(e) }
+    }
+    if (isLoginPage(resp.body)) return { ok: false, reason: 'auth-failed' }
+    const vol = resp.body.match(VOL_RE)
+    if (vol) {
+      const codec = resp.body.match(CODEC_RE)
+      return { ok: true, value: { speakerVolume: Number(vol[1]), codecOrder: codec?.[1] ?? '' } }
+    }
+    lastDetail = `第 ${i + 1} 次為不完整頁面（${resp.body.length} bytes）`
+    await sleep(1500) // 讀取最小間隔（Global Constraints）
+  }
+  return { ok: false, reason: 'parse-failed', detail: lastDetail }
+}
