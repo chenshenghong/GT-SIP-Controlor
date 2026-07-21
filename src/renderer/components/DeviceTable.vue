@@ -40,7 +40,7 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="device in devices" :key="device.mac"
+          <tr v-for="device in devices" :key="device.mac || device.ip"
             :class="{ 'duplicate-row': getIpCount(device.ip) > 1 }"
             @click="$emit('select', device)">
             <td>
@@ -60,7 +60,8 @@
             <td class="vol-cell">{{ device.outVol ?? '—' }} / {{ device.micVol ?? '—' }}</td>
             <td><code>{{ device.mac }}</code></td>
             <td class="actions-cell" @click.stop>
-              <button class="action-btn ip-btn" @click="$emit('changeIp', device)"
+              <button v-if="getDeviceCapabilities(device.deviceKind).canChangeIpViaDbp"
+                class="action-btn ip-btn" @click="$emit('changeIp', device)"
                 title="修改 IP">
                 🔧 IP
               </button>
@@ -99,6 +100,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { DeviceNode } from '@shared/types'
+import { getDeviceCapabilities } from '@shared/deviceCapabilities'
 
 const props = defineProps<{ devices: DeviceNode[]; scanning?: boolean }>()
 defineEmits<{

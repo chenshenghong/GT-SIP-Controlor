@@ -28,10 +28,15 @@
           @dayu-scan="showDayuScan = true"
         />
         <DeviceDetail
-          v-else
+          v-else-if="selectedDevice.deviceKind === 'gt-sip-gw'"
           :device="selectedDevice"
           @close="handleDetailClose"
           @reconnect="handleReconnect"
+        />
+        <DayuDetail
+          v-else
+          :device="selectedDevice"
+          @close="handleDetailClose"
         />
       </template>
 
@@ -63,7 +68,7 @@
     <!-- Batch Sync Modal -->
     <BatchSyncModal
       :show="showBatchSync"
-      :selected-devices="deviceStore.devices"
+      :selected-devices="deviceStore.devices.filter(d => getDeviceCapabilities(d.deviceKind).canBatchSyncRest)"
       @close="handleBatchClose"
     />
 
@@ -94,10 +99,12 @@
 import { ref } from 'vue'
 import { useDeviceStore } from '@/stores/devices'
 import type { DeviceNode, DeviceStatus } from '@shared/types'
+import { getDeviceCapabilities } from '@shared/deviceCapabilities'
 import AppLayout from '@/components/AppLayout.vue'
 import NetworkRadar from '@/components/NetworkRadar.vue'
 import DeviceTable from '@/components/DeviceTable.vue'
 import DeviceDetail from '@/components/DeviceDetail.vue'
+import DayuDetail from '@/components/DayuDetail.vue'
 import IpChangeModal from '@/components/IpChangeModal.vue'
 import ReconnectOverlay from '@/components/ReconnectOverlay.vue'
 import BatchSyncModal from '@/components/BatchSyncModal.vue'
@@ -118,6 +125,7 @@ async function enrichRegStatus(devices: DeviceNode[]) {
   // https 不支援 RFC 5746，renderer 的 Chromium 一律握手失敗 → 舊版此處會全「連線
   // 失敗」。改走主行程後才讀得到即時狀態。
   await Promise.all(devices.map(async (d) => {
+    if (!getDeviceCapabilities(d.deviceKind).canGtRest) return // DAYU 無 GT REST，打了必失敗且傷其脆弱 web server
     if (!d.ip || !d.mac) return
     let st: DeviceStatus | null = null
     for (let i = 0; i < 6 && !st; i++) st = await window.electronAPI.deviceGetStatus(d.ip)
