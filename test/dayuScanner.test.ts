@@ -45,4 +45,26 @@ describe('probeDayu', () => {
     const node = await probeDayu('127.0.0.1', 1)
     expect(node).toBeNull()
   })
+
+  it('nonce body 超過 64 字元 → null（低信心不收）', async () => {
+    other = http.createServer((req, s) => {
+      s.setHeader('Server', 'Rapid Logic/1.1')
+      if (req.url?.startsWith('/key==nonce')) { s.end('x'.repeat(65)); return }
+      s.end('index')
+    })
+    const port = await new Promise<number>((r) =>
+      other!.listen(0, '127.0.0.1', () => r((other!.address() as { port: number }).port)))
+    expect(await probeDayu('127.0.0.1', port)).toBeNull()
+  })
+
+  it('nonce body 是 HTML（含 <）→ null', async () => {
+    other = http.createServer((req, s) => {
+      s.setHeader('Server', 'Rapid Logic/1.1')
+      if (req.url?.startsWith('/key==nonce')) { s.end('<html>err</html>'); return }
+      s.end('index')
+    })
+    const port = await new Promise<number>((r) =>
+      other!.listen(0, '127.0.0.1', () => r((other!.address() as { port: number }).port)))
+    expect(await probeDayu('127.0.0.1', port)).toBeNull()
+  })
 })
