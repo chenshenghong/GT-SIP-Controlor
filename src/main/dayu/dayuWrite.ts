@@ -9,7 +9,7 @@
 // 絕不解析 lines.htm 驗證（會製造假信心或假 mismatch）。
 // 只准 POST media.htm / lines.htm；network.htm（改 IP）是 Phase 3 交易。
 // ============================================
-import type { DayuResult, DayuWriteOutcome } from '@shared/types'
+import type { DayuResult, DayuSipConfig, DayuWriteOutcome } from '@shared/types'
 import {
   DayuSession, RawResp, VOL_RE, dayuLogin, fetchFullPage, isCompleteMediaPage,
   isLoginPage, rawPostFields, storeSession, withSession,
@@ -121,6 +121,61 @@ export function dayuSetVolume(
           value: {
             state: 'failed', reason: 'verify-mismatch',
             detail: `寫入 ${volume} 但回讀為 ${got ?? '無值'}`,
+          },
+        }
+      }
+    )
+    return finishWrite(ip, r)
+  })
+}
+
+/** lines.htm 完整頁判定：表單結構在（值可為空 — 真機行為 value 全由 JS 填） */
+export function isCompleteLinesPage(html: string): boolean {
+  return /name="SIP_PhoneNum_R"/.test(html) && /name="SIP_RegAddr_R"/.test(html)
+}
+
+const SIP_FIELD_MAP: Array<[keyof DayuSipConfig, string]> = [
+  ['phoneNum', 'SIP_PhoneNum_R'],
+  ['regUser', 'SIP_RegUser_R'],
+  ['displayName', 'SIP_DisPlayName_R'],
+  ['regPasswd', 'SIP_RegPasswd_R'],
+  ['regAddr', 'SIP_RegAddr_R'],
+  ['regPort', 'SIP_RegPort_R'],
+]
+
+/**
+ * 設定 SIP 帳號（line 1）。lines.htm readback 不可信（value 由 JS 填）→
+ * 本函式**恆**回 applied-unverified／busy／failed，絕不 applied-verified；
+ * 也絕不解析 lines.htm 回讀值。真實註冊狀態僅能於 SIP 伺服器端
+ * （pjsip show contacts）或抓包確認 — UI 須如實揭露。
+ */
+export function dayuSetSip(
+  ip: string, cfg: DayuSipConfig, username = 'admin', password = 'admin', port = 80
+): Promise<DayuWriteOutcome> {
+  return enqueueDayu(`${ip}:${port}`, async (): Promise<DayuWriteOutcome> => {
+    const gate = checkDayuHealth(ip)
+    if (gate.blocked) return { state: 'busy', detail: backoffDetail(gate) }
+
+    const r = await withSession(
+      ip, username, password, port,
+      async (session): Promise<DayuResult<DayuWriteOutcome>> => {
+        const page = await fetchFullPage(session, '/lines.htm', isCompleteLinesPage)
+        if (!page.ok) return page
+        const overrides: Record<string, string> = {
+          // checkbox：表單漏送＝停用 SIP 註冊（真機最隱蔽陷阱），一律強制送
+          SIP_EnableSipReg_RW: 'ON',
+          SIP_PhoneLineTabIndex_R: '0', // line 1
+          SIP_PhoneLineEntry: '1',
+        }
+        for (const [key, field] of SIP_FIELD_MAP) overrides[field] = cfg[key]
+        const fields = buildSubmitFields(parseFormFields(page.value), overrides)
+        const post = await postWithRetry(session, '/lines.htm', fields, username, password)
+        if (!post.ok) return post
+        return {
+          ok: true,
+          value: {
+            state: 'applied-unverified',
+            detail: 'SIP 設定已送出；真實註冊狀態僅能於 SIP 伺服器端確認',
           },
         }
       }
