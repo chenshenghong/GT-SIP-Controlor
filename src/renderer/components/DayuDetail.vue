@@ -30,6 +30,7 @@
           {{ busy === 'read' ? '讀取中…' : '🔄 重新讀取' }}
         </button>
       </div>
+      <div v-if="readErr" class="outcome-line err">{{ readErr }}</div>
     </div>
 
     <!-- 音量寫入（canonical 0–9；media.htm readback 可信 → 可達 applied-verified） -->
@@ -45,7 +46,7 @@
       <OutcomeLine v-if="volOutcome" :outcome="volOutcome" />
     </div>
 
-    <!-- SIP 帳號（lines.htm readback 不可信 → 恆為「已送出・未驗證」） -->
+    <!-- SIP 帳號（lines.htm readback 不可信 → 恆為「已送出·未驗證」） -->
     <div class="section">
       <h3>SIP 帳號（線路 1）</h3>
       <div class="form-grid">
@@ -64,7 +65,7 @@
       <OutcomeLine v-if="sipOutcome" :outcome="sipOutcome" />
       <div class="note-box">
         本設備的 SIP 頁面無法可信回讀（欄位值由裝置端 JS 動態填入），寫入結果最高只到
-        「已送出・未驗證」。真實註冊狀態請以 SIP 伺服器端確認（如 Asterisk
+        「已送出·未驗證」。真實註冊狀態請以 SIP 伺服器端確認（如 Asterisk
         <code>pjsip show contacts</code>）。
       </div>
     </div>
@@ -87,6 +88,7 @@ const busy = ref<'' | 'read' | 'volume' | 'sip'>('')
 const volTarget = ref(0)
 const volOutcome = ref<DayuWriteOutcome | null>(null)
 const sipOutcome = ref<DayuWriteOutcome | null>(null)
+const readErr = ref('')
 
 const sip = reactive<DayuSipConfig>({
   phoneNum: '', regUser: '', displayName: '', regPasswd: '',
@@ -106,7 +108,7 @@ const OutcomeLine = defineComponent({
       const cls = { 'applied-verified': 'ok', 'applied-unverified': 'warn', busy: 'warn', failed: 'err' }[o.state]
       const text =
         o.state === 'applied-verified' ? '✅ 已寫入並回讀驗證'
-        : o.state === 'applied-unverified' ? `🟡 已送出・未驗證${o.detail ? `（${o.detail}）` : ''}`
+        : o.state === 'applied-unverified' ? `🟡 已送出·未驗證${o.detail ? `（${o.detail}）` : ''}`
         : o.state === 'busy' ? `⏳ 設備忙碌／保護退避中${o.detail ? `（${o.detail}）` : ''}——請靜置後再試，連續重打會延長癱瘓`
         : `❌ 寫入失敗：${
             o.reason === 'auth-failed' ? '登入失敗（請檢查上方憑證）'
@@ -121,11 +123,18 @@ const OutcomeLine = defineComponent({
 
 async function readMedia() {
   busy.value = 'read'
+  readErr.value = ''
   try {
     const r = await window.electronAPI.dayuGetMedia(props.device.ip, cred.username, cred.password)
     if (r.ok) {
       media.value = r.value
       volTarget.value = r.value.speakerVolume
+    } else {
+      readErr.value =
+        r.reason === 'busy' ? `⏳ 設備忙碌／保護退避中，請稍後再讀取${r.detail ? `（${r.detail}）` : ''}`
+        : r.reason === 'auth-failed' ? '❌ 登入失敗，請檢查上方憑證'
+        : r.reason === 'parse-failed' ? '⚠️ 設備回應不完整，請稍後重試'
+        : '❌ 連線失敗'
     }
   } finally {
     busy.value = ''

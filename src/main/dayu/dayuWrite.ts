@@ -36,7 +36,7 @@ export async function postWithRetry(
     let resp: RawResp | null = null
     try {
       resp = await rawPostFields(
-        session.ip, session.port, path, fields, cookie, `http://${session.ip}${path}`
+        session.ip, session.port, path, fields, cookie, `http://${session.ip}:${session.port}${path}`
       )
     } catch {
       resp = null // ConnectionReset / timeout → 視同 busy，走重試
