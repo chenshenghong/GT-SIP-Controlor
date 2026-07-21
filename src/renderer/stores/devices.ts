@@ -11,18 +11,31 @@ export const useDeviceStore = defineStore('devices', () => {
   const devices = shallowRef<DeviceNode[]>([])
   const lastScanAt = ref<number | null>(null)
 
+  /**
+   * 取代整份列表 — 用於 DBP/REST 掃描結果。
+   * DAYU-OT300 不會回應 DBP/REST 掃描，永遠不會出現在 list 裡；若直接整包取代，
+   * 既有的 DAYU 節點會被靜默清空。因此保留既有 DAYU 節點（掃描結果沒有的那些）。
+   */
   function setDevices(list: DeviceNode[]) {
-    devices.value = [...list] // Trigger shallowRef reactivity
+    devices.value = [
+      ...list,
+      ...devices.value.filter(
+        (d) => d.deviceKind === 'dayu-ot300' && !list.some((n) => n.ip === d.ip && n.deviceKind === 'dayu-ot300')
+      ),
+    ] // Trigger shallowRef reactivity
     lastScanAt.value = Date.now()
   }
 
   /**
    * Add (or merge) a single device — used by manual "add by IP".
-   * De-dupes by MAC (fallback IP); merges fields onto an existing entry.
+   * De-dupes by MAC (fallback IP)，並要求 deviceKind 相同才視為同一台設備 —
+   * 否則 mac='' 的 DAYU 節點會以 IP 命中同 IP 的 GT 節點並覆蓋（deviceKind 被
+   * 翻轉、真實 mac 被清空）。
    */
   function addDevice(node: DeviceNode) {
     const match = (d: DeviceNode) =>
-      (node.mac && d.mac === node.mac) || (!node.mac && d.ip === node.ip)
+      d.deviceKind === node.deviceKind &&
+      ((node.mac && d.mac === node.mac) || (!node.mac && d.ip === node.ip))
     if (devices.value.some(match)) {
       devices.value = devices.value.map((d) => (match(d) ? { ...d, ...node } : d))
     } else {

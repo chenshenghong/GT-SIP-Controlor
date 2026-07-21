@@ -234,12 +234,21 @@ function registerIpcHandlers(mainWindow: BrowserWindow): void {
     }
   })
   ipcMain.handle(IPC_CHANNELS.DAYU_LOGIN_CHECK, async (_event, ip: string, username: string, password: string) => {
-    const { dayuLoginCheck } = await import('./dayu/dayuClient')
-    return dayuLoginCheck(ip, username, password)
+    try {
+      const { dayuLoginCheck } = await import('./dayu/dayuClient')
+      return await dayuLoginCheck(ip, username, password)
+    } catch (error) {
+      // 避免 invoke reject 導致 renderer 端 unhandled rejection；回傳符合 DayuResult 形狀的失敗
+      return { ok: false, reason: 'unreachable', detail: String(error) }
+    }
   })
   ipcMain.handle(IPC_CHANNELS.DAYU_GET_MEDIA, async (_event, ip: string, username: string, password: string) => {
-    const { dayuGetMedia } = await import('./dayu/dayuClient')
-    return dayuGetMedia(ip, username, password)
+    try {
+      const { dayuGetMedia } = await import('./dayu/dayuClient')
+      return await dayuGetMedia(ip, username, password)
+    } catch (error) {
+      return { ok: false, reason: 'unreachable', detail: String(error) }
+    }
   })
 }
 

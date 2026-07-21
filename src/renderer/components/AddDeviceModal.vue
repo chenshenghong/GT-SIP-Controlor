@@ -3,12 +3,12 @@
     <div v-if="visible" class="modal-overlay" @click.self="$emit('close')">
       <div class="modal-card">
         <div class="modal-header">
-          <h3>➕ 手動新增設備 (REST)</h3>
+          <h3>➕ 手動新增設備</h3>
           <button class="close-btn" @click="$emit('close')">✕</button>
         </div>
 
         <div class="device-info">
-          <span>掃描不到（不支援 DBP）的設備，可用 IP 直接以 REST 加入控制。</span>
+          <span>掃描不到的設備可用 IP 直接加入控制：GT 走 REST 登入，DAYU-OT300 走 Web 表單（main process）。</span>
         </div>
 
         <div class="form-body">
@@ -40,7 +40,7 @@
         </div>
 
         <div class="warning-box">
-          會先嘗試以 REST 登入並讀取設備資訊；登入失敗仍會以「離線」狀態加入，方便稍後重試。
+          會先嘗試登入並讀取設備資訊；登入失敗仍會以「離線」狀態加入，方便稍後重試。
         </div>
 
         <div class="modal-footer">

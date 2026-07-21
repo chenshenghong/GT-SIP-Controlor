@@ -57,6 +57,8 @@ async function readMedia() {
         : r.reason === 'parse-failed' ? '⚠️ 設備回應不完整，請重試'
         : '❌ 連線失敗'
     }
+  } catch (err) {
+    errMsg.value = `❌ 讀取失敗：${err}`
   } finally {
     loading.value = false
   }
