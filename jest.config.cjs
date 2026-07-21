@@ -11,12 +11,15 @@ module.exports = {
     '^.+\\.ts$': [
       'ts-jest',
       {
-        isolatedModules: true,
         tsconfig: {
           esModuleInterop: true,
           module: 'commonjs',
           baseUrl: '.',
-          skipLibCheck: true,
+          // 與 tsconfig.node.json / tsconfig.web.json 的 strict 對齊；缺這行會讓
+          // `if (!r.ok)` 這類 discriminated union 的否定窄化失效（TS2339），
+          // 見 cfb1210 review finding：isolatedModules/skipLibCheck 是誤診，
+          // 真正缺的是 strict。
+          strict: true,
           paths: {
             '@shared/*': ['src/shared/*'],
             '@/*': ['src/renderer/*'],
