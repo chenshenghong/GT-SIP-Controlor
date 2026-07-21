@@ -8,7 +8,7 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "postinstall": "electron-builder install-app-deps",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
     "test": "jest --runInBand",
     "build:win": "electron-vite build && electron-builder --win --x64 --dir",
     "build:linux": "electron-vite build && electron-builder --linux --x64 --dir"

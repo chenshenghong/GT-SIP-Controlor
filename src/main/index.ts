@@ -220,6 +220,36 @@ function registerIpcHandlers(mainWindow: BrowserWindow): void {
     const { restGetDeviceStatus } = await import('./deviceRest')
     return restGetDeviceStatus(ip)
   })
+
+  // DAYU-OT300：掃描與唯讀操作（全部經 main process 的 per-IP 佇列）
+  ipcMain.handle(IPC_CHANNELS.DAYU_SCAN, async (_event, subnet: string) => {
+    try {
+      const { dayuScanSubnet } = await import('./dayu/dayuScanner')
+      const devices = await dayuScanSubnet(subnet, (progress) => {
+        mainWindow.webContents.send(IPC_CHANNELS.DAYU_SCAN_PROGRESS, progress)
+      })
+      return { success: true, devices }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+  ipcMain.handle(IPC_CHANNELS.DAYU_LOGIN_CHECK, async (_event, ip: string, username: string, password: string) => {
+    try {
+      const { dayuLoginCheck } = await import('./dayu/dayuClient')
+      return await dayuLoginCheck(ip, username, password)
+    } catch (error) {
+      // 避免 invoke reject 導致 renderer 端 unhandled rejection；回傳符合 DayuResult 形狀的失敗
+      return { ok: false, reason: 'unreachable', detail: String(error) }
+    }
+  })
+  ipcMain.handle(IPC_CHANNELS.DAYU_GET_MEDIA, async (_event, ip: string, username: string, password: string) => {
+    try {
+      const { dayuGetMedia } = await import('./dayu/dayuClient')
+      return await dayuGetMedia(ip, username, password)
+    } catch (error) {
+      return { ok: false, reason: 'unreachable', detail: String(error) }
+    }
+  })
 }
 
 // ---- GPU / sandbox hardening for headless / elevated Windows Server ----

@@ -41,6 +41,7 @@ let detectedPort: number | null = null
  */
 function createDefaultDevice(): DeviceNode {
   return {
+    deviceKind: 'gt-sip-gw',
     id: 0, type: '', mac: '', sn: '', name: '', hostName: '',
     ip: '', mask: '255.255.255.0', gateway: '', autoIp: 0,
     dns1: '', dns2: '', useDns: 0,
@@ -235,6 +236,7 @@ function probeSingleIp(ip: string, port: number): Promise<DeviceNode | null> {
 // ---- Mock Data for Development ----
 const MOCK_DEVICES: DeviceNode[] = [
   {
+    deviceKind: 'gt-sip-gw',
     id: 1, type: 'SIP-Speaker', mac: '00:1A:2B:3C:4D:5E', sn: 'GSC2024001', name: '1F-大廳', hostName: 'sip-speaker-001',
     ip: '192.168.1.10', mask: '255.255.255.0', gateway: '192.168.1.1', autoIp: 0,
     dns1: '8.8.8.8', dns2: '8.8.4.4', useDns: 1,
@@ -244,6 +246,7 @@ const MOCK_DEVICES: DeviceNode[] = [
     status: 'ONLINE',
   },
   {
+    deviceKind: 'gt-sip-gw',
     id: 2, type: 'SIP-Speaker', mac: '00:1A:2B:99:88:77', sn: 'GSC2024002', name: '2F-會議室', hostName: 'sip-speaker-002',
     ip: '192.168.1.10', mask: '255.255.255.0', gateway: '192.168.1.1', autoIp: 0,
     dns1: '8.8.8.8', dns2: '', useDns: 1,
@@ -253,6 +256,7 @@ const MOCK_DEVICES: DeviceNode[] = [
     status: 'ONLINE',
   },
   {
+    deviceKind: 'gt-sip-gw',
     id: 3, type: 'SIP-Intercom', mac: '00:1A:2B:A1:B2:C3', sn: 'GSC2024003', name: '3F-走廊', hostName: 'sip-intercom-001',
     ip: '192.168.1.112', mask: '255.255.255.0', gateway: '192.168.1.1', autoIp: 1,
     dns1: '8.8.8.8', dns2: '', useDns: 0,
@@ -262,6 +266,7 @@ const MOCK_DEVICES: DeviceNode[] = [
     status: 'ONLINE',
   },
   {
+    deviceKind: 'gt-sip-gw',
     id: 4, type: 'SIP-Speaker', mac: '00:1A:2B:F4:E5:D6', sn: 'GSC2024004', name: '4F-辦公區', hostName: 'sip-speaker-003',
     ip: '192.168.1.115', mask: '255.255.255.0', gateway: '192.168.1.1', autoIp: 0,
     dns1: '8.8.8.8', dns2: '', useDns: 1,
@@ -271,6 +276,7 @@ const MOCK_DEVICES: DeviceNode[] = [
     status: 'ONLINE',
   },
   {
+    deviceKind: 'gt-sip-gw',
     id: 5, type: 'SIP-Speaker', mac: '00:1A:2B:11:22:33', sn: 'GSC2024005', name: 'B1-停車場', hostName: 'sip-speaker-004',
     ip: '192.168.1.10', mask: '255.255.255.0', gateway: '192.168.1.1', autoIp: 0,
     dns1: '8.8.8.8', dns2: '', useDns: 1,
@@ -280,6 +286,7 @@ const MOCK_DEVICES: DeviceNode[] = [
     status: 'ONLINE',
   },
   {
+    deviceKind: 'gt-sip-gw',
     id: 6, type: 'SIP-Speaker', mac: '00:1A:2B:44:55:66', sn: 'GSC2024006', name: 'RF-頂樓', hostName: 'sip-speaker-005',
     ip: '192.168.1.130', mask: '255.255.255.0', gateway: '192.168.1.1', autoIp: 1,
     dns1: '', dns2: '', useDns: 0,

@@ -4,12 +4,17 @@
 // and GT-SIP REST API specification
 // ============================================
 
+/** 設備家族。'gt-sip-gw' 涵蓋 GT-SIP-GW / SIP-Player-2024 全系（DBP + GT REST）。 */
+export type DeviceKind = 'gt-sip-gw' | 'dayu-ot300'
+
 /**
  * Device node discovered via DBP/1.0 TCP scan
  * Fields mapped from "Key: Value" response format
  */
 export interface DeviceNode {
   // --- Core identity ---
+  /** 設備家族 discriminator — 所有依型號分派行為的唯一依據 */
+  deviceKind: DeviceKind
   id: number
   type: string              // e.g. "SIP-Speaker", "SIP-Intercom"
   mac: string
@@ -312,3 +317,21 @@ export type ProvisionEvent =
   | { kind: 'degraded'; reason: string }
   | { kind: 'pool'; ipUsed: number; ipTotal: number; extUsed: number; extTotal: number }
   | { kind: 'round'; round: number }
+
+// ============================================
+// DAYU-OT300（Rapid Logic Web 表單設備）
+// ============================================
+
+/** DAYU 操作失敗原因（Phase 1 唯讀面） */
+export type DayuFailReason = 'unreachable' | 'auth-failed' | 'busy' | 'parse-failed'
+
+/** DAYU 操作結果 — 不用裸 boolean，失敗必附原因（Codex 審查要求） */
+export type DayuResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; reason: DayuFailReason; detail?: string }
+
+/** media.htm 讀出的資訊（speakerVolume 為 0-9 原始等級，不換算百分比） */
+export interface DayuMediaInfo {
+  speakerVolume: number
+  codecOrder: string
+}

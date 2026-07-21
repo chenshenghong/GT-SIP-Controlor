@@ -14,6 +14,9 @@
         <button class="add-btn" @click="$emit('restScan')" title="REST 網段掃描（找不支援 DBP 的 REST-only 設備）">
           🔎 REST 掃描
         </button>
+        <button class="add-btn" @click="$emit('dayuScan')" title="DAYU-OT300 網段掃描（Rapid Logic 指紋，不送帳密）">
+          🔈 DAYU 掃描
+        </button>
         <button class="add-btn" @click="$emit('add')" title="手動輸入 IP 加入設備">
           ➕ 新增設備
         </button>
@@ -37,7 +40,7 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="device in devices" :key="device.mac"
+          <tr v-for="device in devices" :key="device.mac || device.ip"
             :class="{ 'duplicate-row': getIpCount(device.ip) > 1 }"
             @click="$emit('select', device)">
             <td>
@@ -57,7 +60,8 @@
             <td class="vol-cell">{{ device.outVol ?? '—' }} / {{ device.micVol ?? '—' }}</td>
             <td><code>{{ device.mac }}</code></td>
             <td class="actions-cell" @click.stop>
-              <button class="action-btn ip-btn" @click="$emit('changeIp', device)"
+              <button v-if="getDeviceCapabilities(device.deviceKind).canChangeIpViaDbp"
+                class="action-btn ip-btn" @click="$emit('changeIp', device)"
                 title="修改 IP">
                 🔧 IP
               </button>
@@ -96,6 +100,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { DeviceNode } from '@shared/types'
+import { getDeviceCapabilities } from '@shared/deviceCapabilities'
 
 const props = defineProps<{ devices: DeviceNode[]; scanning?: boolean }>()
 defineEmits<{
@@ -104,6 +109,7 @@ defineEmits<{
   add: []
   restScan: []
   scan: []
+  dayuScan: []
 }>()
 
 const onlineCount = computed(() => props.devices.filter(d => d.status === 'ONLINE').length)
