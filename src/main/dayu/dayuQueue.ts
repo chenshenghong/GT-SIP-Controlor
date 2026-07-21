@@ -1,11 +1,16 @@
 // ============================================
-// per-IP 序列化佇列 ＋ 最小間隔。
-// Rapid Logic web server 連發請求會 connection reset / 503 / 回半頁
-//（實機驗證），所以對同一設備的所有 HTTP 操作必須：
-//   1. 同時間最多一個 in-flight（single-flight）
-//   2. 前一個「完成」到下一個「開始」至少 minIntervalMs
-// Phase 2 寫入沿用本佇列（間隔調 3000ms）。
+// per-key（建議 `${ip}:${port}`）序列化佇列 ＋ 最小間隔。
+// Rapid Logic web server 單執行緒、極脆弱：真機實測「4 個操作／約 10 秒」
+// 就 wedge（nonce 端點回空 body，需完全零流量靜置 ~20 分鐘自癒）。防線：
+//   1. 同 key 同時間最多一個 in-flight（single-flight）
+//   2. 前一個「完成」到下一個「開始」至少 minIntervalMs（讀寫統一 4s —
+//      wedge 主因是單次操作內的連發爆發，不分讀寫、單一保守下限最簡）
+// queues Map 不淘汰：上界＝設備數（/24 至多 254 個 key、每 entry 兩個
+// number＋一個 settled promise），成長有界，接受不淘汰（2026-07-22 裁決）。
 // ============================================
+
+/** 讀寫統一最小間隔（真機 wedge 攻防定案 1.5s→4s；與 UI 端節流對齊的唯一來源） */
+export const DAYU_MIN_INTERVAL_MS = 4000
 
 interface QueueState {
   tail: Promise<unknown>
@@ -16,15 +21,10 @@ const queues = new Map<string, QueueState>()
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
-// For testing only
-export function __clearQueuesForTesting(): void {
-  queues.clear()
-}
-
 export function enqueueDayu<T>(
-  ip: string, task: () => Promise<T>, minIntervalMs = 1500
+  key: string, task: () => Promise<T>, minIntervalMs = DAYU_MIN_INTERVAL_MS
 ): Promise<T> {
-  const q = queues.get(ip) ?? { tail: Promise.resolve(), lastDoneAt: 0 }
+  const q = queues.get(key) ?? { tail: Promise.resolve(), lastDoneAt: 0 }
   const run = q.tail
     .catch(() => undefined) // 前一個任務失敗不影響後續
     .then(async () => {
@@ -37,6 +37,10 @@ export function enqueueDayu<T>(
       }
     })
   q.tail = run
-  queues.set(ip, q)
+  queues.set(key, q)
   return run
+}
+
+export function __clearQueuesForTesting(): void {
+  queues.clear()
 }

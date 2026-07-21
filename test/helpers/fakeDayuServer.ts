@@ -16,6 +16,8 @@ export interface FakeDayu {
   port: number
   /** 觀測用：登入成功次數 */
   loginCount: number
+  /** 夾具：清掉 server 端已認證 cookie（模擬 server 端 session 失效） */
+  invalidateSessions(): void
   close(): Promise<void>
 }
 
@@ -86,6 +88,7 @@ export function startFakeDayu(opts: FakeDayuOptions = {}): Promise<FakeDayu> {
       resolve({
         port,
         get loginCount() { return state.loginCount },
+        invalidateSessions: () => authedCookies.clear(),
         close: () => new Promise((r) => server.close(() => r())),
       })
     })
