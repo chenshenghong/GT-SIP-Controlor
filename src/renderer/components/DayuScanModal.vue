@@ -59,6 +59,7 @@ onUnmounted(() => offProgress?.())
 const SUBNET_RE = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/
 
 async function handleScan() {
+  if (scanning.value) return
   const s = subnet.value.trim()
   if (!SUBNET_RE.test(s)) {
     resultOk.value = false
@@ -79,6 +80,9 @@ async function handleScan() {
       resultOk.value = false
       resultMsg.value = `❌ 掃描失敗：${r.error ?? '未知錯誤'}`
     }
+  } catch (err) {
+    resultOk.value = false
+    resultMsg.value = `❌ 掃描失敗：${err}`
   } finally {
     scanning.value = false
     offProgress?.()
