@@ -4,7 +4,7 @@
 // ============================================
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC_CHANNELS } from '@shared/constants'
-import type { ScanProgress, ScanResult, RestScanProgress, DeviceNode, IpChangeRequest, ProvisionRegistryFile, SipConfig, SipConfigResponse, DeviceStatus } from '@shared/types'
+import type { ScanProgress, ScanResult, RestScanProgress, DeviceNode, IpChangeRequest, ProvisionRegistryFile, SipConfig, SipConfigResponse, DeviceStatus, DayuResult, DayuMediaInfo } from '@shared/types'
 
 export type ElectronAPI = {
   // Scanner (mode=0: subnet scan)
@@ -36,6 +36,11 @@ export type ElectronAPI = {
   deviceGetSipConfig: (ip: string) => Promise<SipConfigResponse | null>
   deviceSetSipPrimary: (ip: string, cfg: SipConfig) => Promise<boolean>
   deviceGetStatus: (ip: string) => Promise<DeviceStatus | null>
+  // DAYU-OT300（main process 協定 client；Phase 1 唯讀）
+  dayuScan: (subnet: string) => Promise<{ success: boolean; devices?: DeviceNode[]; error?: string }>
+  onDayuScanProgress: (callback: (progress: RestScanProgress) => void) => () => void
+  dayuLoginCheck: (ip: string, username: string, password: string) => Promise<DayuResult<Record<string, never>>>
+  dayuGetMedia: (ip: string, username: string, password: string) => Promise<DayuResult<DayuMediaInfo>>
 }
 
 const electronAPI: ElectronAPI = {
@@ -124,6 +129,24 @@ const electronAPI: ElectronAPI = {
   },
   deviceGetStatus: (ip: string) => {
     return ipcRenderer.invoke(IPC_CHANNELS.DEVICE_GET_STATUS, ip)
+  },
+  dayuScan: (subnet: string) => {
+    return ipcRenderer.invoke(IPC_CHANNELS.DAYU_SCAN, subnet)
+  },
+  onDayuScanProgress: (callback: (progress: RestScanProgress) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, progress: RestScanProgress) => {
+      callback(progress)
+    }
+    ipcRenderer.on(IPC_CHANNELS.DAYU_SCAN_PROGRESS, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.DAYU_SCAN_PROGRESS, handler)
+    }
+  },
+  dayuLoginCheck: (ip: string, username: string, password: string) => {
+    return ipcRenderer.invoke(IPC_CHANNELS.DAYU_LOGIN_CHECK, ip, username, password)
+  },
+  dayuGetMedia: (ip: string, username: string, password: string) => {
+    return ipcRenderer.invoke(IPC_CHANNELS.DAYU_GET_MEDIA, ip, username, password)
   },
 }
 

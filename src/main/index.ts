@@ -220,6 +220,27 @@ function registerIpcHandlers(mainWindow: BrowserWindow): void {
     const { restGetDeviceStatus } = await import('./deviceRest')
     return restGetDeviceStatus(ip)
   })
+
+  // DAYU-OT300：掃描與唯讀操作（全部經 main process 的 per-IP 佇列）
+  ipcMain.handle(IPC_CHANNELS.DAYU_SCAN, async (_event, subnet: string) => {
+    try {
+      const { dayuScanSubnet } = await import('./dayu/dayuScanner')
+      const devices = await dayuScanSubnet(subnet, (progress) => {
+        mainWindow.webContents.send(IPC_CHANNELS.DAYU_SCAN_PROGRESS, progress)
+      })
+      return { success: true, devices }
+    } catch (error) {
+      return { success: false, error: String(error) }
+    }
+  })
+  ipcMain.handle(IPC_CHANNELS.DAYU_LOGIN_CHECK, async (_event, ip: string, username: string, password: string) => {
+    const { dayuLoginCheck } = await import('./dayu/dayuClient')
+    return dayuLoginCheck(ip, username, password)
+  })
+  ipcMain.handle(IPC_CHANNELS.DAYU_GET_MEDIA, async (_event, ip: string, username: string, password: string) => {
+    const { dayuGetMedia } = await import('./dayu/dayuClient')
+    return dayuGetMedia(ip, username, password)
+  })
 }
 
 // ---- GPU / sandbox hardening for headless / elevated Windows Server ----

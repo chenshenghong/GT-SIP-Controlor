@@ -37,6 +37,12 @@ export const IPC_CHANNELS = {
   DEVICE_SET_SIP_PRIMARY: 'device:set-sip-primary',
   DEVICE_GET_STATUS: 'device:get-status',
 
+  // DAYU-OT300（Rapid Logic Web 表單設備；main process 專用協定 client）
+  DAYU_SCAN: 'dayu:scan',
+  DAYU_SCAN_PROGRESS: 'dayu:scan-progress',
+  DAYU_LOGIN_CHECK: 'dayu:login-check',
+  DAYU_GET_MEDIA: 'dayu:get-media',
+
   // System
   RESTART_DEVICE: 'device:restart',
   PING_DEVICE: 'device:ping',
