@@ -25,6 +25,7 @@
           @change-ip="handleOpenIpChange"
           @add="showAddDevice = true"
           @rest-scan="showRestScan = true"
+          @dayu-scan="showDayuScan = true"
         />
         <DeviceDetail
           v-else
@@ -79,6 +80,13 @@
       @close="showRestScan = false"
       @found="handleDevicesFound"
     />
+
+    <!-- DAYU-OT300 Fingerprint Scan Modal -->
+    <DayuScanModal
+      :visible="showDayuScan"
+      @close="showDayuScan = false"
+      @found="handleDevicesFound"
+    />
   </div>
 </template>
 
@@ -95,6 +103,7 @@ import ReconnectOverlay from '@/components/ReconnectOverlay.vue'
 import BatchSyncModal from '@/components/BatchSyncModal.vue'
 import AddDeviceModal from '@/components/AddDeviceModal.vue'
 import RestScanModal from '@/components/RestScanModal.vue'
+import DayuScanModal from '@/components/DayuScanModal.vue'
 import AutoProvisionView from '@/components/AutoProvisionView.vue'
 
 const deviceStore = useDeviceStore()
@@ -270,6 +279,9 @@ function handleDeviceAdded(device: DeviceNode) {
 
 // REST discovery scan
 const showRestScan = ref(false)
+
+// DAYU-OT300 fingerprint scan
+const showDayuScan = ref(false)
 
 function handleDevicesFound(devices: DeviceNode[]) {
   for (const d of devices) deviceStore.addDevice(d)

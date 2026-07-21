@@ -14,6 +14,9 @@
         <button class="add-btn" @click="$emit('restScan')" title="REST 網段掃描（找不支援 DBP 的 REST-only 設備）">
           🔎 REST 掃描
         </button>
+        <button class="add-btn" @click="$emit('dayuScan')" title="DAYU-OT300 網段掃描（Rapid Logic 指紋，不送帳密）">
+          🔈 DAYU 掃描
+        </button>
         <button class="add-btn" @click="$emit('add')" title="手動輸入 IP 加入設備">
           ➕ 新增設備
         </button>
@@ -104,6 +107,7 @@ defineEmits<{
   add: []
   restScan: []
   scan: []
+  dayuScan: []
 }>()
 
 const onlineCount = computed(() => props.devices.filter(d => d.status === 'ONLINE').length)
