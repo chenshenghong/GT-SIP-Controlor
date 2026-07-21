@@ -317,3 +317,21 @@ export type ProvisionEvent =
   | { kind: 'degraded'; reason: string }
   | { kind: 'pool'; ipUsed: number; ipTotal: number; extUsed: number; extTotal: number }
   | { kind: 'round'; round: number }
+
+// ============================================
+// DAYU-OT300（Rapid Logic Web 表單設備）
+// ============================================
+
+/** DAYU 操作失敗原因（Phase 1 唯讀面） */
+export type DayuFailReason = 'unreachable' | 'auth-failed' | 'busy' | 'parse-failed'
+
+/** DAYU 操作結果 — 不用裸 boolean，失敗必附原因（Codex 審查要求） */
+export type DayuResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; reason: DayuFailReason; detail?: string }
+
+/** media.htm 讀出的資訊（speakerVolume 為 0-9 原始等級，不換算百分比） */
+export interface DayuMediaInfo {
+  speakerVolume: number
+  codecOrder: string
+}

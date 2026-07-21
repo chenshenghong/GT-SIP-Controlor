@@ -11,10 +11,12 @@ module.exports = {
     '^.+\\.ts$': [
       'ts-jest',
       {
+        isolatedModules: true,
         tsconfig: {
           esModuleInterop: true,
           module: 'commonjs',
           baseUrl: '.',
+          skipLibCheck: true,
           paths: {
             '@shared/*': ['src/shared/*'],
             '@/*': ['src/renderer/*'],
