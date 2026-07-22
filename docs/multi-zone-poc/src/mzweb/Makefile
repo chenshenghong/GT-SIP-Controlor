@@ -18,6 +18,7 @@ build/websetsip.c: ../../../firmware-reference/websetsip.c websetsip-p7.patch
 	mkdir -p build
 	cp ../../../firmware-reference/websetsip.c build/websetsip.c
 	cp ../../../firmware-reference/main.c build/main.c
+	cp ../../../firmware-reference/websetsip.h build/websetsip.h
 	patch build/websetsip.c < websetsip-p7.patch
 
 arm-mzweb: build/websetsip.c

@@ -1,0 +1,150 @@
+--- websetsip.c.orig
++++ websetsip.c
+@@ -31,6 +31,8 @@
+ #include "webapi.h"
+ #include "cjson.h"
+ #include "readtemp.h"
++#include "mzweb_zones.h"
++extern void request_get_index(void* client);
+ 
+ /*定义HTTP的监听端口*/
+ #define WEB_SIP_SET_TCP_LISTEN_PORT 										80
+@@ -2684,6 +2686,77 @@
+ }
+ 
+ /*http回调函数*/
++/* P7: zones route token check. Comparison logic and error JSON body copied
++ * verbatim from request_verify_token_cmd (incl. len == strlen(now_token) - 1
++ * off-by-one quirk and A002/A003 codes). Difference: this is an auth gate --
++ * success returns 0 (no reply; zones handler forwards), failure sends the error
++ * reply then returns -1, with HTTP status 401 instead of the legacy 200 (zones
++ * is a new authenticated API using real HTTP status codes, consistent with 503). */
++static int mzweb_check_token(void* client, void* http_head)
++{
++	char* code = NULL;
++	char* msg = NULL;
++	char* value = NULL;
++	int len = 0;
++	get_http_head(http_head, "Authorization", &value, &len);
++
++	if (len > 7)
++	{
++		len -= 7;
++		value += strlen("Bearer ");
++		if (len == (strlen(s_http_sip_set->now_token) - 1) &&
++			strncmp(value, s_http_sip_set->now_token, len) == 0)
++		{
++			if (s_http_sip_set->now_token_timestamp + TOKEN_EXPIRES_MAX_SECONDS*1000
++				<= get_main_event_loop()->mn_now)
++			{
++				memset(s_http_sip_set->now_token, 0, 64);
++				s_http_sip_set->now_token_timestamp = 0;
++
++				code = "A002";
++				msg = "Token已过期";
++			}
++			else
++			{
++				s_http_sip_set->now_token_timestamp = get_main_event_loop()->mn_now;
++			}
++		}
++		else
++		{
++			code = "A003";
++			msg = "该Token非当前有效Token";
++		}
++	}
++	else
++	{
++		code = "A003";
++		msg = "没有Token信息";
++	}
++
++	if (msg == NULL && code == NULL)
++	{
++		return 0;
++	}
++
++	char http_msg[512] = {0};
++	snprintf(http_msg, 512, "{\"status\": \"error\",\"message\": \"操作失敗\","
++		"\"error_code\": \"%s\",  \"details\": \"%s\"}",
++		code, msg);
++	char buffer[1024] = {0};
++	len = snprintf(buffer, 1024, "HTTP/1.1 401 Unauthorized\r\n"
++							 "Server: %s\r\n"
++							 "Connection: close\r\n"
++							 "Content-Type: application/json;charset=GBK\r\n"
++							 "Content-Length: %d\r\n"
++							 "Allow: %s\r\n\r\n%s",
++							 HBI_WEB_SERVER,
++							 strlen(http_msg),
++							 HBI_WEB_METHOD,
++							 http_msg);
++	web_snd_data(client, buffer, len);
++	return -1;
++}
++
+ static int http_callback(void* client, void* http_head, int request_type,
+ 	const char* content, int content_len)
+ {
+@@ -2694,6 +2767,25 @@
+ 		get_http_url(http_head, &url, &len);
+ 		if (len > 0)
+ 		{
++			if (len == (int)strlen("/get/sip/multicast/zones") &&
++				strncmp("/get/sip/multicast/zones", url, len) == 0)
++			{
++				if (mzweb_check_token(client, http_head) == 0)
++					mzweb_forward_zones(client, 0, NULL, 0);
++			}
++			else
++			if (len == (int)strlen("/set/sip/multicast/zones") &&
++				strncmp("/set/sip/multicast/zones", url, len) == 0)
++			{
++				if (mzweb_check_token(client, http_head) == 0)
++					mzweb_forward_zones(client, 1, content, content_len);
++			}
++			else
++			if (len == 1 && url[0] == '/')
++			{
++				request_get_index(client);
++			}
++			else
+ 			if (strncmp("/auth/login", url, len) == 0)
+ 			{
+ 				/*处理登录*/
+@@ -2810,6 +2902,7 @@
+ 			
+ 		}
+ 	}
++	return 0;
+ }
+ 
+ /*定时重启*/
+@@ -2988,7 +3081,7 @@
+ 		fclose(ifcfg_app);
+ 	}
+ 
+-	char* request_url[19] = {0};
++	char* request_url[21] = {0};
+ 	request_url[0] = "/auth/login";
+ 	request_url[1] = "/auth/logout";
+ 	request_url[2] = "/auth/verify";
+@@ -3008,6 +3101,8 @@
+ 	request_url[16] = "/system/info";
+ 	request_url[17] = "/auth/change_password";
+ 	request_url[18] = "/set/sip/multicast";
++	request_url[19] = "/get/sip/multicast/zones";
++	request_url[20] = "/set/sip/multicast/zones";
+ 
+ 	char* care_key_name[1] = {0};
+ 	care_key_name[0] = "Authorization";
+@@ -3016,7 +3111,7 @@
+ 		NULL, 0,
+ 		NULL, 0,
+ 		NULL, 0,
+-		request_url, 19,
++		request_url, 21,
+ 		care_key_name, 1,
+ 		0);
+ }
