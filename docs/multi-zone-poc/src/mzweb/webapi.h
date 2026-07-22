@@ -21,6 +21,13 @@ void init_web_listen(int port, http_callback_fn cb, struct event_loop* loop,
                      char** request_url, int url_count,
                      char** care_key_name, int care_count, int flag);
 
+/* SEC-03：:443 非阻塞 TLS 終結。mzcert_ensure/mzcert_load 取得自簽憑證，
+ * 建 mbedTLS server ssl_config，https_port listen fd 註冊進同一 event loop。
+ * TLS handshake 與 read/write 全走非阻塞、整合進單執行緒 poll 迴圈（不阻塞）。
+ * 與 init_web_listen 共用 callback/連線池/idle 清掃；可單獨或並存啟用。 */
+void init_web_listen_tls(int https_port, http_callback_fn cb, struct event_loop* loop,
+                         const char* crt_path, const char* key_path, const char* ip);
+
 void get_http_url(void* http_head, char** out_url, int* out_len);
 void get_http_head(void* http_head, const char* name, char** out_value, int* out_len);
 void web_snd_data(void* client, const char* buffer, int len);

@@ -17,10 +17,12 @@ APPSRC   = build/websetsip.c build/main.c mzweb_zones.c serve_index.c
 COMPAT_TEST_keyvaluefile = keyvaluefile.c
 COMPAT_TEST_cjson = cjson_vendor.c
 COMPAT_TEST_event = event.c
-COMPAT_TEST_webapi = event.c webapi.c socketbase.c
+# webapi.c 現在含 :443 TLS 終結（引用 mbedTLS＋mzcert），連 :80-only 測試也須連進這些單元。
+COMPAT_TEST_webapi = event.c webapi.c socketbase.c mzcert.c $(MBEDTLS_SRC)
 COMPAT_TEST_readtemp = readtemp.c
 COMPAT_TEST_mbedtls_smoke = $(MBEDTLS_SRC)
 COMPAT_TEST_mzcert = mzcert.c $(MBEDTLS_SRC)
+COMPAT_TEST_webapi_tls = event.c webapi.c socketbase.c mzcert.c $(MBEDTLS_SRC)
 # test_webapi 用縮短的 idle timeout/清掃週期，讓 http_test.py 的 slow-loris 斷言免等 30s。
 # 僅作用於此測試二進位；production arm/x86 目標編 webapi.c 不帶此旗標，維持預設 30000ms。
 TESTDEF_webapi = -DIDLE_MS=1000 -DSWEEP_MS=250
