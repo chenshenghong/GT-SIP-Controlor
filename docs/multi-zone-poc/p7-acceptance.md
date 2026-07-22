@@ -48,7 +48,8 @@
 CMS 為使用者桌面 Electron app，無法於此 headless session 啟動。但：
 - CMS `deviceApi.ts` 使用的路由（`/auth/login`、`/get/device/status`、`/get/sip/config`、`/set/sip/*` 等）已於真機逐一驗證回 200+JSON+GBK，**契約一致**。
 - **部署 mzweb 順帶修好 .70 的 rogue-hbi_web 缺陷**：CMS 對 .70 原本會遇到 ~50% 403（deviceApi.ts 靠 retry 兜底），現由 mzweb 100% 應答。
-- 待使用者以 CMS app 對 .70 做一次實連確認（登入／狀態／SIP／組播頁），為最終應用層簽收。
+- **✅ 已由使用者以 CMS app 對 .70 實連確認通過（2026-07-23）**——登入／狀態／SIP／組播頁全正常，rogue-hbi_web 缺陷修復生效。
+- **後續發現的產品缺口**：CMS app 的組播頁只有**單槽**（`DeviceDetail.vue` 單筆 `MulticastConfig` → 舊 `/set/sip/multicast`），管不到 16 區多監聽區（僅設備嵌入頁 `GET /` 有 16 區 UI）。且單槽頁在 side-car 設備上有**斷鏈風險**（改 termapp 單槽會把它從 mzrelay3 輸出拉走）。→ 已決策：CMS 新增完整 16 區 zones UI（另立設計/計畫，見 `docs/superpowers/specs/`）。
 
 ## 五、回退
 
