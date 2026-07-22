@@ -22,6 +22,7 @@
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <syslog.h>
 #include "event.h"
 #include "socketbase.h"
 #include "webapi.h"
@@ -578,6 +579,9 @@ static void on_tls_listen_readable(struct event_loop* loop, int fd, void* arg) {
 void init_web_listen_tls(int https_port, http_callback_fn cb, struct event_loop* loop,
                          const char* crt_path, const char* key_path, const char* ip) {
     signal(SIGPIPE, SIG_IGN);
+    /* Important-1（降級不可靜默）：cert bootstrap / TLS listener 任一失敗 → fail-open 續明文，
+     * 但除 stderr 外，一律經 syslog(LOG_ERR) 留一條明確告警，設備 syslog 有處可查。 */
+    openlog("mzweb", LOG_PID, LOG_DAEMON);
     s_cb = cb; s_loop = loop;                             /* 與 :80 路徑共用 callback/loop */
 
     /* --- 1) 憑證：不存在則自簽產生，再載入 mbedTLS 結構 --- */
@@ -590,14 +594,17 @@ void init_web_listen_tls(int https_port, http_callback_fn cb, struct event_loop*
     if (mbedtls_ctr_drbg_seed(&s_ctr_drbg, mbedtls_entropy_func, &s_entropy,
                               (const unsigned char*)"mzweb-tls", 9) != 0) {
         fprintf(stderr, "init_web_listen_tls: ctr_drbg_seed failed\n");
+        syslog(LOG_ERR, "mzweb: TLS cert bootstrap failed (ctr_drbg_seed), serving PLAINTEXT :80 (INSECURE)");
         return;
     }
     if (mzcert_ensure(crt_path, key_path, ip) != 0) {
         fprintf(stderr, "init_web_listen_tls: mzcert_ensure(%s) failed\n", crt_path);
+        syslog(LOG_ERR, "mzweb: TLS cert bootstrap failed (mzcert_ensure %s), serving PLAINTEXT :80 (INSECURE)", crt_path);
         return;
     }
     if (mzcert_load(crt_path, key_path, &s_srvcert, &s_pkey, &s_ctr_drbg) != 0) {
         fprintf(stderr, "init_web_listen_tls: mzcert_load failed\n");
+        syslog(LOG_ERR, "mzweb: TLS cert bootstrap failed (mzcert_load), serving PLAINTEXT :80 (INSECURE)");
         return;
     }
 
@@ -606,20 +613,26 @@ void init_web_listen_tls(int https_port, http_callback_fn cb, struct event_loop*
                                     MBEDTLS_SSL_TRANSPORT_STREAM,
                                     MBEDTLS_SSL_PRESET_DEFAULT) != 0) {
         fprintf(stderr, "init_web_listen_tls: ssl_config_defaults failed\n");
+        syslog(LOG_ERR, "mzweb: TLS cert bootstrap failed (ssl_config_defaults), serving PLAINTEXT :80 (INSECURE)");
         return;
     }
     mbedtls_ssl_conf_rng(&s_ssl_conf, mbedtls_ctr_drbg_random, &s_ctr_drbg);
     mbedtls_ssl_conf_authmode(&s_ssl_conf, MBEDTLS_SSL_VERIFY_NONE);
     if (mbedtls_ssl_conf_own_cert(&s_ssl_conf, &s_srvcert, &s_pkey) != 0) {
         fprintf(stderr, "init_web_listen_tls: conf_own_cert failed\n");
+        syslog(LOG_ERR, "mzweb: TLS cert bootstrap failed (conf_own_cert), serving PLAINTEXT :80 (INSECURE)");
         return;
     }
-    s_tls_ready = 1;
+    /* Important-2（brick 修復）：s_tls_ready 絕不在此設。若在 :443 bind/listen 之前就設 1，
+     * 而 :443 埠被占／fd 耗盡令 bind/listen 失敗 → early return 但 s_tls_ready 已 1，
+     * :80 gate 對每個請求 301 到不存在的 :443（connection refused）→ 設備 web 完全 brick。
+     * 正確時序：等 :443 listen 成功且 ev_reg_fd 入 poll 迴圈後，才在函式尾端啟動 s_tls_ready。 */
 
     /* --- 3) :443 listen fd，註冊進同一 event loop（同既有 :80） --- */
     s_tls_listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (s_tls_listen_fd < 0) {
         fprintf(stderr, "init_web_listen_tls: socket() failed: %s\n", strerror(errno));
+        syslog(LOG_ERR, "mzweb: TLS :443 socket() failed (%s), serving PLAINTEXT :80 (INSECURE)", strerror(errno));
         return;
     }
     int one = 1;
@@ -630,15 +643,20 @@ void init_web_listen_tls(int https_port, http_callback_fn cb, struct event_loop*
     a.sin_addr.s_addr = INADDR_ANY;
     if (bind(s_tls_listen_fd, (struct sockaddr*)&a, sizeof(a)) < 0) {
         fprintf(stderr, "init_web_listen_tls: bind(port=%d) failed: %s\n", https_port, strerror(errno));
+        syslog(LOG_ERR, "mzweb: TLS :443 bind failed (%s), serving PLAINTEXT :80 (INSECURE)", strerror(errno));
         close_socket(s_tls_listen_fd); s_tls_listen_fd = -1;
-        return;
+        return; /* s_tls_ready 維持 0 → :80 續明文、不 301（Important-2：不 brick） */
     }
     if (listen(s_tls_listen_fd, 8) < 0) {
         fprintf(stderr, "init_web_listen_tls: listen(port=%d) failed: %s\n", https_port, strerror(errno));
+        syslog(LOG_ERR, "mzweb: TLS :443 listen failed (%s), serving PLAINTEXT :80 (INSECURE)", strerror(errno));
         close_socket(s_tls_listen_fd); s_tls_listen_fd = -1;
-        return;
+        return; /* s_tls_ready 維持 0 → :80 續明文、不 301（Important-2：不 brick） */
     }
     set_no_block(s_tls_listen_fd);
     ev_reg_fd(loop, s_tls_listen_fd, on_tls_listen_readable, NULL);
+    /* Important-2：:443 已 listen 成功且入 poll 迴圈，此刻才啟動 301 gate。單執行緒 event loop
+     * 下，本函式回到 loop 前不會有任何 accept callback 觸發，故此處設定與 ev_reg_fd 之間無 race。 */
+    s_tls_ready = 1;
     ensure_idle_timer(loop);
 }
