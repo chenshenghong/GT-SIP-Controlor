@@ -241,7 +241,7 @@
 +	cJSON_AddStringToObject(primary_line, "user_id", PRIMARY_USER_ID==NULL?"":PRIMARY_USER_ID);
 +	/* SEC-09: password now built via cJSON_AddStringToObject -> print_string_ptr auto-escapes
 +	 * '"'/'\\'/control chars, so a password containing those can no longer break JSON syntax. */
-+	cJSON_AddStringToObject(primary_line, "password", PRIMARY_PASSWORD==NULL?"":PRIMARY_PASSWORD);
++	cJSON_AddStringToObject(primary_line, "password", "********"); /* SEC-02: mask always, never read PRIMARY_PASSWORD */
 +	cJSON_AddRawToObject(primary_line, "auto_answer", PRIMARY_AUTO_ANSWER==NULL?"true":PRIMARY_AUTO_ANSWER);
 +	cJSON_AddRawToObject(primary_line, "register_timeout", PRIMARY_REGISTER_TIMEOUT==NULL?"300":PRIMARY_REGISTER_TIMEOUT);
 +	cJSON_AddStringToObject(primary_line, "transport_protocol", PRIMARY_TRANSPORT_PROTOCL==NULL?"TCP":PRIMARY_TRANSPORT_PROTOCL);
