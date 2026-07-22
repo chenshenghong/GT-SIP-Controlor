@@ -3,7 +3,7 @@ DOCKER   = docker run --rm --platform linux/amd64 -v "$(CURDIR)":/src -w /src --
 CC_ARM   = $(DOCKER) muslcc/x86_64:arm-linux-musleabi -march=armv7-a
 CC_X86   = $(DOCKER) muslcc/x86_64:x86_64-linux-musl
 CFLAGS   = -static -no-pie -fno-pie -O2 -I.
-COMPAT   = socketbase.c hostsid.c keyvaluefile.c event.c webapi.c cjson_vendor.c readtemp.c mzcert.c
+COMPAT   = socketbase.c hostsid.c keyvaluefile.c event.c webapi.c cjson_vendor.c readtemp.c mzcert.c mzhash.c
 
 # --- T1: vendor mbedTLS 靜態編入 mzweb 目標 ---
 MBEDTLS_SRC = $(wildcard mbedtls/library/*.c)
@@ -22,6 +22,9 @@ COMPAT_TEST_webapi = event.c webapi.c socketbase.c mzcert.c $(MBEDTLS_SRC)
 COMPAT_TEST_readtemp = readtemp.c
 COMPAT_TEST_mbedtls_smoke = $(MBEDTLS_SRC)
 COMPAT_TEST_mzcert = mzcert.c $(MBEDTLS_SRC)
+# mzhash 需要 mbedtls_ctr_drbg 產 salt，其熵源 mbedtls_hardware_poll() 由 mzcert.c 提供
+# （精簡 config 開 MBEDTLS_ENTROPY_HARDWARE_ALT，故連 mzhash 單元測試也需連進這顆符號）。
+COMPAT_TEST_mzhash = mzhash.c mzcert.c $(MBEDTLS_SRC)
 COMPAT_TEST_webapi_tls = event.c webapi.c socketbase.c mzcert.c $(MBEDTLS_SRC)
 # test_webapi 用縮短的 idle timeout/清掃週期，讓 http_test.py 的 slow-loris 斷言免等 30s。
 # 僅作用於此測試二進位；production arm/x86 目標編 webapi.c 不帶此旗標，維持預設 30000ms。
