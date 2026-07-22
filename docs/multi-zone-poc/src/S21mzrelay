@@ -1,0 +1,24 @@
+#!/bin/sh
+# S21mzrelay — multi-zone side-car autostart (PoC P4.2).
+# rcS invokes S* scripts with no argument -> default to start.
+# Guarded + backgrounded: never blocks or fails the boot sequence.
+BIN=/opt/mzrelay2
+CONF=/opt/mzrelay.conf
+case "${1:-start}" in
+start)
+	[ -x "$BIN" ] && [ -f "$CONF" ] || exit 0
+	(
+		n=0
+		while [ $n -lt 30 ]; do
+			ifconfig eth0 2>/dev/null | grep -q "inet addr" && break
+			sleep 1; n=$((n+1))
+		done
+		exec "$BIN" $(cat "$CONF") 2>>/tmp/mzrelay.boot.log
+	) &
+	echo "mzrelay2: autostart armed"
+	;;
+stop)
+	killall mzrelay2 2>/dev/null
+	;;
+esac
+exit 0

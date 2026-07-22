@@ -2,7 +2,8 @@
  * Reads a raw G.722 bitstream and sends it as 20ms/160-byte RTP frames (50pps, PT9)
  * to a UDP target, looping. Runs ON the device so there is no cross-subnet loss.
  *
- * usage: mztone <g722_file> <dst_ip> <dst_port> [loop:1|0] [dur_sec:0=inf]
+ * usage: mztone <g722_file> <dst_ip> <dst_port> [loop:1|0] [dur_sec:0=inf] [pt:9]
+ *   pt 0 = G.711U (PCMU, 8kHz mulaw raw file) — same 160B/20ms framing applies.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,6 +23,7 @@ int main(int argc, char **argv) {
     int dport = atoi(argv[3]);
     int loop  = (argc > 4) ? atoi(argv[4]) : 1;
     int dur   = (argc > 5) ? atoi(argv[5]) : 0;
+    int pt    = (argc > 6) ? atoi(argv[6]) : 9;
 
     FILE *f = fopen(path, "rb");
     if (!f) { perror("fopen"); return 1; }
@@ -38,7 +40,7 @@ int main(int argc, char **argv) {
     unsigned int ssrc = 0x11220000 ^ (unsigned)dport;
     unsigned short seq = 0;
     unsigned int ts = 0;
-    pkt[0] = 0x80; pkt[1] = 9;   /* V2, PT9 (G.722) */
+    pkt[0] = 0x80; pkt[1] = (unsigned char)(pt & 0x7f);   /* V2, PT9=G.722 / PT0=PCMU */
     pkt[8]  = (ssrc >> 24) & 0xff; pkt[9]  = (ssrc >> 16) & 0xff;
     pkt[10] = (ssrc >> 8) & 0xff;  pkt[11] = ssrc & 0xff;
 
