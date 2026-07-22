@@ -20,6 +20,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <arpa/inet.h>
 #include <unistd.h>
 #include "event.h"
 #include "socketbase.h"
@@ -68,6 +69,8 @@ struct conn {
     /* http_head 視圖（指進 buf，非 NUL 結尾） */
     char* url; int url_len;
     char* auth; int auth_len;   /* Authorization 值 */
+    char* host; int host_len;   /* Host 值（T4 301 Location 組址用；不經 get_http_head 公開，
+                                  * 避免與 P7 T5 對 get_http_head 的擴充計畫衝突——見 webapi.h 註記） */
     int is_get;
     /* --- TLS 狀態（is_tls=0 時全不觸碰；ssl 由 accept 時 memset(0) 即 init 態） --- */
     int is_tls;                 /* 此 conn 走 :443 TLS 終結 */
@@ -154,10 +157,41 @@ static void conn_send(struct conn* c, const char* buffer, int len) {
     conn_flush(c);                               /* 先試同步排空；卡住則轉 POLLOUT 驅動 */
 }
 
+/* T4：安全回應標頭，套用於「所有」回應（301、404、TLS 路由回應）。單一組字串常數，
+ * append_security_headers 為唯一組裝點——避免三處各自拼字元造成漂移。 */
+#define SEC_HEADERS_TEXT \
+    "X-Frame-Options: SAMEORIGIN\r\n" \
+    "X-Content-Type-Options: nosniff\r\n" \
+    "X-XSS-Protection: 1; mode=block\r\n"
+#define SEC_HEADERS_LEN ((int)(sizeof(SEC_HEADERS_TEXT) - 1))
+
+static int append_security_headers(char* buf) {
+    memcpy(buf, SEC_HEADERS_TEXT, (size_t)SEC_HEADERS_LEN);
+    return SEC_HEADERS_LEN;
+}
+
 void web_snd_data(void* client, const char* buffer, int len) {
     struct conn* c = client;
     c->responded = 1;
-    conn_send(c, buffer, len);
+    /* 所有經此路徑送出的回應（含 TLS 路由回應）在 status line 之後插入安全標頭——
+     * 呼叫端（mzweb_zones.c/serve_index.c/測試 cb）維持原樣，不需各自加標頭。
+     * 找不到 status line 結尾（畸形呼叫）則原樣送出，不阻塞回應。 */
+    int se = -1;
+    if (len > 0) {
+        for (int i = 0; i + 1 < len; i++) {
+            if (buffer[i] == '\r' && buffer[i+1] == '\n') { se = i; break; }
+        }
+    }
+    if (se < 0) { conn_send(c, buffer, len); return; }
+    int head_len = se + 2;
+    int tail_len = len - head_len;
+    char* nb = (char*)malloc((size_t)(head_len + SEC_HEADERS_LEN + tail_len));
+    if (!nb) { conn_send(c, buffer, len); return; }   /* 配置失敗：退回原樣送出而非直接關閉 */
+    memcpy(nb, buffer, (size_t)head_len);
+    int hlen = append_security_headers(nb + head_len);
+    memcpy(nb + head_len + hlen, buffer + head_len, (size_t)tail_len);
+    conn_send(c, nb, head_len + hlen + tail_len);
+    free(nb);
 }
 void get_http_url(void* http_head, char** out_url, int* out_len) {
     struct conn* c = http_head; *out_url = c->url; *out_len = c->url_len;
@@ -230,6 +264,8 @@ static int parse_request(struct conn* c, int hdr_len) {
                 c->auth = v; c->auth_len = vlen;
             } else if (nlen == 14 && strncasecmp(ls, "Content-Length", 14) == 0) {
                 c->content_len = parse_uint(v, vlen);
+            } else if (nlen == 4 && strncasecmp(ls, "Host", 4) == 0) {
+                c->host = v; c->host_len = vlen;   /* T4：301 Location 組址用 */
             }
         }
         if (le >= hdr_len) break;
@@ -238,20 +274,61 @@ static int parse_request(struct conn* c, int hdr_len) {
     return 1;
 }
 
+/* 直接由 webapi.c 組裝、不經 web_snd_data 的回應（301／404）在此各自呼叫
+ * append_security_headers 一次；不可再走 web_snd_data（否則標頭會被重複插入兩次）。 */
+static void send_404(struct conn* c) {
+    char resp[256];
+    int n = snprintf(resp, sizeof(resp),
+        "HTTP/1.1 404 Not Found\r\n"
+        "Server: " HBI_WEB_SERVER "\r\n"
+        "Content-Length: 0\r\n"
+        "Connection: close\r\n");
+    if (n < 0 || n >= (int)sizeof(resp)) { conn_close(c); return; }
+    n += append_security_headers(resp + n);
+    n += snprintf(resp + n, sizeof(resp) - (size_t)n, "\r\n");
+    c->responded = 1;
+    conn_send(c, resp, n);            /* 走緩衝路徑（明文/TLS 皆非阻塞、送畢自關） */
+}
+
+/* T4：:80 全轉址 https（憑證已就緒／s_tls_ready）。Location host 優先取請求 Host: header；
+ * 取不到（畸形請求／HTTP/1.0 無 Host）則以 getsockname 取本機（server 端）IP 兜底，
+ * 確保任何情況都給出可解析的 https:// 絕對網址，不留空 Location。 */
+static void send_redirect(struct conn* c) {
+    char hostbuf[128];
+    const char* host; int hostlen;
+    if (c->host_len > 0 && c->host_len < (int)sizeof(hostbuf)) {
+        host = c->host; hostlen = c->host_len;
+    } else {
+        struct sockaddr_in sa; socklen_t sl = sizeof(sa);
+        char ipbuf[INET_ADDRSTRLEN];
+        if (getsockname(c->fd, (struct sockaddr*)&sa, &sl) == 0 &&
+            inet_ntop(AF_INET, &sa.sin_addr, ipbuf, sizeof(ipbuf))) {
+            hostlen = snprintf(hostbuf, sizeof(hostbuf), "%s", ipbuf);
+        } else {
+            hostlen = snprintf(hostbuf, sizeof(hostbuf), "127.0.0.1");
+        }
+        host = hostbuf;
+    }
+    char resp[MAX_URL + 640];
+    int n = snprintf(resp, sizeof(resp),
+        "HTTP/1.1 301 Moved Permanently\r\n"
+        "Location: https://%.*s%.*s\r\n"
+        "Content-Length: 0\r\n"
+        "Connection: close\r\n",
+        hostlen, host, c->url_len, c->url);
+    if (n < 0 || n >= (int)sizeof(resp)) { conn_close(c); return; } /* 防禦性：不送出被截斷的 Location */
+    n += append_security_headers(resp + n);
+    n += snprintf(resp + n, sizeof(resp) - (size_t)n, "\r\n");
+    c->responded = 1;
+    conn_send(c, resp, n);
+}
+
 static void dispatch(struct conn* c) {
     int body_start = c->hdr_end;
     const char* body = c->buf + body_start;
     s_cb(c, c, APP_REQUEST_CMD, body, c->content_len);
     if (!c->used) return;           /* callback 已 web_snd_data → 連線已關 */
-    if (!c->responded) {
-        static const char r404[] =
-            "HTTP/1.1 404 Not Found\r\n"
-            "Server: " HBI_WEB_SERVER "\r\n"
-            "Content-Length: 0\r\n"
-            "Connection: close\r\n\r\n";
-        c->responded = 1;
-        conn_send(c, r404, (int)(sizeof(r404) - 1));  /* 走緩衝路徑（明文/TLS 皆非阻塞、送畢自關） */
-    }
+    if (!c->responded) send_404(c);
 }
 
 /* idle 掃描：檢查所有 conn（self 傳 NULL 時全掃），逾時仍未收齊完整請求者關閉。
@@ -306,6 +383,11 @@ static void try_dispatch(struct conn* c) {
         /* 防禦性：headers+body 合計不得超過緩衝容量（極端 8KB headers＋32KB body 邊角）。
          * recv 的 space 守衛已保證不溢位；此處提前明確拒絕，免得無謂緩衝一個註定失敗的請求。 */
         if (c->hdr_end + c->content_len > CONN_CAP) { conn_close(c); return; }
+
+        /* T4：明文 :80 且憑證/TLS listener 已就緒 → 對「所有路徑」直接 301 轉址 https，
+         * 不 dispatch 到路由、不等 body 收滿（Connection: close 隨即斷線，未讀 body 無妨）。
+         * !s_tls_ready（首開憑證尚未就緒的窗口）維持原行為，走下方既有 http 服務。 */
+        if (!c->is_tls && s_tls_ready) { send_redirect(c); return; }
     }
 
     /* 3) body 是否收滿。 */

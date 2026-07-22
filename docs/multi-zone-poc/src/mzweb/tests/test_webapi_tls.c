@@ -44,6 +44,9 @@ int main(void){
     unlink("/tmp/mzt.crt"); unlink("/tmp/mzt.key");
     struct event_loop* l=get_main_event_loop();
     init_web_listen_tls(8443, cb, l, "/tmp/mzt.crt","/tmp/mzt.key","127.0.0.1");
-    printf("tls listening 8443\n"); fflush(stdout);
+    /* T4：:8080 明文 listener，供 redirect_test.py 驗證 s_tls_ready 後全轉址 https。
+     * 與 :8443 共用同一 cb/event loop；s_tls_ready 由上面 init_web_listen_tls 設定。 */
+    init_web_listen(8080, cb, l, NULL,0, NULL,0, NULL,0, NULL,0, NULL,0, 0);
+    printf("tls listening 8443, http listening 8080\n"); fflush(stdout);
     event_loop_run(l); return 0;
 }

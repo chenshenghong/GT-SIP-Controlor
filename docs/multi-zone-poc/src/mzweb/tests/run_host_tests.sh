@@ -20,6 +20,10 @@ exec docker run --rm --platform linux/amd64 -v "$PWD":/src -w /src python:3.12-a
     echo "== tests/https_test.py"
     if ! python3 tests/https_test.py; then echo "FAIL: tests/https_test.py"; rc=1; fi
   fi
+  if [ -x build/test_webapi_tls ] && [ -f tests/redirect_test.py ]; then
+    echo "== tests/redirect_test.py"
+    if ! python3 tests/redirect_test.py; then echo "FAIL: tests/redirect_test.py"; rc=1; fi
+  fi
   [ "$rc" -eq 0 ] && echo "ALL HOST TESTS PASSED" || echo "HOST TESTS FAILED"
   exit "$rc"
 '
