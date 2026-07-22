@@ -53,6 +53,11 @@ struct conn {
     int content_len;            /* 解析出的 Content-Length（無則 0） */
     int responded;              /* web_snd_data 已被呼叫 */
     unsigned long long last_io; /* idle timeout 用 */
+    /* --- per-conn 送出緩衝（事件驅動非阻塞寫）：回應整段存此，conn_flush 逐次排空。
+     * 傳輸層送出緩衝滿（WANT_WRITE/EAGAIN）→ ev_set_writable(+POLLOUT)＋return 回 poll，
+     * 絕不原地空轉。送完 → conn_close。out_buf 動態配置（回應可達內嵌頁 ~23KB），
+     * conn_close 釋放。out_pending：此 conn 尚有待送 bytes（讀路徑據此改走排空）。 --- */
+    char* out_buf; int out_len; int out_off; int out_pending;
     /* http_head 視圖（指進 buf，非 NUL 結尾） */
     char* url; int url_len;
     char* auth; int auth_len;   /* Authorization 值 */
@@ -87,41 +92,60 @@ static void conn_close(struct conn* c) {
         mbedtls_ssl_close_notify(&c->ssl);
         mbedtls_ssl_free(&c->ssl);
     }
+    ev_set_writable(s_loop, c->fd, 0);   /* 清 POLLOUT 興趣（須在 ev_unreg_fd 之前，靠 fd 尋位） */
     ev_unreg_fd(s_loop, c->fd);
     close_socket(c->fd);
+    if (c->out_buf) { free(c->out_buf); c->out_buf = NULL; }  /* 釋放送出緩衝（動態配置） */
+    c->out_len = c->out_off = c->out_pending = 0;
     c->used = 0;
 }
 
-/* 送滿 len bytes（非阻塞下能送多少送多少；SIGPIPE 由 MSG_NOSIGNAL 抑制）。 */
-static void send_all(int fd, const char* buffer, int len) {
-    int off = 0;
-    while (off < len) {
-        int n = send(fd, buffer + off, len - off, MSG_NOSIGNAL);
-        if (n > 0) { off += n; continue; }
-        if (n < 0 && errno == EINTR) continue;
-        break; /* EAGAIN / 對端關閉 / 其他錯誤：放棄剩餘（連線即將關閉） */
+/* conn_flush — 事件驅動非阻塞排空 out_buf[out_off..out_len)。
+ *   TLS：mbedtls_ssl_write；明文：send(MSG_NOSIGNAL)。
+ *   WANT_WRITE / EAGAIN → ev_set_writable(+POLLOUT)＋return（回 poll，絕不空轉單執行緒 loop）。
+ *   WANT_READ（TLS 重議罕見）→ 清 POLLOUT 改等 POLLIN（POLLIN 恆在興趣集）＋return。
+ *   全數送畢 → conn_close（回應皆 Connection: close）。致命錯誤 / 對端關閉 → conn_close。 */
+static void conn_flush(struct conn* c) {
+    if (!c->used) return;
+    while (c->out_off < c->out_len) {
+        int remaining = c->out_len - c->out_off;
+        if (c->is_tls) {
+            int n = mbedtls_ssl_write(&c->ssl,
+                        (const unsigned char*)(c->out_buf + c->out_off), (size_t)remaining);
+            if (n > 0) { c->out_off += n; c->last_io = clock_time(); continue; }
+            if (n == MBEDTLS_ERR_SSL_WANT_WRITE) { ev_set_writable(s_loop, c->fd, 1); return; }
+            if (n == MBEDTLS_ERR_SSL_WANT_READ)  { ev_set_writable(s_loop, c->fd, 0); return; }
+            conn_close(c); return;               /* 對端關閉 / 致命錯誤 */
+        } else {
+            int n = send(c->fd, c->out_buf + c->out_off, remaining, MSG_NOSIGNAL);
+            if (n > 0) { c->out_off += n; c->last_io = clock_time(); continue; }
+            if (n < 0 && errno == EINTR) continue;
+            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                ev_set_writable(s_loop, c->fd, 1); return;
+            }
+            conn_close(c); return;               /* 對端關閉 / 其他錯誤 */
+        }
     }
+    conn_close(c);                               /* out_off == out_len：送完即關 */
 }
 
-/* TLS 送出：mbedtls_ssl_write 逐段寫完。回 WANT_WRITE（底層 send EAGAIN）就重試同一段
- * （responses 皆為數 KB 內小封包，穩落 socket 送出緩衝，不會真的長時間 busy-spin）；
- * WANT_READ（重議期需先收）亦重試；其餘負值＝致命錯誤，放棄剩餘（連線即將關閉）。 */
-static void tls_send_all(struct conn* c, const char* buffer, int len) {
-    int off = 0;
-    while (off < len) {
-        int n = mbedtls_ssl_write(&c->ssl, (const unsigned char*)(buffer + off), (size_t)(len - off));
-        if (n > 0) { off += n; continue; }
-        if (n == MBEDTLS_ERR_SSL_WANT_WRITE || n == MBEDTLS_ERR_SSL_WANT_READ) continue;
-        break; /* 對端關閉 / 致命錯誤 */
-    }
+/* 把整段回應複製進 conn 送出緩衝並啟動非阻塞排空（caller 之後可自由釋放 buffer）。
+ * 明文與 TLS 共用此路徑 → 消除舊 send_all 的 EAGAIN 截斷隱患。 */
+static void conn_send(struct conn* c, const char* buffer, int len) {
+    if (!c->used) return;
+    if (len <= 0) { conn_close(c); return; }
+    char* nb = (char*)malloc((size_t)len);
+    if (!nb) { conn_close(c); return; }          /* 配置失敗：無法回應，關閉 */
+    memcpy(nb, buffer, (size_t)len);
+    if (c->out_buf) free(c->out_buf);            /* 防禦：單次回應，理論上不會既有緩衝 */
+    c->out_buf = nb; c->out_len = len; c->out_off = 0; c->out_pending = 1;
+    conn_flush(c);                               /* 先試同步排空；卡住則轉 POLLOUT 驅動 */
 }
 
 void web_snd_data(void* client, const char* buffer, int len) {
     struct conn* c = client;
-    if (c->is_tls) tls_send_all(c, buffer, len);
-    else           send_all(c->fd, buffer, len);
     c->responded = 1;
-    conn_close(c);
+    conn_send(c, buffer, len);
 }
 void get_http_url(void* http_head, char** out_url, int* out_len) {
     struct conn* c = http_head; *out_url = c->url; *out_len = c->url_len;
@@ -213,9 +237,8 @@ static void dispatch(struct conn* c) {
             "Server: " HBI_WEB_SERVER "\r\n"
             "Content-Length: 0\r\n"
             "Connection: close\r\n\r\n";
-        if (c->is_tls) tls_send_all(c, r404, (int)(sizeof(r404) - 1));
-        else           send_all(c->fd, r404, (int)(sizeof(r404) - 1));
-        conn_close(c);
+        c->responded = 1;
+        conn_send(c, r404, (int)(sizeof(r404) - 1));  /* 走緩衝路徑（明文/TLS 皆非阻塞、送畢自關） */
     }
 }
 
@@ -228,6 +251,8 @@ static void sweep_idle(struct conn* self) {
         if (!c->used || c == self) continue;
         /* TLS 握手硬上限：即使對端每隔幾秒滴一個 byte 拖住 last_io，也在 hs_deadline 強制回收。 */
         if (c->is_tls && !c->hs_done && now > c->hs_deadline) { conn_close(c); continue; }
+        /* 逾時回收涵蓋所有狀態：收 header 卡住的 slow-loris、以及卡在寫出（out_pending）
+         * 的 conn——對端停止讀取時 last_io 凍結，超過 IDLE_MS 即釋放 slot（含 out_buf）。 */
         if (now - c->last_io > IDLE_MS) conn_close(c);
     }
 }
@@ -281,6 +306,10 @@ static void on_conn_readable(struct event_loop* loop, int fd, void* arg) {
     struct conn* c = arg;
     if (!c->used) return;
 
+    /* 0) 排空優先：此 conn 已在送出回應（POLLOUT 或殘餘 POLLIN 喚醒）→ 續排空，
+     *    不再讀取（回應皆 Connection: close，讀路徑此時無意義）。 */
+    if (c->out_pending) { conn_flush(c); return; }
+
     /* 1) 非阻塞累積：讀到 EAGAIN 為止，跨多次 readable 事件保留狀態。 */
     for (;;) {
         int space = CONN_CAP - c->len;
@@ -324,6 +353,9 @@ static void on_tls_conn_readable(struct event_loop* loop, int fd, void* arg) {
     (void)loop; (void)fd;
     struct conn* c = arg;
     if (!c->used) return;
+
+    /* 0) 排空優先：已在送出回應（POLLOUT 或殘餘 POLLIN 喚醒）→ 續排空 out_buf，不再讀。 */
+    if (c->out_pending) { conn_flush(c); return; }
 
     /* A) handshake 未完成：推進一步。WANT_READ/WRITE → return（狀態留在 ssl，下次 poll 續做）。 */
     if (!c->hs_done) {

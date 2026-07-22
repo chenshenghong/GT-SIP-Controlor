@@ -6,7 +6,7 @@
 #define EV_MAX_FDS 16
 #define EV_MAX_TIMERS 8
 
-struct ev_fd { int fd; ev_fd_cb cb; void* arg; };
+struct ev_fd { int fd; ev_fd_cb cb; void* arg; int want_write; };
 static struct { struct event_loop pub; struct ev_fd fds[EV_MAX_FDS]; int nfds; TIMER_EVENT* timers[EV_MAX_TIMERS]; int ntimers; } s_loop;
 
 unsigned long long clock_time(void) {
@@ -30,8 +30,14 @@ int ev_reg_fd(struct event_loop* loop, int fd, ev_fd_cb cb, void* arg) {
     (void)loop;
     if (s_loop.nfds >= EV_MAX_FDS) return -1;
     s_loop.fds[s_loop.nfds].fd = fd; s_loop.fds[s_loop.nfds].cb = cb; s_loop.fds[s_loop.nfds].arg = arg;
+    s_loop.fds[s_loop.nfds].want_write = 0;   /* 預設不關心可寫；conn_flush 卡住時才 ev_set_writable */
     s_loop.nfds++;
     return 0;
+}
+void ev_set_writable(struct event_loop* loop, int fd, int want) {
+    (void)loop;
+    for (int i = 0; i < s_loop.nfds; i++)
+        if (s_loop.fds[i].fd == fd) { s_loop.fds[i].want_write = want ? 1 : 0; return; }
 }
 void ev_unreg_fd(struct event_loop* loop, int fd) {
     (void)loop;
@@ -50,7 +56,11 @@ int event_loop_step(struct event_loop* loop, int max_wait_ms) {
     int ns = s_loop.nfds;
     for (int i = 0; i < ns; i++) {
         snap[i] = s_loop.fds[i];
-        pfds[i].fd = s_loop.fds[i].fd; pfds[i].events = POLLIN; pfds[i].revents = 0;
+        /* POLLIN 恆開（既有 read 路徑不變）；want_write 的 fd 額外關心 POLLOUT，
+         * 以便 conn_flush 卡在傳輸層送出緩衝時，靠可寫事件驅動續送、不空轉 loop。 */
+        pfds[i].fd = s_loop.fds[i].fd;
+        pfds[i].events = POLLIN | (s_loop.fds[i].want_write ? POLLOUT : 0);
+        pfds[i].revents = 0;
     }
     int n = poll(pfds, ns, max_wait_ms);
     loop->mn_now = clock_time();
@@ -60,7 +70,7 @@ int event_loop_step(struct event_loop* loop, int max_wait_ms) {
     }
     if (n > 0) {
         for (int i = 0; i < ns; i++)
-            if ((pfds[i].revents & (POLLIN | POLLHUP | POLLERR)) && ev_fd_is_live(snap[i].fd))
+            if ((pfds[i].revents & (POLLIN | POLLOUT | POLLHUP | POLLERR)) && ev_fd_is_live(snap[i].fd))
                 snap[i].cb(loop, snap[i].fd, snap[i].arg);
     }
     return n;

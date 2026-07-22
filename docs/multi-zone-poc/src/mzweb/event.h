@@ -23,6 +23,10 @@ void event_timer_start(struct event_loop* loop, TIMER_EVENT* t);
 typedef void (*ev_fd_cb)(struct event_loop*, int fd, void* arg);
 int ev_reg_fd(struct event_loop* loop, int fd, ev_fd_cb on_readable, void* arg);
 void ev_unreg_fd(struct event_loop* loop, int fd);
+/* 設/清該 fd 在 poll 的 POLLOUT 興趣（事件驅動非阻塞寫）；want!=0 加、==0 清。
+ * POLLIN 興趣永遠保留不變；POLLOUT 觸發時走與 POLLIN 相同的 fd callback（webapi
+ * 端以 conn 狀態 out_pending 分辨是排空送出緩衝而非讀取）。fd 不在表中則無作用。 */
+void ev_set_writable(struct event_loop* loop, int fd, int want);
 int event_loop_step(struct event_loop* loop, int max_wait_ms); /* 跑一輪，測試用 */
 
 #endif
