@@ -92,20 +92,25 @@ mzweb-install)
 	$CTL put "$MZWEB_BIN" /etc/sipweb/sipweb.new
 	echo "== 原子替換 /etc/sipweb/sipweb =="
 	$CTL sh 'chmod +x /etc/sipweb/sipweb.new; mv /etc/sipweb/sipweb.new /etc/sipweb/sipweb'
-	echo "⚠ 正在重啟 web 服務（killall sipweb，假設原廠有 respawn 機制自動拉回）=="
-	# TODO(T11)：現場確認原廠 sipweb 的拉起機制（inittab respawn？rcS？某 init.d 腳本？）後，
-	# 若無 respawn，改成對應的重啟命令（例如背景直接啟動 '/etc/sipweb/sipweb &' 或呼叫該 init 腳本）。
-	$CTL sh 'killall sipweb 2>/dev/null; sleep 2'
-	echo "== 驗證 web 服務是否已起（本機 loopback）=="
-	$CTL sh 'wget -qO- http://127.0.0.1:80/get/device/status | head -c 64; echo'
+	echo "== 啟用開機自啟：取消註解 S20ipgaurd 的 sipweb.sh（首次備份 .orig）=="
+	# T11 現場實證：sipweb 拉起機制＝/etc/sipweb/sipweb.sh（respawn 監督迴圈 while[1] sipweb;sleep2），
+	# 開機自啟那行在 /etc/init.d/S20ipgaurd 預設被註解 → 需取消註解，mzweb（置於 /etc/sipweb/sipweb）
+	# 才會經監督迴圈於開機自啟並在 crash 時自動拉回。
+	$CTL sh '[ -f /etc/init.d/S20ipgaurd.orig ] || cp /etc/init.d/S20ipgaurd /etc/init.d/S20ipgaurd.orig; sed -i "s|^#/etc/sipweb/sipweb.sh|/etc/sipweb/sipweb.sh|" /etc/init.d/S20ipgaurd'
+	echo "⚠ 正在重啟 web 服務（kill 舊 sipweb，監督迴圈未跑則手動起 sipweb.sh）=="
+	# 先 kill 現行 sipweb；若 sipweb.sh 監督迴圈已在跑會於 2s 內自動拉回 mzweb，否則手動背景啟動監督迴圈
+	$CTL sh 'killall sipweb 2>/dev/null; sleep 1; ps|grep -v grep|grep -q "sipweb.sh" || setsid /etc/sipweb/sipweb.sh start >/dev/null 2>&1 & sleep 3'
+	echo "== 驗證 web 服務是否已起（本機 loopback，busybox 無 wget 改 nc）=="
+	$CTL sh 'printf "GET /get/device/status HTTP/1.1\r\nHost:127.0.0.1\r\nConnection: close\r\n\r\n" | nc 127.0.0.1 80 2>/dev/null | head -c 96; echo'
 	;;
 mzweb-rollback)
 	echo "⚠ 即將還原原廠 sipweb 並重開機設備 =="
 	if $CTL sh 'test -f /etc/sipweb/sipweb.orig && echo ORIG_YES || echo ORIG_NO' | grep -q ORIG_NO; then
 		echo "無 /etc/sipweb/sipweb.orig 可回退（需先成功跑過一次 mzweb-install 才有備份）"; exit 1
 	fi
-	$CTL sh 'cp /etc/sipweb/sipweb.orig /etc/sipweb/sipweb; sync; reboot'
-	echo "已還原 /etc/sipweb/sipweb.orig 並觸發 reboot，設備重開機後套用原廠 sipweb"
+	# 一併還原 S20ipgaurd（回 found-state：開機自啟仍註解＝web off；避免 rogue hbi_web 被自啟續發 403）
+	$CTL sh '[ -f /etc/init.d/S20ipgaurd.orig ] && cp /etc/init.d/S20ipgaurd.orig /etc/init.d/S20ipgaurd; cp /etc/sipweb/sipweb.orig /etc/sipweb/sipweb; sync; reboot'
+	echo "已還原 /etc/sipweb/sipweb.orig（rogue hbi_web）＋S20ipgaurd 並觸發 reboot；回到部署前狀態（:80 web off）"
 	;;
 *)
 	echo "usage: $0 {deploy|status|rollback|redeploy|mzweb-install|mzweb-rollback}"; exit 2

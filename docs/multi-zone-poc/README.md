@@ -3,7 +3,7 @@
 GT-SIP-GW 組播多監聽區（multi-zone）**自研 side-car** 概念驗證程式碼。
 完整評估與計畫見上層 [`docs/組播多監聽區-自研可行性評估與PoC計畫.md`](../組播多監聽區-自研可行性評估與PoC計畫.md)。
 
-> 狀態：P0–P2 + P3 核心（2026-07-21）＋ **P4 規模/重啟/codec** ＋ **P5 REST 控制面＋device-web 對接**（2026-07-22）已在真機 `192.168.0.70`（Goke GK7205V200 / OHLinux 4.9.37）驗證通過。P4 數據：16 區 VmRSS 44KB / CPU ≈0.6%；reboot 自動恢復；G.722/G.711U PT 透傳混切 relay 面全過；現場聽測定案：**termapp 按 `MULTICAST_CODEC` config 解碼、不理 PT**，G.722/G.711U 皆原生支援、全環境統一單一 codec 即可。P5：mzrelay3 真實 IGMP join＋自帶 REST `:8090`，device-web 真頁面「載入 16 區→儲存→免重啟熱套用→GET 一致」閉環實測通過。
+> 狀態：P0–P2 + P3 核心（2026-07-21）＋ **P4 規模/重啟/codec** ＋ **P5 REST 控制面＋device-web 對接**（2026-07-22）已在真機 `192.168.0.70`（Goke GK7205V200 / OHLinux 4.9.37）驗證通過。P4 數據：16 區 VmRSS 44KB / CPU ≈0.6%；reboot 自動恢復；G.722/G.711U PT 透傳混切 relay 面全過；現場聽測定案：**termapp 按 `MULTICAST_CODEC` config 解碼、不理 PT**，G.722/G.711U 皆原生支援、全環境統一單一 codec 即可。P5：mzrelay3 真實 IGMP join＋自帶 REST `:8090`，device-web 真頁面「載入 16 區→儲存→免重啟熱套用→GET 一致」閉環實測通過。**P7（2026-07-22）**：自建 **mzweb**（相容層＋原廠 websetsip 源碼最小 patch）收攏控制面到 `:80`——19 路由 200+JSON+GBK、內嵌頁、zones 轉呼 mzrelay3 loopback、reboot 自啟全數真機通過；現場發現並順帶修好 .70 的 **rogue-hbi_web 缺陷**（原 `/etc/sipweb/sipweb` 是只回 403 的空殼）。詳見 [`p7-acceptance.md`](p7-acceptance.md)。mzweb 源碼在 `src/mzweb/`。
 
 ## 檔案
 
