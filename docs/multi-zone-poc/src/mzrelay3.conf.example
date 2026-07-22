@@ -1,1 +1,5 @@
-239.192.1.1 2000 16 192.168.0.70 2000 8090 /opt/mzzones.json
+239.192.1.1 2000 16 192.168.0.70 2000 8090 /opt/mzzones.json 0.0.0.0
+# 8th field rest_bind (P7): default 0.0.0.0 = P5-compatible (REST 需 Bearer token)。
+# mzweb 收攏部署改成 127.0.0.1 —— loopback bind 時自動跳過 Bearer 檢查（信任邊界=loopback 本身，
+# 外部請求一律經 mzweb 轉呼）。注意：S21mzrelay 用 `$(cat "$CONF")` 原樣展開，此註解行雖會
+# 被拆成多個尾端 argv token，但 mzrelay3 只讀到 argv[8]，多餘 token 一律忽略、不影響行為。

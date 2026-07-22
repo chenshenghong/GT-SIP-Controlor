@@ -12,7 +12,10 @@
  *   - Same-priority ties: first-come-first-served (spec §一) — the current winner is
  *     only displaced by a STRICTLY higher priority (v2 picked lowest index on ties).
  *
- * usage: mzrelay3 <dst_grp> <dst_port> <ttl> <ifaddr> <silence_ms> <rest_port> [zones.json]
+ * usage: mzrelay3 <dst_grp> <dst_port> <ttl> <ifaddr> <silence_ms> <rest_port> [zones.json] [rest_bind]
+ *   rest_bind (P7): REST listen address, default 0.0.0.0 (P5-compatible, Bearer token
+ *   required). When "127.0.0.1" (P7 loopback 收攏 by mzweb), the Bearer check is skipped —
+ *   the loopback bind itself is the trust boundary, mzweb proxies external requests.
  * Build: static armv7 musl (see mzrelay.c).
  */
 #define _GNU_SOURCE            /* memmem, strcasestr */
@@ -50,6 +53,7 @@ static struct zdef zd[NZONES];
 static struct zrun zr[NZONES];
 static const char *g_ifaddr;
 static char g_zpath[256];
+static int s_rest_loopback = 0;    /* P7: REST bound to 127.0.0.1 -> skip Bearer check */
 
 static long now_ms(void) {
     struct timespec ts;
@@ -336,7 +340,8 @@ static void rest_handle(int cfd) {
         }
         close(cfd); return;
     }
-    if (!has_token(req)) {                            /* zones endpoints: token required */
+    if (!s_rest_loopback && !has_token(req)) {        /* zones endpoints: token required
+                                                          (skipped when REST bound loopback-only, P7) */
         http_reply(cfd, 401, "application/json",
             "{\"status\":\"error\",\"error_code\":\"A003\",\"message\":\"token invalid\"}");
         close(cfd); return;
@@ -372,7 +377,7 @@ static void rest_handle(int cfd) {
 
 int main(int argc, char **argv) {
     if (argc < 7) {
-        fprintf(stderr, "usage: %s <dst_grp> <dst_port> <ttl> <ifaddr> <silence_ms> <rest_port> [zones.json]\n", argv[0]);
+        fprintf(stderr, "usage: %s <dst_grp> <dst_port> <ttl> <ifaddr> <silence_ms> <rest_port> [zones.json] [rest_bind]\n", argv[0]);
         return 2;
     }
     const char *dst_grp = argv[1];
@@ -382,6 +387,8 @@ int main(int argc, char **argv) {
     long  silence  = atol(argv[5]);
     int   rport    = atoi(argv[6]);
     snprintf(g_zpath, sizeof(g_zpath), "%s", argc > 7 ? argv[7] : "/opt/mzzones.json");
+    const char *rest_bind = argc > 8 ? argv[8] : "0.0.0.0";
+    s_rest_loopback = (strcmp(rest_bind, "127.0.0.1") == 0);
 
     zones_default();
     if (zones_load() != 0) fprintf(stderr, "no zones file yet (%s), starting empty\n", g_zpath);
@@ -394,7 +401,8 @@ int main(int argc, char **argv) {
     struct sockaddr_in ra;
     memset(&ra, 0, sizeof(ra));
     ra.sin_family = AF_INET;
-    ra.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (inet_pton(AF_INET, rest_bind, &ra.sin_addr) != 1)
+        ra.sin_addr.s_addr = htonl(INADDR_ANY);
     ra.sin_port = htons(rport);
     if (bind(rs, (struct sockaddr *)&ra, sizeof(ra)) < 0 || listen(rs, 4) < 0) {
         perror("rest bind/listen"); return 1;
@@ -418,8 +426,9 @@ int main(int argc, char **argv) {
     unsigned int   out_ts   = 0;
     int cur = -1;
 
-    fprintf(stderr, "mzrelay3: -> %s:%d rest=:%d zones=%s silence=%ldms\n",
-            dst_grp, dst_port, rport, g_zpath, silence);
+    fprintf(stderr, "mzrelay3: -> %s:%d rest=%s:%d (%s) zones=%s silence=%ldms\n",
+            dst_grp, dst_port, rest_bind, rport,
+            s_rest_loopback ? "loopback, no-token" : "token required", g_zpath, silence);
 
     unsigned char buf[2048];
     for (;;) {
