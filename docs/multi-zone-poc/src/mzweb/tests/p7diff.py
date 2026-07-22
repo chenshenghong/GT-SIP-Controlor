@@ -37,10 +37,21 @@ DEFAULT_TIMEOUT = 5
 #   - auth_login 必須第一個跑（後續案例都要用它拿到的 token）。
 #   - auth_logout 必須最後跑——原廠 token 是「全域單一 session」，logout 後
 #     token 立即失效，若提早跑會讓後面所有需要 token 的案例全部失敗。
-#   - 對「破壞性」路由（system/restart、set/network/config）刻意送會被原廠
-#     驗證邏輯擋下的 payload（confirm:false／type:dhcp），驗證路由存在與錯誤
-#     路徑一致，但不觸發真的 reboot 或網路改容——這是操作安全考量，不是規格
-#     要求；真機驗收前應另行確認風險（見 task-9 報告 concerns）。
+#   - payload 欄位名稱一律對齊韌體 websetsip.utf8.c 的 cJSON_GetObjectItem
+#     實際鍵名（見各 case 行內註解標註的原始碼行號），確保請求打進路由「真正
+#     的業務驗證邏輯」，而非停在通用「缺欄位」E001（假陰性）。
+#   - 對「apply 會破壞真機且難復原」的路由，刻意送能命中『驗證拒絕』分支的
+#     payload：set/sip/primary、set/sip/backup 缺一必要欄位（走 missing-key
+#     拒絕，避免走到韌體 :1109 kill termapp）；set/network/config 送
+#     network_mode:dhcp（命中韌體 :2095-2101『仅支持静态』拒絕）；
+#     set/sip/multicast 送首字節非 224–239 的位址（命中 :2536-2547『非法组播
+#     地址』拒絕）。既驗到路由真實業務邏輯的 parity，又不對真機破壞性 apply。
+#   - system/restart 送 confirm:false：命中『成功但無副作用』分支（韌體
+#     :2283-2287 只在 confirm==true 才啟動 reboot timer；false 直接成功回 200
+#     status:success），驗證路由存在且不觸發真的 reboot。
+#   - 對「apply 可輕易復原」的路由（set/device/volume、set/sip/codecs）送合法
+#     值以驗證 apply 路徑 parity——⚠ capture 會改真機狀態，T11 需復原（見報告）。
+#   - 真機驗收前應另行確認風險（見 task-9 報告 concerns）。
 # ---------------------------------------------------------------------------
 
 CASE_ORDER = [
@@ -187,27 +198,45 @@ def build_case_request(case_id, token, user, pw):
     if case_id == "case05_get_device_status":
         return "GET", "/get/device/status", {}, None
     if case_id == "case06_set_device_volume":
-        return "POST", "/set/device/volume", auth_hdr(token), json.dumps({"volume": 60}).encode()
+        # 韌體實際欄位：broadcast_volume + microphone_volume（皆 number，合法域 0-100；
+        # websetsip.utf8.c :671-674 缺欄位檢查、:689-694 範圍檢查）。60/60 為合法值 →
+        # 走 apply 路徑（寫 CAP_VOL/PLAY_VOL），驗 apply parity。
+        # ⚠ capture 會改真機播放/採集音量（可復原）；T11 需復原原始音量。
+        payload = {"broadcast_volume": 60, "microphone_volume": 60}
+        return "POST", "/set/device/volume", auth_hdr(token), json.dumps(payload).encode()
     if case_id == "case07_get_device_volume":
         return "GET", "/get/device/volume", {}, None
     if case_id == "case08_get_sip_config":
         return "GET", "/get/sip/config", {}, None
     if case_id == "case09_set_sip_primary":
-        payload = {"server_address": "192.168.0.100", "port": 5060, "user_id": "1000",
-                   "password": "test1234", "auto_answer": False, "register_timeout": 3600,
-                   "transport_protocol": "UDP"}
+        # 韌體實際欄位（websetsip.utf8.c :961-967）：server_address / server_port /
+        # user_id / password / auto_answer / register_timeout / transport_protocol，
+        # 全為必要欄位。此 handler 無「非法值」拒絕分支——任一合法 payload 都會走到
+        # :1106 寫檔並 :1109 `kill -9 termapp`（破壞性、殺掉 SIP 進程）。故刻意「缺
+        # transport_protocol 一個必要欄位」→ 命中 :969-980 缺欄位 E001 拒絕，走進本
+        # 路由真實的 7 欄位驗證邏輯（parity），但不觸及 kill termapp 破壞性 apply。
+        payload = {"server_address": "192.168.0.100", "server_port": 5060, "user_id": "1000",
+                   "password": "test1234", "auto_answer": False, "register_timeout": 3600}
         return "POST", "/set/sip/primary", auth_hdr(token), json.dumps(payload).encode()
     if case_id == "case10_set_sip_backup":
-        payload = {"server_address": "192.168.0.101", "port": 5060, "user_id": "1001",
-                   "password": "test1234", "auto_answer": False, "register_timeout": 3600,
-                   "transport_protocol": "UDP"}
+        # 韌體實際欄位（websetsip.utf8.c :1203-1209）：與 primary 同 7 欄位、同型別；
+        # 缺欄位檢查 :1211-1222、型別檢查 :1224-1235，無「非法值」拒絕分支，合法 payload
+        # 一樣會 kill termapp（apply）。故同 case09 策略：刻意缺 transport_protocol →
+        # 命中 :1211-1222 缺欄位 E001 拒絕，驗真實驗證邏輯 parity 且非破壞性。
+        payload = {"server_address": "192.168.0.101", "server_port": 5060, "user_id": "1001",
+                   "password": "test1234", "auto_answer": False, "register_timeout": 3600}
         return "POST", "/set/sip/backup", auth_hdr(token), json.dumps(payload).encode()
     if case_id == "case11_set_sip_parameters":
         payload = {"local_port": 5060, "rtp_start_port": 10000, "rtp_end_port": 20000,
                    "rtp_timeout": 60, "echo_cancellation": True}
         return "POST", "/set/sip/parameters", auth_hdr(token), json.dumps(payload).encode()
     if case_id == "case12_set_sip_codecs":
-        payload = {"g722": True, "pcmu": True, "pcma": True, "opus": False}
+        # 韌體實際欄位（websetsip.utf8.c :1635-1638）：g722 / g711_ulaw / g711_alaw /
+        # opus，皆 bool（缺欄位 :1640-1648、型別 :1650-1658）。此 handler 對 bool 值無
+        # 「非法值」拒絕分支（bool 恆合法），故用合法 bool → 走 apply（modify G722/PCMU
+        # /PCMA/OPUS）驗 apply parity。
+        # ⚠ capture 會改真機 codec 開關（可復原）；T11 需復原原始 codec 設定。
+        payload = {"g722": True, "g711_ulaw": True, "g711_alaw": True, "opus": False}
         return "POST", "/set/sip/codecs", auth_hdr(token), json.dumps(payload).encode()
     if case_id == "case13_call_control":
         # hangup：無通話時通常是無副作用的 no-op，避免真的觸發撥號。
@@ -217,16 +246,30 @@ def build_case_request(case_id, token, user, pw):
     if case_id == "case15_get_network_config":
         return "GET", "/get/network/config", {}, None
     if case_id == "case16_set_network_config":
-        # 刻意送原廠不支援的 type（REFERENCE.md：僅支援 static）→ 走驗證錯誤路徑，
-        # 避免真的觸發「改完 1s 後重啟」。
-        return "POST", "/set/network/config", auth_hdr(token), json.dumps({"type": "dhcp"}).encode()
+        # 韌體實際欄位（websetsip.utf8.c :2069-2073）：network_mode / ip_address /
+        # subnet_mask / gateway（必要）＋ dns（選填）。必要欄位齊備才會走到 :2095-2101
+        # 的 network_mode 值檢查（僅支援 "static"）。故送齊 4 個必要欄位＋不支援的
+        # network_mode:"dhcp" → 命中 :2095-2101「仅支持静态网络设置」E001 拒絕；非破壞性
+        # （reject 於 :2118 讀檔前，不寫 ETH0_SET_FILE、不啟動 :2172 reboot 定時器）。
+        payload = {"network_mode": "dhcp", "ip_address": "192.168.0.70",
+                   "subnet_mask": "255.255.255.0", "gateway": "192.168.0.1"}
+        return "POST", "/set/network/config", auth_hdr(token), json.dumps(payload).encode()
     if case_id == "case17_system_restart":
-        # confirm:false → 驗證路由與拒絕邏輯，避免真的觸發 reboot。
+        # 韌體實際欄位（websetsip.utf8.c :2268）：confirm（bool）。:2283-2287 僅在
+        # confirm==true 才 event_timer_start(reboot_timer)；confirm:false 直接 break →
+        # msg/code 皆 NULL → 走 :2304-2308 成功分支，回 HTTP 200 status:success。
+        # 即 confirm:false 命中「成功但無副作用」分支（非驗證錯誤路徑），不觸發真的 reboot。
         return "POST", "/system/restart", auth_hdr(token), json.dumps({"confirm": False}).encode()
     if case_id == "case18_system_info":
         return "GET", "/system/info", {}, None
     if case_id == "case19_set_sip_multicast":
-        payload = {"address": "239.1.1.1", "port": 5004, "enabled": True, "codec": "G.722"}
+        # 韌體實際欄位（websetsip.utf8.c :2497-2500）：multicast_address（string）/
+        # multicast_port（number）/ enabled（bool）/ audio_codec（string）。必要欄位齊備、
+        # 型別正確才會走到 :2536-2547 的組播位址檢查（首字節須 224–239）。故送齊 4 欄位
+        # ＋首字節非法的位址 192.168.1.1 → 命中 :2544-2546「非法组播地址」E001 拒絕；
+        # 非破壞性（reject 於任何寫入/apply 前）。
+        payload = {"multicast_address": "192.168.1.1", "multicast_port": 5004,
+                   "enabled": True, "audio_codec": "G.722"}
         return "POST", "/set/sip/multicast", auth_hdr(token), json.dumps(payload).encode()
     if case_id == "err_no_token":
         return "GET", "/auth/verify", dict(ct), None
@@ -469,9 +512,14 @@ def make_fake_handler(config):
         def do_GET(self):
             path, cfg = self.path, self.CFG
             if path == "/get/device/status":
-                self._send_json(200, {"status": "success", "model": cfg["model"],
-                                       "uptime": cfg["uptime"], "sip_registered": True,
-                                       "network": {"ip": "192.168.0.70"}})
+                resp = {"status": "success", "model": cfg["model"],
+                        "uptime": cfg["uptime"], "sip_registered": True,
+                        "network": {"ip": "192.168.0.70"}}
+                # selftest round3 用：注入一個額外 body key，製造 stage1 結構性差異
+                # （body-key-set 不同），驗證 compare_dirs 的 stage1 失敗分支會被觸發。
+                if cfg.get("_inject_extra"):
+                    resp["extra_field"] = "unexpected"
+                self._send_json(200, resp)
             elif path == "/get/device/volume":
                 self._send_json(200, {"status": "success", "volume": cfg["volume"]})
             elif path == "/get/sip/config":
@@ -602,6 +650,25 @@ def run_selftest():
         rc2 = compare_dirs(dir_a, dir_b_fail)
         assert rc2 > 0, "selftest round2 應偵測到差異，卻回報 0"
         assert rc2 >= 1, "selftest round2 差異數應 >= 1"
+
+        # round3：stage1 結構性失敗。上面 round2 測的是「頂層純量改值」（走 stage2
+        # 遮罩後全文比對）。這裡改測「結構」變異——讓 B 的 /get/device/status 回應多
+        # 一個 body key（extra_field），驗證 compare_dirs 的 stage1 body-key-set 失敗
+        # 分支確實會被觸發並回報非零。先把 model 復原成與 A 相同，排除 stage2 干擾，
+        # 確保 case05 的唯一差異就是這個結構性多出來的 key（stage1 就會 FAIL 並 continue，
+        # 根本走不到 stage2）。同 round2 先把 set 類路由改動過的 state（volume/
+        # multicast）重置回初始值，確保 case05 以外的案例對 A 全部零差異。
+        config_b["volume"] = 60
+        config_b["multicast"] = {"address": "", "port": 0, "enabled": False, "codec": "G.722"}
+        config_b["model"] = config_a["model"]
+        config_b["_inject_extra"] = True
+        dir_b_struct = os.path.join(workdir, "b_struct")
+        print("\n=== selftest：讓 B 的 device/status 多回一個 body key，重新 capture ===")
+        capture("http://127.0.0.1:%d" % port_b, dir_b_struct)
+
+        print("\n--- selftest round 3：A vs B（結構多一 key），預期 stage1 結構失敗 ---")
+        rc3 = compare_dirs(dir_a, dir_b_struct)
+        assert rc3 > 0, "selftest round3 應偵測到 stage1 結構差異，卻回報 0"
     finally:
         if srv_a:
             srv_a.shutdown()
