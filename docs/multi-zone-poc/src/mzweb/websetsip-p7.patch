@@ -9,7 +9,248 @@
  
  /*定义HTTP的监听端口*/
  #define WEB_SIP_SET_TCP_LISTEN_PORT 										80
-@@ -2684,6 +2686,77 @@
+@@ -559,54 +561,58 @@
+ 	int hours = now_timestamp/(3600*1000);
+ 	now_timestamp %= (3600*1000);
+ 	int mins = now_timestamp/(60*1000);
+-	
+-	char http_msg[2048] = {0};
+-	snprintf(http_msg, 2048, "{\"sip_status\": "
+-								"{\"primary_line\": %s, "
+-								"\"multicast_status\": %s,  "
+-								"\"device_info\": "
+-								"{\"model\": \"%s\", "
+-								"\"hardware_version\": \"%s\", "
+-								"\"software_version\": \"%s\", "
+-								"\"uptime\": \"%d天 %d小時 %d分鐘\", "
+-								"\"broadcast_volume"": %s, "
+-								"\"microphone_volume\": %s}, "
+-								"\"network_info\": "
+-								"{\"mac_address\": \"%s\", "
+-								"\"ip_allocation\": \"static\", "
+-								"\"ip_address\": \"%s\", "
+-								"\"subnet_mask\": \"%s\", "
+-								"\"gateway\": \"%s\", "
+-								"\"dns\": \"%s\"}}",
+-   								primary_line_status,
+-   								backup_line_status,
+-   								MODEL==NULL?"":MODEL,
+-   								HARD_VER==NULL?"":HARD_VER,
+-   								SOFT_VER==NULL?"":SOFT_VER,
+-   								days, hours, mins,
+-   								PLAY_VOL,
+-   								CAP_VOL,
+-   								MACADDR,
+-   								IPADDR,
+-   								NETMASK,
+-   								GATEWAY,
+-   								NS1==NULL?"":NS1);
+ 	
+-	free_keyvalue_file(keyvalue_sip);
+-	free_keyvalue_file(keyvalue_eth0);
+-	
+-	char buffer[2048] = {0};
+-	int len = snprintf(buffer, 2048, "HTTP/1.1 200 OK\r\n"
+-					   			 "Server: %s\r\n"
+-					   			 "Connection: close\r\n"
+-					   			 "Content-Type: application/json;charset=GBK\r\n"
+-					   			 "Content-Length: %d\r\n"
+-					   			 "Allow: %s\r\n\r\n%s",
+-					   			 HBI_WEB_SERVER,
+-					   			 strlen(http_msg),
+-					   			 HBI_WEB_METHOD,
+-					   			 http_msg);
+-	web_snd_data(client, buffer, len);
++	cJSON* root = cJSON_CreateObject();
++	cJSON* sip_status = cJSON_AddObjectToObject(root, "sip_status");
++	/* primary_line/multicast_status are pre-formatted JSON fragments (see above);
++	 * embed as raw JSON, matching original unquoted %s injection. */
++	cJSON_AddRawToObject(sip_status, "primary_line", primary_line_status);
++	cJSON_AddRawToObject(sip_status, "multicast_status", backup_line_status);
++
++	/* FW-02 fix: device_info/network_info are root-level siblings of sip_status,
++	 * not nested inside it. */
++	char uptime_buf[64] = {0};
++	snprintf(uptime_buf, sizeof(uptime_buf), "%d天 %d小時 %d分鐘", days, hours, mins);
++	cJSON* device_info = cJSON_AddObjectToObject(root, "device_info");
++	cJSON_AddStringToObject(device_info, "model", MODEL==NULL?"":MODEL);
++	cJSON_AddStringToObject(device_info, "hardware_version", HARD_VER==NULL?"":HARD_VER);
++	cJSON_AddStringToObject(device_info, "software_version", SOFT_VER==NULL?"":SOFT_VER);
++	cJSON_AddStringToObject(device_info, "uptime", uptime_buf);
++	/* FW-01 fix: broadcast_volume key now closes correctly (cJSON always emits well-formed
++	 * keys); kept as raw JSON number, matching original unquoted %s injection. */
++	cJSON_AddRawToObject(device_info, "broadcast_volume", PLAY_VOL==NULL?"0":PLAY_VOL);
++	cJSON_AddRawToObject(device_info, "microphone_volume", CAP_VOL==NULL?"0":CAP_VOL);
++
++	cJSON* network_info = cJSON_AddObjectToObject(root, "network_info");
++	cJSON_AddStringToObject(network_info, "mac_address", MACADDR==NULL?"":MACADDR);
++	cJSON_AddStringToObject(network_info, "ip_allocation", "static");
++	cJSON_AddStringToObject(network_info, "ip_address", IPADDR==NULL?"":IPADDR);
++	cJSON_AddStringToObject(network_info, "subnet_mask", NETMASK==NULL?"":NETMASK);
++	cJSON_AddStringToObject(network_info, "gateway", GATEWAY==NULL?"":GATEWAY);
++	cJSON_AddStringToObject(network_info, "dns", NS1==NULL?"":NS1);
++
++	free_keyvalue_file(keyvalue_sip);
++	free_keyvalue_file(keyvalue_eth0);
++
++	char* http_msg = cJSON_PrintUnformatted(root);
++	cJSON_Delete(root);
++
++	size_t http_msg_len = strlen(http_msg);
++	size_t buffer_cap = http_msg_len + 512;
++	char* buffer = (char*)malloc(buffer_cap);
++	int len = snprintf(buffer, buffer_cap, "HTTP/1.1 200 OK\r\n"
++							 "Server: %s\r\n"
++							 "Connection: close\r\n"
++							 "Content-Type: application/json;charset=GBK\r\n"
++							 "Content-Length: %d\r\n"
++							 "Allow: %s\r\n\r\n%s",
++							 HBI_WEB_SERVER,
++							 (int)http_msg_len,
++							 HBI_WEB_METHOD,
++							 http_msg);
++	web_snd_data(client, buffer, len);
++	free(buffer);
++	cJSON_free(http_msg);
+ }
+ 
+ /*设置音量*/
+@@ -822,82 +828,58 @@
+ 	const char* PCMA = find_key_value(keyvalue_file, "PCMA");
+ 	const char* OPUS = find_key_value(keyvalue_file, "OPUS");
+ 	
+-	char http_msg[2048] = {0};
+-	snprintf(http_msg, 2048, "{"
+-								"\"primary_line\": {"
+-								"\"server_address\": \"%s\", "
+-								"\"server_port\": %s, "
+-								"\"user_id\": \"%s\", "
+-								"\"password\": \"%s\", "
+-								"\"auto_answer\": %s, "
+-								"\"register_timeout\": %s, "
+-								"\"transport_protocol\": \"%s\"}, "
+-								/*"\"backup_line\": {"
+-								"\"server_address\": \"%s\", "
+-								"\"server_port\": %s, "
+-								"\"user_id\": \"%s\", "
+-								"\"password\": \"%s\", "
+-								"\"auto_answer\": %s, "
+-								"\"register_timeout\": %s, "
+-								"\"transport_protocol\": \"%s\"}, "*/
+-								"\"multicast_config\": {"
+-								"\"multicast_address\": \"%s\", "
+-								"\"multicast_port\": %s, "
+-								"\"enabled\": %s, "
+-								"\"audio_codec\": \"%s\"}, "
+-								"\"sip_parameters\": {"
+-								"\"local_port\": %s, "
+-								"\"rtp_start_port\": %s, "
+-								"\"rtp_end_port\": %s, "
+-								"\"rtp_timeout\": %s, "
+-								"\"echo_cancellation\": %s}, "
+-								"\"audio_codecs\": {"
+-								"\"g722\": %s, "
+-								"\"opus\": %s, "
+-								"\"g711_ulaw\": %s, "
+-								"\"g711_alaw\": %s}}",
+-								PRIMARY_SERVER_ADDRESS==NULL?"":PRIMARY_SERVER_ADDRESS,
+-								PRIMARY_SERVER_PORT==NULL?"0":PRIMARY_SERVER_PORT,
+-								PRIMARY_USER_ID==NULL?"":PRIMARY_USER_ID,
+-								PRIMARY_PASSWORD==NULL?"":PRIMARY_PASSWORD,
+-								PRIMARY_AUTO_ANSWER==NULL?"true":PRIMARY_AUTO_ANSWER,
+-								PRIMARY_REGISTER_TIMEOUT==NULL?"300":PRIMARY_REGISTER_TIMEOUT,
+-								PRIMARY_TRANSPORT_PROTOCL==NULL?"TCP":PRIMARY_TRANSPORT_PROTOCL,
+-								/*BACKUP_SERVER_ADDRESS=NULL?"":BACKUP_SERVER_ADDRESS,
+-								BACKUP_SERVER_PORT=NULL?"0":BACKUP_SERVER_PORT,
+-								BACKUP_USER_ID=NULL?"":BACKUP_USER_ID,
+-								BACKUP_PASSWORD=NULL?"":BACKUP_PASSWORD,
+-								BACKUP_AUTO_ANSWER=NULL?"true":BACKUP_AUTO_ANSWER,
+-								BACKUP_REGISTER_TIMEOUT=NULL?"300":BACKUP_REGISTER_TIMEOUT,
+-								BACKUP_TRANSPORT_PROTOCL=NULL?"TCP":BACKUP_TRANSPORT_PROTOCL,*/
+-								MULTICAST_ADDRESS==NULL?"":MULTICAST_ADDRESS,
+-								MULTICAST_PORT==NULL?"0":MULTICAST_PORT,
+-								MULTICAST_ENABLED==NULL?"false":MULTICAST_ENABLED,
+-								MULTICAST_CODEC==NULL?"":MULTICAST_CODEC,								
+-								LOCAL_PORT==NULL?"0":LOCAL_PORT,
+-								RTP_START_PORT==NULL?"0":RTP_START_PORT,
+-								RTP_END_PORT==NULL?"0":RTP_END_PORT,
+-								RTP_TIMEOUT==NULL?"0":RTP_TIMEOUT,
+-								ECHO_CANCELLATION==NULL?"true":ECHO_CANCELLATION,
+-								G722==NULL?"true":G722,
+-								OPUS==NULL?"true":OPUS,
+-								PCMU==NULL?"true":PCMU,
+-								PCMA==NULL?"true":PCMA);
+-	
+-	free_keyvalue_file(keyvalue_file);
+-	
+-	char buffer[2048] = {0};
+-	int len = snprintf(buffer, 2048, "HTTP/1.1 200 OK\r\n"
+-					   			 "Server: %s\r\n"
+-					   			 "Connection: close\r\n"
+-					   			 "Content-Type: application/json;charset=GBK\r\n"
+-					   			 "Content-Length: %d\r\n"
+-					   			 "Allow: %s\r\n\r\n%s",
+-					   			 HBI_WEB_SERVER,
+-					   			 strlen(http_msg),
+-					   			 HBI_WEB_METHOD,
+-					   			 http_msg);
+-	web_snd_data(client, buffer, len);
++	cJSON* root = cJSON_CreateObject();
++	cJSON* primary_line = cJSON_AddObjectToObject(root, "primary_line");
++	cJSON_AddStringToObject(primary_line, "server_address", PRIMARY_SERVER_ADDRESS==NULL?"":PRIMARY_SERVER_ADDRESS);
++	cJSON_AddRawToObject(primary_line, "server_port", PRIMARY_SERVER_PORT==NULL?"0":PRIMARY_SERVER_PORT);
++	cJSON_AddStringToObject(primary_line, "user_id", PRIMARY_USER_ID==NULL?"":PRIMARY_USER_ID);
++	/* SEC-09: password now built via cJSON_AddStringToObject -> print_string_ptr auto-escapes
++	 * '"'/'\\'/control chars, so a password containing those can no longer break JSON syntax. */
++	cJSON_AddStringToObject(primary_line, "password", PRIMARY_PASSWORD==NULL?"":PRIMARY_PASSWORD);
++	cJSON_AddRawToObject(primary_line, "auto_answer", PRIMARY_AUTO_ANSWER==NULL?"true":PRIMARY_AUTO_ANSWER);
++	cJSON_AddRawToObject(primary_line, "register_timeout", PRIMARY_REGISTER_TIMEOUT==NULL?"300":PRIMARY_REGISTER_TIMEOUT);
++	cJSON_AddStringToObject(primary_line, "transport_protocol", PRIMARY_TRANSPORT_PROTOCL==NULL?"TCP":PRIMARY_TRANSPORT_PROTOCL);
++
++	cJSON* multicast_config = cJSON_AddObjectToObject(root, "multicast_config");
++	cJSON_AddStringToObject(multicast_config, "multicast_address", MULTICAST_ADDRESS==NULL?"":MULTICAST_ADDRESS);
++	cJSON_AddRawToObject(multicast_config, "multicast_port", MULTICAST_PORT==NULL?"0":MULTICAST_PORT);
++	cJSON_AddRawToObject(multicast_config, "enabled", MULTICAST_ENABLED==NULL?"false":MULTICAST_ENABLED);
++	cJSON_AddStringToObject(multicast_config, "audio_codec", MULTICAST_CODEC==NULL?"":MULTICAST_CODEC);
++
++	cJSON* sip_parameters = cJSON_AddObjectToObject(root, "sip_parameters");
++	cJSON_AddRawToObject(sip_parameters, "local_port", LOCAL_PORT==NULL?"0":LOCAL_PORT);
++	cJSON_AddRawToObject(sip_parameters, "rtp_start_port", RTP_START_PORT==NULL?"0":RTP_START_PORT);
++	cJSON_AddRawToObject(sip_parameters, "rtp_end_port", RTP_END_PORT==NULL?"0":RTP_END_PORT);
++	cJSON_AddRawToObject(sip_parameters, "rtp_timeout", RTP_TIMEOUT==NULL?"0":RTP_TIMEOUT);
++	cJSON_AddRawToObject(sip_parameters, "echo_cancellation", ECHO_CANCELLATION==NULL?"true":ECHO_CANCELLATION);
++
++	cJSON* audio_codecs = cJSON_AddObjectToObject(root, "audio_codecs");
++	cJSON_AddRawToObject(audio_codecs, "g722", G722==NULL?"true":G722);
++	cJSON_AddRawToObject(audio_codecs, "opus", OPUS==NULL?"true":OPUS);
++	cJSON_AddRawToObject(audio_codecs, "g711_ulaw", PCMU==NULL?"true":PCMU);
++	cJSON_AddRawToObject(audio_codecs, "g711_alaw", PCMA==NULL?"true":PCMA);
++
++	free_keyvalue_file(keyvalue_file);
++
++	char* http_msg = cJSON_PrintUnformatted(root);
++	cJSON_Delete(root);
++
++	size_t http_msg_len = strlen(http_msg);
++	size_t buffer_cap = http_msg_len + 512;
++	char* buffer = (char*)malloc(buffer_cap);
++	int len = snprintf(buffer, buffer_cap, "HTTP/1.1 200 OK\r\n"
++							 "Server: %s\r\n"
++							 "Connection: close\r\n"
++							 "Content-Type: application/json;charset=GBK\r\n"
++							 "Content-Length: %d\r\n"
++							 "Allow: %s\r\n\r\n%s",
++							 HBI_WEB_SERVER,
++							 (int)http_msg_len,
++							 HBI_WEB_METHOD,
++							 http_msg);
++	web_snd_data(client, buffer, len);
++	free(buffer);
++	cJSON_free(http_msg);
+ }
+ 
+ /*设置主sip账户信息*/
+@@ -2684,6 +2666,77 @@
  }
  
  /*http回调函数*/
@@ -87,7 +328,7 @@
  static int http_callback(void* client, void* http_head, int request_type,
  	const char* content, int content_len)
  {
-@@ -2694,6 +2767,25 @@
+@@ -2694,6 +2747,25 @@
  		get_http_url(http_head, &url, &len);
  		if (len > 0)
  		{
@@ -113,7 +354,7 @@
  			if (strncmp("/auth/login", url, len) == 0)
  			{
  				/*处理登录*/
-@@ -2721,7 +2813,8 @@
+@@ -2721,7 +2793,8 @@
  			if (strncmp("/get/device/status", url, len) == 0)
  			{
  				/*获取设备状态*/
@@ -123,7 +364,7 @@
  			}
  			else
  			if (strncmp("/set/device/volume", url, len) == 0)
-@@ -2733,13 +2826,15 @@
+@@ -2733,13 +2806,15 @@
  			if (strncmp("/get/device/volume", url, len) == 0)
  			{
  				/*获取音量*/
@@ -141,7 +382,7 @@
  			}
  			else
  			if (strncmp("/set/sip/primary", url, len) == 0)
-@@ -2775,13 +2870,15 @@
+@@ -2775,13 +2850,15 @@
  			if (strncmp("/get/call/status", url, len) == 0)
  			{
  				/*获取SIP通话状态*/
@@ -159,7 +400,7 @@
  			}
  			else
  			if (strncmp("/set/network/config", url, len) == 0)
-@@ -2799,7 +2896,8 @@
+@@ -2799,7 +2876,8 @@
  			if (strncmp("/system/info", url, len) == 0)
  			{
  				/*获取系统运行信息*/
@@ -169,7 +410,7 @@
  			}
  			else
  			if (strncmp("/set/sip/multicast", url, len) == 0)
-@@ -2810,6 +2908,7 @@
+@@ -2810,6 +2888,7 @@
  			
  		}
  	}
@@ -177,7 +418,7 @@
  }
  
  /*定时重启*/
-@@ -2988,7 +3087,7 @@
+@@ -2988,7 +3067,7 @@
  		fclose(ifcfg_app);
  	}
  
@@ -186,7 +427,7 @@
  	request_url[0] = "/auth/login";
  	request_url[1] = "/auth/logout";
  	request_url[2] = "/auth/verify";
-@@ -3008,6 +3107,8 @@
+@@ -3008,6 +3087,8 @@
  	request_url[16] = "/system/info";
  	request_url[17] = "/auth/change_password";
  	request_url[18] = "/set/sip/multicast";
@@ -195,7 +436,7 @@
  
  	char* care_key_name[1] = {0};
  	care_key_name[0] = "Authorization";
-@@ -3016,7 +3117,7 @@
+@@ -3016,7 +3097,7 @@
  		NULL, 0,
  		NULL, 0,
  		NULL, 0,
