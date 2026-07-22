@@ -27,6 +27,8 @@
 #define MBEDTLS_BIGNUM_C
 #define MBEDTLS_CTR_DRBG_C
 #define MBEDTLS_ENTROPY_C
+#define MBEDTLS_GENPRIME              /* mzcert RSA-2048 金鑰產生(mbedtls_rsa_gen_key) 需要 */
+#define MBEDTLS_FS_IO                 /* mzcert 載入 crt/key 檔(parse_file/parse_keyfile) 需要 */
 #define MBEDTLS_CIPHER_C
 #define MBEDTLS_ECP_C
 #define MBEDTLS_ECP_DP_SECP256R1_ENABLED  /* ECDHE 曲線；亦定義 MBEDTLS_ECP_MAX_BITS */
