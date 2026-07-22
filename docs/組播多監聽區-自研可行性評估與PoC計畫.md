@@ -204,9 +204,10 @@
 - [x] 斷電重啟：全區設定與 join 自動恢復（驗收 #7、MZ-05）：binary＋config 落 `/opt`（jffs2 持久），`/etc/init.d/S21mzrelay` 開機自啟（rcS 不帶參數呼叫→腳本預設 start；guarded＋背景化不阻塞開機；`src/S21mzrelay`、`src/mzrelay.conf.example`）。真機 `reboot` 後 16 區設定全恢復、轉發正常（G.722 送流即 SWITCH）。註：`/tmp` 為 tmpfs 重啟即清，測試素材需重推——正式部署一切持久物只放 `/opt`。
 - [x] codec 邊界：G.711U/G.722 混用行為，界定支援範圍（R2）：`mzrelay2` 改 **PT 透傳**（不再硬貼 PT9；G.722/PCMU 皆 20ms@8kHz RTP clock，ts+=160 通用）、`mztone` 加 pt 參數。實測純 G.711U、G.722↔G.711U 混用搶佔切換：relay 轉發與仲裁全部正常、**termapp 全程不重啟不掉線**（pid 不變）；termapp binary 內含 G711/PCMU/PCMA/G722/"payload type" 字串，具多 codec 處理路徑。**待補：現場聽覺確認 G.711U 解碼出聲與混切音質**（機器面可驗項全過）。
 
-### P5 — 控制面 ＋ device-web 對接
-- [ ] 控制面選項 1（mzrelay 自帶 REST）：`GET/POST /…/zones`，整表覆寫、priority 唯一性伺服器端驗證、佔位列規則（需求單 §四）。
-- [ ] device-web「📡 組播監聽區」頁對接、載入 16 區、改任一區儲存即時生效免重啟、GET 回報與畫面一致（驗收 #10、#1 向下相容）。
+### P5 — 控制面 ＋ device-web 對接　✅ **完成**（2026-07-22 真機 `.70`）
+- [x] 控制面選項 1（mzrelay 自帶 REST）：`src/mzrelay3.c`——16 區表落 `/opt/mzzones.json`、**真實 IGMP join**（`IP_ADD_MEMBERSHIP`，一區失敗不影響他區）、自帶 REST `:8090`（`GET/POST /get|set/sip/multicast/zones` ＋ 最小 `/auth/login` 發 Bearer token ＋ CORS preflight）。整表覆寫、E001 指名 `zone_id`（位址 224–239、埠 1024–65535、priority 1–16 且啟用區唯一、codec 白名單、佔位列規則含停用半成品拒收）本地驗證矩陣 8/8 全過；POST 後**熱套用 re-join 免重啟**、原子持久化（tmp+rename+sync）。同優先權改為**先到先播**（v2 為低 index 贏，不合規格）。
+- [x] device-web「📡 組播監聽區」頁對接（真頁面、瀏覽器實測）：host 指 `http://192.168.0.70:8090` 登入→載入 16 區→改 zone 2 埠儲存→「已儲存」→ relay **pid 不變**即時 re-join→RTP 打新埠立刻出流→頁面重載與 GET 一致（驗收 #10）。
+- **⚠ 對原廠規格的回饋（實測發現）**：韌體 GET 若對「未配置佔位列」回傳預設 codec 字串（如 `G.722`），device-web 的 touched 判定會把佔位列當已配置列，**整表存檔被前端擋死**——韌體 GET 對純佔位列必須回 `audio_codec:""`（device-web 才會插「請選擇」哨兵並視為未動）。此點需求單 §4.2 只寫了 POST 方向，建議補進需求單告知原廠。
 
 ### P6 — 共存與維運
 - [ ] 原廠韌體升級（app 替換／整包 rom）後 mzrelay 的存活與重佈流程。
@@ -222,7 +223,7 @@
 | P2 | 多區 join＋仲裁 | 3–5 天 | ✅ **完成** |
 | P3 | RTP 重寫＋切流調校（原**變數最大**） | 3–10 天 | ✅ **核心完成**（切流平順已證；G.722 壓測/延遲量測待補）|
 | P4 | 規模/codec/開機恢復 | 3–5 天 | ✅ **完成**（2026-07-22；G.711U 聽覺確認待現場）|
-| P5 | 控制面＋device-web | 3–5 天 | ⏳ 待做 |
+| P5 | 控制面＋device-web | 3–5 天 | ✅ **完成**（2026-07-22）|
 | P6 | 共存/佈署/維運 | 2–3 天 | ⏳ 待做 |
 | **合計** | PoC→可用 | **約 4–8 週**（視 P3） | 分水嶺 P3 已過 |
 
