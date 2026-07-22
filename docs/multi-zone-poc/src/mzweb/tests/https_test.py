@@ -61,6 +61,54 @@ try:
     body_len=len(big)-(j+4)
     assert body_len==2*1024*1024, ("big response truncated", body_len)
 
+    # 4) Important 鑑別：寫出面 slow-loris 回收（out_deadline 硬牆，與 last_io 解耦）。
+    #    開滿 MAX_CONNS=4 條 TLS 連線各請求 /big（2MiB 大回應），握手完成後永久停止讀取 →
+    #    server 整段緩衝、傳輸層填滿即卡 out_pending。未修（無 out_deadline）版：對端不讀 →
+    #    last_io 凍結，但 IDLE_MS(10s) 於本測試窗(~5.5s)內不觸發（測試特意設 IDLE_MS≫OUT_TIMEOUT_MS）
+    #    → 4 slot 被占死 → 新連線恆被拒（管理面 DoS）。修正後：out_deadline(=開始緩衝時 +
+    #    OUT_TIMEOUT_MS 4s，不隨 n>0 刷新) 於 SWEEP 週期強制回收 → slot 釋放。
+    attackers = []
+    for _ in range(4):
+        a = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        a.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 2048)  # 小接收視窗 → server 早卡 WANT_WRITE（同 case 3；2048 足夠完成握手）
+        a.settimeout(8)
+        a.connect(("127.0.0.1", 8443))
+        ass = ctx.wrap_socket(a, server_hostname="127.0.0.1")     # 握手在此完成
+        ass.send(b"GET /big HTTP/1.1\r\nHost:x\r\nConnection: close\r\n\r\n")
+        attackers.append(ass)                                     # 之後永久不 recv → 占住 out_pending slot
+    try:
+        # (a) 佔滿證明：4 slot 全占 → 第 5 條連線 server accept 後因無 slot 立即被關 → 握手/收讀失敗。
+        blocked = False
+        try:
+            with socket.create_connection(("127.0.0.1", 8443), timeout=3) as s5:
+                with ctx.wrap_socket(s5, server_hostname="127.0.0.1") as ss5:
+                    ss5.send(b"GET /echo HTTP/1.1\r\nHost:x\r\nConnection: close\r\n\r\n")
+                    if not ss5.recv(64):
+                        blocked = True                             # 立刻 EOF = slot 滿被關
+        except Exception:
+            blocked = True                                         # 握手期間被 reset 亦屬佔滿
+        assert blocked, "expected 5th conn to be refused while 4 /big slots are occupied"
+
+        # (b) 等待略長於 OUT_TIMEOUT_MS(4s) + 一個 SWEEP 週期(0.25s)，讓 out_deadline 回收 4 條占死的 conn。
+        time.sleep(5.5)
+
+        # (c) 回收證明：out_deadline 釋放 slot 後，另開 4 條新連線打 /echo 全部成功（4 slot 沒被永久占住）。
+        #     未修版此處會逐一握手失敗/timeout（slot 仍被 out_pending 占死）。
+        for _ in range(4):
+            with socket.create_connection(("127.0.0.1", 8443), timeout=5) as s6:
+                with ctx.wrap_socket(s6, server_hostname="127.0.0.1") as ss6:
+                    ss6.send(b"GET /echo HTTP/1.1\r\nHost:x\r\nConnection: close\r\n\r\n")
+                    d6 = b""
+                    while True:
+                        ch = ss6.recv(4096)
+                        if not ch: break
+                        d6 += ch
+            assert b'"ok":1' in d6, ("write-slowloris recovery: echo failed after out_deadline reclaim", d6)
+    finally:
+        for ass in attackers:
+            try: ass.close()
+            except Exception: pass
+
     print("https OK")
 finally:
     p.kill()

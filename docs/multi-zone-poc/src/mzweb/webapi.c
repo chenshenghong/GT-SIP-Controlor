@@ -43,6 +43,12 @@
 #ifndef HS_TIMEOUT_MS
 #define HS_TIMEOUT_MS 10000      /* TLS handshake 硬上限：逾此仍未握手完成 → 關閉（防 TLS slow-loris；可 -DHS_TIMEOUT_MS 覆蓋） */
 #endif
+#ifndef OUT_TIMEOUT_MS
+#define OUT_TIMEOUT_MS 30000     /* 寫出硬上限：一段回應從開始緩衝起逾此仍未送畢 → 關閉（防「涓滴讀取」寫出面 slow-loris；與 hs_deadline 對稱、與 last_io 解耦，不隨 n>0 刷新。30s 給正常慢速行動網路收 ~23KB 充裕餘裕；可 -DOUT_TIMEOUT_MS 覆蓋，測試用縮短） */
+#endif
+#ifndef OUT_MAX
+#define OUT_MAX     (2*1024*1024) /* 單段回應 len 上限護欄（defense-in-depth）：production 兩呼叫點（serve_index ~23KB、mzweb_zones clamped）皆遠低於此。逾此 → 不緩衝、關閉（可 -DOUT_MAX 覆蓋） */
+#endif
 #define CONN_CAP    (MAX_HEADERS + MAX_BODY + 1)
 
 struct conn {
@@ -58,6 +64,7 @@ struct conn {
      * 絕不原地空轉。送完 → conn_close。out_buf 動態配置（回應可達內嵌頁 ~23KB），
      * conn_close 釋放。out_pending：此 conn 尚有待送 bytes（讀路徑據此改走排空）。 --- */
     char* out_buf; int out_len; int out_off; int out_pending;
+    unsigned long long out_deadline; /* 首次緩衝一段回應時 = now + OUT_TIMEOUT_MS；防寫出面 slow-loris 硬牆，不隨 n>0 刷新（與 last_io 解耦，對稱 hs_deadline） */
     /* http_head 視圖（指進 buf，非 NUL 結尾） */
     char* url; int url_len;
     char* auth; int auth_len;   /* Authorization 值 */
@@ -134,11 +141,16 @@ static void conn_flush(struct conn* c) {
 static void conn_send(struct conn* c, const char* buffer, int len) {
     if (!c->used) return;
     if (len <= 0) { conn_close(c); return; }
+    if (len > OUT_MAX) { conn_close(c); return; } /* Minor 1 護欄：異常大 len 不緩衝、直接關閉（production 兩呼叫點皆遠低於上限） */
     char* nb = (char*)malloc((size_t)len);
     if (!nb) { conn_close(c); return; }          /* 配置失敗：無法回應，關閉 */
     memcpy(nb, buffer, (size_t)len);
     if (c->out_buf) free(c->out_buf);            /* 防禦：單次回應，理論上不會既有緩衝 */
     c->out_buf = nb; c->out_len = len; c->out_off = 0; c->out_pending = 1;
+    /* 寫出硬牆：此刻設定一次，之後 conn_flush 的 n>0 只刷 last_io、絕不動 out_deadline。
+     * 攻擊者涓滴讀取（每 <IDLE_MS 收數 byte）令 last_io 恆新鮮、idle 永不成立時，
+     * out_deadline 仍會在固定時限強制回收 slot（對稱 hs_deadline 對握手 slow-loris 的硬牆）。 */
+    c->out_deadline = clock_time() + OUT_TIMEOUT_MS;
     conn_flush(c);                               /* 先試同步排空；卡住則轉 POLLOUT 驅動 */
 }
 
@@ -251,8 +263,11 @@ static void sweep_idle(struct conn* self) {
         if (!c->used || c == self) continue;
         /* TLS 握手硬上限：即使對端每隔幾秒滴一個 byte 拖住 last_io，也在 hs_deadline 強制回收。 */
         if (c->is_tls && !c->hs_done && now > c->hs_deadline) { conn_close(c); continue; }
-        /* 逾時回收涵蓋所有狀態：收 header 卡住的 slow-loris、以及卡在寫出（out_pending）
-         * 的 conn——對端停止讀取時 last_io 凍結，超過 IDLE_MS 即釋放 slot（含 out_buf）。 */
+        /* 寫出硬上限：卡在寫出（out_pending）的 conn，即使對端涓滴讀取令 last_io 恆新鮮、
+         * idle 永不成立，也在 out_deadline 強制回收（寫出面 slow-loris 對稱 hs_deadline）。 */
+        if (c->out_pending && now > c->out_deadline) { conn_close(c); continue; }
+        /* idle 逾時回收：收 header 卡住的 slow-loris，以及對端「完全停止讀取」時 last_io
+         * 凍結的寫出 conn（涓滴讀取者則由上面 out_deadline 兜住），超過 IDLE_MS 釋放 slot。 */
         if (now - c->last_io > IDLE_MS) conn_close(c);
     }
 }

@@ -26,6 +26,13 @@ COMPAT_TEST_webapi_tls = event.c webapi.c socketbase.c mzcert.c $(MBEDTLS_SRC)
 # test_webapi 用縮短的 idle timeout/清掃週期，讓 http_test.py 的 slow-loris 斷言免等 30s。
 # 僅作用於此測試二進位；production arm/x86 目標編 webapi.c 不帶此旗標，維持預設 30000ms。
 TESTDEF_webapi = -DIDLE_MS=1000 -DSWEEP_MS=250
+# test_webapi_tls：縮短寫出硬上限（OUT_TIMEOUT_MS）讓 https_test.py 的寫出面 slow-loris
+# 回收斷言免等 30s。關鍵設計——IDLE_MS 刻意「大於」OUT_TIMEOUT_MS：測試窗內只有 out_deadline
+# 會觸發回收（idle 不會），使新回收 case 具鑑別力（未修版無 out_deadline → idle 於窗內不觸發 →
+# slot 被占住 → 斷言失敗）；同時兩者皆遠高於既有大回應/慢讀 case 3（~2s 活動）→ 不誤殺、不截斷。
+# OUT_MAX 覆蓋為 3MiB：test_webapi_tls 的 /big 刻意回 2MiB（遠大於 socket 送出緩衝 → 逼出
+# WANT_WRITE）＋標頭 > 2MiB production 預設，故此測試二進位放寬護欄；production 維持 2MiB。
+TESTDEF_webapi_tls = -DIDLE_MS=10000 -DOUT_TIMEOUT_MS=4000 -DHS_TIMEOUT_MS=10000 -DOUT_MAX=3145728 -DSWEEP_MS=250
 
 build/websetsip.c: ../../../firmware-reference/websetsip.c websetsip-p7.patch
 	mkdir -p build
