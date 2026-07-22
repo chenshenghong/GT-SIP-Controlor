@@ -7,6 +7,7 @@ COMPAT   = socketbase.c hostsid.c keyvaluefile.c event.c webapi.c cjson_vendor.c
 APPSRC   = build/websetsip.c build/main.c mzweb_zones.c serve_index.c
 COMPAT_TEST_keyvaluefile = keyvaluefile.c
 COMPAT_TEST_cjson = cjson_vendor.c
+COMPAT_TEST_event = event.c
 
 build/websetsip.c: ../../firmware-reference/websetsip.c websetsip-p7.patch
 	mkdir -p build
