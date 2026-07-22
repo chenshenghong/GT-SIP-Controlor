@@ -30,6 +30,7 @@ struct key_value_file* read_keyvalue_file(const char* path) {
     return kv;
 }
 static struct kv_line* kv_find(struct key_value_file* kv, const char* key) {
+    if (!kv) return NULL;   /* 檔案不存在時 read_keyvalue_file 回 NULL；呼叫端漏檢查也不崩潰 */
     for (int i = 0; i < kv->n; i++)
         if (kv->lines[i].is_kv && strcmp(kv->lines[i].key, key) == 0) return &kv->lines[i];
     return NULL;
@@ -43,6 +44,7 @@ void modify_key_value(struct key_value_file* kv, const char* key, const char* va
     if (l) snprintf(l->val, sizeof(l->val), "%s", val);
 }
 void add_key_value(struct key_value_file* kv, const char* key, const char* val) {
+    if (!kv) return;
     if (kv->n >= KV_MAX_LINES) return;
     struct kv_line* l = &kv->lines[kv->n++];
     l->is_kv = 1;

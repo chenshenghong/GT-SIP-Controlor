@@ -35,6 +35,13 @@ int main(void) {
     }
     free_keyvalue_file(kv);
     assert(read_keyvalue_file("/tmp/kv_nonexist_zzz") == NULL);
+    /* 全新設備 crash-loop 防禦：檔案不存在回 NULL 後，呼叫端漏檢查直接 find 不可崩潰 */
+    {
+        struct key_value_file* missing = read_keyvalue_file("/tmp/kv_nonexist_zzz");
+        assert(missing == NULL);
+        assert(find_key_value(NULL, "x") == NULL);
+        assert(find_key_value(missing, "x") == NULL);
+    }
     printf("keyvaluefile OK\n");
     return 0;
 }

@@ -37,6 +37,9 @@ static void send_service_unavailable(void* client)
         "Connection: close\r\n\r\n"
         "%s",
         (int)strlen(SVC_UNAVAIL_BODY), SVC_UNAVAIL_BODY);
+    /* snprintf 截斷防呆：n 為「應寫入長度」，若 HBI_WEB_SERVER 未來變長致 n >= buffer，
+     * clamp 到 sizeof(resp)-1，避免 web_snd_data 用超界長度過讀 stack（對齊 serve_index.c #4）。 */
+    if (n >= (int)sizeof(resp)) n = (int)sizeof(resp) - 1;
     web_snd_data(client, resp, n);
 }
 

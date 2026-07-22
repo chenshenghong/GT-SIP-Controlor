@@ -42,8 +42,8 @@ try:
     try:
         urllib.request.urlopen("http://127.0.0.1:80/get/sip/multicast/zones", timeout=5)
         raise AssertionError("expected auth error")
-    except urllib.error.HTTPError:
-        pass
+    except urllib.error.HTTPError as e:
+        assert e.code == 401, e.code   # 真機已實證：無 token 回 401
 
     # 2) GET zones 帶 token → 轉呼 mzrelay3 成功，16 筆
     r = json.loads(urllib.request.urlopen(
