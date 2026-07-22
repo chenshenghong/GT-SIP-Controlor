@@ -9,7 +9,7 @@ import { scanSubnet, scanMultiSubnet, autoDetectPort, resetDetectedPort, getActi
 import { scanViaTaskServer } from './taskServerClient'
 import { changeDeviceIp } from './ipChanger'
 import { cleanupAllRoutes, cleanupAllAliases } from './routeManager'
-import type { IpChangeRequest, SipConfig } from '@shared/types'
+import type { IpChangeRequest, SipConfig, DayuSipConfig } from '@shared/types'
 
 function createWindow(): BrowserWindow {
   const mainWindow = new BrowserWindow({
@@ -248,6 +248,22 @@ function registerIpcHandlers(mainWindow: BrowserWindow): void {
       return await dayuGetMedia(ip, username, password)
     } catch (error) {
       return { ok: false, reason: 'unreachable', detail: String(error) }
+    }
+  })
+  ipcMain.handle(IPC_CHANNELS.DAYU_SET_VOLUME, async (_event, ip: string, volume: number, username: string, password: string) => {
+    try {
+      const { dayuSetVolume } = await import('./dayu/dayuWrite')
+      return await dayuSetVolume(ip, volume, username, password)
+    } catch (error) {
+      return { state: 'failed', reason: 'unreachable', detail: String(error) }
+    }
+  })
+  ipcMain.handle(IPC_CHANNELS.DAYU_SET_SIP, async (_event, ip: string, config: DayuSipConfig, username: string, password: string) => {
+    try {
+      const { dayuSetSip } = await import('./dayu/dayuWrite')
+      return await dayuSetSip(ip, config, username, password)
+    } catch (error) {
+      return { state: 'failed', reason: 'unreachable', detail: String(error) }
     }
   })
 }

@@ -14,7 +14,7 @@
         <div class="form-body">
           <div class="form-group">
             <label>設備型號 *</label>
-            <select v-model="form.kind" @change="applyKindDefaults">
+            <select v-model="form.kind">
               <option value="gt-sip-gw">GT-SIP-GW / SIP-Player（REST JSON）</option>
               <option value="dayu-ot300">DAYU-OT300 音柱（Web 表單）</option>
             </select>
@@ -59,9 +59,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive } from 'vue'
+import { ref, reactive, watch } from 'vue'
 import type { DeviceNode, DeviceKind } from '@shared/types'
 import { loginToDevice, getDeviceStatus, getSipConfig } from '@/composables/deviceApi'
+import { nextPasswordForKind } from '@/utils/kindDefaults'
+import { useDayuCredentialStore } from '@/stores/dayuCredentials'
 
 defineProps<{ visible: boolean }>()
 const emit = defineEmits<{
@@ -77,10 +79,12 @@ const form = reactive({
   password: '123456',
 })
 
-/** 切換型號時帶入該家族的出廠預設帳密（DAYU: admin/admin；GT: admin/123456） */
-function applyKindDefaults() {
-  form.password = form.kind === 'dayu-ot300' ? 'admin' : '123456'
-}
+const credStore = useDayuCredentialStore()
+
+// 切換型號帶入出廠預設密碼，但絕不覆寫使用者已輸入的自訂密碼
+watch(() => form.kind, (nextKind, prevKind) => {
+  form.password = nextPasswordForKind(form.password, prevKind, nextKind)
+})
 
 const isSubmitting = ref(false)
 const resultMsg = ref('')
@@ -138,6 +142,7 @@ async function submitGt(node: DeviceNode, ip: string) {
 async function submitDayu(node: DeviceNode, ip: string) {
   const login = await window.electronAPI.dayuLoginCheck(ip, form.username, form.password)
   if (login.ok) {
+    credStore.setCredentials(ip, form.username, form.password)
     node.status = 'ONLINE'
     const media = await window.electronAPI.dayuGetMedia(ip, form.username, form.password)
     if (media.ok) node.playVol = media.value.speakerVolume // canonical 0-9 原始值

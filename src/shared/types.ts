@@ -335,3 +335,29 @@ export interface DayuMediaInfo {
   speakerVolume: number
   codecOrder: string
 }
+
+/** DAYU 寫入失敗原因（含 readback 不符） */
+export type DayuWriteFailReason = DayuFailReason | 'verify-mismatch'
+
+/**
+ * DAYU 寫入四態 outcome（deep-reasoner 2026-07-22 裁決）：
+ * - applied-verified   POST 200 且可信 readback 等於目標值（只有 media.htm 音量能到）
+ * - applied-unverified POST 200 但無可信確認管道（SIP 恆為此態 — lines.htm readback 必假）
+ * - busy               503/連線重置/wedge/退避短路；未確認是否寫入，應退避靜置
+ * - failed             硬失敗（含 verify-mismatch：寫 5 讀回 3）
+ */
+export type DayuWriteOutcome =
+  | { state: 'applied-verified' }
+  | { state: 'applied-unverified'; detail?: string }
+  | { state: 'busy'; detail?: string }
+  | { state: 'failed'; reason: DayuWriteFailReason; detail?: string }
+
+/** lines.htm SIP 帳號設定（欄位對應真機表單 name） */
+export interface DayuSipConfig {
+  phoneNum: string      // SIP_PhoneNum_R
+  regUser: string       // SIP_RegUser_R
+  displayName: string   // SIP_DisPlayName_R
+  regPasswd: string     // SIP_RegPasswd_R
+  regAddr: string       // SIP_RegAddr_R
+  regPort: string       // SIP_RegPort_R
+}

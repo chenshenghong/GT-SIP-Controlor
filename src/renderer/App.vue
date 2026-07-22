@@ -60,6 +60,7 @@
     <!-- Reconnect Overlay -->
     <ReconnectOverlay
       v-if="reconnectIp"
+      :show="false"
       :target-ip="reconnectIp"
       @connected="handleReconnected"
       @timeout="handleReconnectTimeout"
@@ -146,7 +147,7 @@ async function enrichRegStatus(devices: DeviceNode[]) {
       if (m[3]) patch.regPort = m[3]
     }
     // Live volume (REST PLAY_VOL/CAP_VOL) overrides the stale DBP OutVol/MicVol
-    const di = st?.sip_status?.device_info as Record<string, unknown> | undefined
+    const di = st?.sip_status?.device_info as unknown as Record<string, unknown> | undefined
     if (di) {
       if (di.broadcast_volume != null) patch.outVol = Number(di.broadcast_volume)
       if (di.microphone_volume != null) patch.micVol = Number(di.microphone_volume)
