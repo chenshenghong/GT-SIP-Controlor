@@ -7,7 +7,10 @@ COMPAT   = socketbase.c hostsid.c keyvaluefile.c event.c webapi.c cjson_vendor.c
 
 # --- T1: vendor mbedTLS 靜態編入 mzweb 目標 ---
 MBEDTLS_SRC = $(wildcard mbedtls/library/*.c)
-MBEDTLS_INC = -Imbedtls/include -I. -DMBEDTLS_CONFIG_FILE='"mbedtls_config.h"'
+# 用不撞名的 config 檔名：vendor 樹裡有同名的官方 mbedtls_config.h，GCC 對 build_info.h
+# 內 quoted #include MBEDTLS_CONFIG_FILE 會優先搜 build_info.h 同目錄 → 官方全量 config 會
+# shadow 掉我方精簡版。改名 mzweb_mbedtls_config.h（vendor 無此檔）→ 落到 -I. 讀到精簡版。
+MBEDTLS_INC = -Imbedtls/include -DMBEDTLS_CONFIG_FILE='"mzweb_mbedtls_config.h"'
 COMPAT  += $(MBEDTLS_SRC)
 CFLAGS  += $(MBEDTLS_INC)
 APPSRC   = build/websetsip.c build/main.c mzweb_zones.c serve_index.c

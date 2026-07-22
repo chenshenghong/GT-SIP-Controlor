@@ -29,11 +29,14 @@
 #define MBEDTLS_ENTROPY_C
 #define MBEDTLS_CIPHER_C
 #define MBEDTLS_ECP_C
+#define MBEDTLS_ECP_DP_SECP256R1_ENABLED  /* ECDHE 曲線；亦定義 MBEDTLS_ECP_MAX_BITS */
 #define MBEDTLS_ECDH_C
 #define MBEDTLS_KEY_EXCHANGE_ECDHE_RSA_ENABLED
 #define MBEDTLS_KEY_EXCHANGE_RSA_ENABLED
 #define MBEDTLS_SSL_CIPHERSUITES MBEDTLS_TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256, MBEDTLS_TLS_RSA_WITH_AES_128_GCM_SHA256
 #define MBEDTLS_NO_PLATFORM_ENTROPY   /* uClibc/musl：無 /dev/hwrng 假設，用 /dev/urandom */
 #define MBEDTLS_ENTROPY_HARDWARE_ALT  /* 由 mzcert 提供 /dev/urandom entropy callback */
-#include "mbedtls/check_config.h"
+/* 勿在此自行 #include check_config.h：它會在 config_adjust_*.h 推導出 *_CAN_* 輔助巨集
+ * 之前就跑 → 誤報「not all prerequisites」。build_info.h 會在正確時機(config_adjust 之後)
+ * 自動 include check_config.h。 */
 #endif
