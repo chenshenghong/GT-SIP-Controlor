@@ -9,6 +9,9 @@ COMPAT_TEST_keyvaluefile = keyvaluefile.c
 COMPAT_TEST_cjson = cjson_vendor.c
 COMPAT_TEST_event = event.c
 COMPAT_TEST_webapi = event.c webapi.c socketbase.c
+# test_webapi 用縮短的 idle timeout/清掃週期，讓 http_test.py 的 slow-loris 斷言免等 30s。
+# 僅作用於此測試二進位；production arm/x86 目標編 webapi.c 不帶此旗標，維持預設 30000ms。
+TESTDEF_webapi = -DIDLE_MS=1000 -DSWEEP_MS=250
 
 build/websetsip.c: ../../firmware-reference/websetsip.c websetsip-p7.patch
 	mkdir -p build
@@ -24,7 +27,7 @@ x86-mzweb: build/websetsip.c
 
 host-%: tests/test_%.c
 	mkdir -p build
-	$(CC_X86) $(CFLAGS) -o build/test_$* $< $(COMPAT_TEST_$*)
+	$(CC_X86) $(CFLAGS) $(TESTDEF_$*) -o build/test_$* $< $(COMPAT_TEST_$*)
 
 clean:
 	rm -rf build

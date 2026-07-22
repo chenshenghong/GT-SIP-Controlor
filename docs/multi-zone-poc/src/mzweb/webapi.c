@@ -29,7 +29,12 @@
 #define MAX_HEADERS 8192
 #define MAX_URL     2048
 #define MAX_BODY    32768
-#define IDLE_MS     30000
+#ifndef IDLE_MS
+#define IDLE_MS     30000        /* conn 逾此毫秒未收齊完整請求 → 回收（可 -DIDLE_MS 覆蓋，測試用縮短） */
+#endif
+#ifndef SWEEP_MS
+#define SWEEP_MS    5000         /* idle 清掃 timer 週期（可 -DSWEEP_MS 覆蓋） */
+#endif
 #define CONN_CAP    (MAX_HEADERS + MAX_BODY + 1)
 
 struct conn {
@@ -49,6 +54,7 @@ static struct conn s_conns[MAX_CONNS];
 static http_callback_fn s_cb;
 static struct event_loop* s_loop;
 static int s_listen_fd = -1;
+static TIMER_EVENT s_idle_timer;    /* 自我重新武裝的週期 timer，驅動 idle 清掃（見 Critical-1） */
 
 static void conn_close(struct conn* c) {
     if (!c->used) return;
@@ -169,7 +175,8 @@ static void dispatch(struct conn* c) {
     }
 }
 
-/* idle 掃描：借每次 readable 事件檢查所有 conn；逾時仍未收齊完整請求者關閉。 */
+/* idle 掃描：檢查所有 conn（self 傳 NULL 時全掃），逾時仍未收齊完整請求者關閉。
+ * 由週期 timer 驅動（見 on_idle_timer），與 fd 活動無關 → slow-loris 沉默連線也會被回收。 */
 static void sweep_idle(struct conn* self) {
     unsigned long long now = clock_time();
     for (int i = 0; i < MAX_CONNS; i++) {
@@ -177,6 +184,14 @@ static void sweep_idle(struct conn* self) {
         if (!c->used || c == self) continue;
         if (now - c->last_io > IDLE_MS) conn_close(c);
     }
+}
+
+/* 週期 timer callback：清掃 idle 連線後重新武裝自己（T4 timer 觸發後 armed=0，需 re-arm 才週期化）。
+ * 這是 Critical-1 的核心：不依賴任何 fd 產生 readable 事件，靜默卡住的 slow-loris 連線也會被回收。 */
+static void on_idle_timer(struct event_loop* loop, struct event* ev, int arg) {
+    (void)ev; (void)arg;
+    sweep_idle(NULL);
+    event_timer_start(loop, &s_idle_timer); /* 重新武裝，下一週期再觸發 */
 }
 
 static void on_conn_readable(struct event_loop* loop, int fd, void* arg) {
@@ -245,14 +260,29 @@ void init_web_listen(int port, http_callback_fn cb, struct event_loop* loop,
     signal(SIGPIPE, SIG_IGN);
     s_cb = cb; s_loop = loop;
     s_listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (s_listen_fd < 0) {
+        fprintf(stderr, "init_web_listen: socket() failed: %s\n", strerror(errno));
+        return;
+    }
     int one = 1;
     setsockopt(s_listen_fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
     struct sockaddr_in a; memset(&a, 0, sizeof(a));
     a.sin_family = AF_INET;
     a.sin_port = htons((unsigned short)port);
     a.sin_addr.s_addr = INADDR_ANY;
-    bind(s_listen_fd, (struct sockaddr*)&a, sizeof(a));
-    listen(s_listen_fd, 8);
+    if (bind(s_listen_fd, (struct sockaddr*)&a, sizeof(a)) < 0) {
+        fprintf(stderr, "init_web_listen: bind(port=%d) failed: %s\n", port, strerror(errno));
+        close_socket(s_listen_fd); s_listen_fd = -1;
+        return; /* 埠被占用等：不註冊壞 fd 進 loop */
+    }
+    if (listen(s_listen_fd, 8) < 0) {
+        fprintf(stderr, "init_web_listen: listen(port=%d) failed: %s\n", port, strerror(errno));
+        close_socket(s_listen_fd); s_listen_fd = -1;
+        return;
+    }
     set_no_block(s_listen_fd);
     ev_reg_fd(loop, s_listen_fd, on_listen_readable, NULL);
+    /* Critical-1：註冊自我重新武裝的週期 timer 驅動 idle 清掃，與 fd 活動解耦。 */
+    event_timer_init(&s_idle_timer, SWEEP_MS, on_idle_timer, NULL, 0);
+    event_timer_start(loop, &s_idle_timer);
 }
