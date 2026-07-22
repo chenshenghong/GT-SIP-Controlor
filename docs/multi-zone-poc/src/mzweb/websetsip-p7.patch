@@ -1,12 +1,13 @@
 --- websetsip.c.orig
 +++ websetsip.c
-@@ -31,7 +31,19 @@
+@@ -31,10 +31,29 @@
  #include "webapi.h"
  #include "cjson.h"
  #include "readtemp.h"
 +#include "mzweb_zones.h"
 +extern void request_get_index(void* client);
 +#include "mzhash.h"
++#include "mzcert.h"
  
 +/* SEC-05: brute-force login lockout state (file-scope; PoC uses a single
 + * process-wide counter, matching original single-session model; production
@@ -20,7 +21,16 @@
  /*定义HTTP的监听端口*/
  #define WEB_SIP_SET_TCP_LISTEN_PORT 										80
  
-@@ -156,6 +168,22 @@
++/* S-T11: HTTPS listener port + self-signed cert/key paths (bootstrapped by
++ * init_web_listen_tls at startup; see init_sip_web_set_svr). */
++#define WEB_SIP_SET_TLS_LISTEN_PORT 443
++#define WEB_SIP_SET_CRT_PATH "/etc/sipweb/mz.crt"
++#define WEB_SIP_SET_KEY_PATH "/etc/sipweb/mz.key"
++
+ /*定义token有效期*/
+ #define TOKEN_EXPIRES_MAX_SECONDS 											3600
+ 
+@@ -156,6 +175,22 @@
  	char http_msg[512] = {0};
  	do
  	{
@@ -43,7 +53,7 @@
  		if (content == NULL ||
  			content_len == 0)
  		{
-@@ -204,14 +232,35 @@
+@@ -204,13 +239,34 @@
  			break;
  		}
  
@@ -60,7 +70,7 @@
 +			}
  			free_keyvalue_file(keyvalue_file);
  			break;
- 		}
++		}
 +		s_login_fail = 0;
 +		s_lock_until = 0;
 +		/* SEC-04: legacy plaintext WEB_PASSWORD -> upgrade to salted SHA-256 in place. */
@@ -77,11 +87,10 @@
 +				modify_key_value(keyvalue_file, "WEB_PASSWORD", new_hash);
 +				write_keyvalue_file(WEB_SIP_SET_FILE, keyvalue_file);
 +			}
-+		}
+ 		}
  		get_token_string(s_http_sip_set->now_token, 64);
  		s_http_sip_set->now_token_timestamp = get_main_event_loop()->mn_now;
- 		snprintf(http_msg, 512, "{\"status\": \"success\",\"message\": \"登入成功\","
-@@ -392,8 +441,9 @@
+@@ -392,8 +448,9 @@
  
  		struct key_value_file* keyvalue_file = read_keyvalue_file(WEB_SIP_SET_FILE);
  		const char* WEB_PASSWORD = find_key_value(keyvalue_file, "WEB_PASSWORD");
@@ -93,7 +102,7 @@
  		{
  			msg = "密码不正确";
  			code = "E001";
-@@ -401,9 +451,51 @@
+@@ -401,9 +458,51 @@
  			break;
  		}
  
@@ -146,7 +155,7 @@
  		break;
  	}while(1);
  
-@@ -511,6 +603,28 @@
+@@ -511,6 +610,28 @@
  }
  
  /*获取设备状态*/
@@ -175,7 +184,7 @@
  static void request_get_device_status(void* client)
  {
  	struct key_value_file* keyvalue_sip = read_keyvalue_file(WEB_SIP_SET_FILE);
-@@ -560,53 +674,68 @@
+@@ -560,53 +681,68 @@
  	now_timestamp %= (3600*1000);
  	int mins = now_timestamp/(60*1000);
  	
@@ -291,7 +300,7 @@
  }
  
  /*设置音量*/
-@@ -822,82 +951,69 @@
+@@ -822,82 +958,69 @@
  	const char* PCMA = find_key_value(keyvalue_file, "PCMA");
  	const char* OPUS = find_key_value(keyvalue_file, "OPUS");
  	
@@ -437,7 +446,19 @@
  }
  
  /*设置主sip账户信息*/
-@@ -2684,6 +2800,77 @@
+@@ -2122,6 +2245,11 @@
+ 		{
+ 			save_flag = 1;
+ 			modify_key_value(keyvalue_file, "IPADDR", ip);
++			/* S-T11: device IP changed -> the self-signed cert SAN=<old IP> is
++			 * now stale. Delete crt/key so init_web_listen_tls re-signs with the
++			 * new IP on the next boot (the reboot timer below restarts the device
++			 * after a successful network change). */
++			mzcert_invalidate(WEB_SIP_SET_CRT_PATH, WEB_SIP_SET_KEY_PATH);
+ 		}
+ 		
+ 		const char* NETMASK = find_key_value(keyvalue_file, "NETMASK");
+@@ -2684,6 +2812,77 @@
  }
  
  /*http回调函数*/
@@ -515,7 +536,7 @@
  static int http_callback(void* client, void* http_head, int request_type,
  	const char* content, int content_len)
  {
-@@ -2694,6 +2881,25 @@
+@@ -2694,6 +2893,25 @@
  		get_http_url(http_head, &url, &len);
  		if (len > 0)
  		{
@@ -541,7 +562,7 @@
  			if (strncmp("/auth/login", url, len) == 0)
  			{
  				/*处理登录*/
-@@ -2721,7 +2927,8 @@
+@@ -2721,7 +2939,8 @@
  			if (strncmp("/get/device/status", url, len) == 0)
  			{
  				/*获取设备状态*/
@@ -551,7 +572,7 @@
  			}
  			else
  			if (strncmp("/set/device/volume", url, len) == 0)
-@@ -2733,13 +2940,15 @@
+@@ -2733,13 +2952,15 @@
  			if (strncmp("/get/device/volume", url, len) == 0)
  			{
  				/*获取音量*/
@@ -569,7 +590,7 @@
  			}
  			else
  			if (strncmp("/set/sip/primary", url, len) == 0)
-@@ -2775,13 +2984,15 @@
+@@ -2775,13 +2996,15 @@
  			if (strncmp("/get/call/status", url, len) == 0)
  			{
  				/*获取SIP通话状态*/
@@ -587,7 +608,7 @@
  			}
  			else
  			if (strncmp("/set/network/config", url, len) == 0)
-@@ -2799,7 +3010,8 @@
+@@ -2799,7 +3022,8 @@
  			if (strncmp("/system/info", url, len) == 0)
  			{
  				/*获取系统运行信息*/
@@ -597,7 +618,7 @@
  			}
  			else
  			if (strncmp("/set/sip/multicast", url, len) == 0)
-@@ -2810,6 +3022,7 @@
+@@ -2810,6 +3034,7 @@
  			
  		}
  	}
@@ -605,7 +626,7 @@
  }
  
  /*定时重启*/
-@@ -2988,7 +3201,7 @@
+@@ -2988,7 +3213,7 @@
  		fclose(ifcfg_app);
  	}
  
@@ -614,7 +635,7 @@
  	request_url[0] = "/auth/login";
  	request_url[1] = "/auth/logout";
  	request_url[2] = "/auth/verify";
-@@ -3008,6 +3221,8 @@
+@@ -3008,6 +3233,8 @@
  	request_url[16] = "/system/info";
  	request_url[17] = "/auth/change_password";
  	request_url[18] = "/set/sip/multicast";
@@ -623,7 +644,7 @@
  
  	char* care_key_name[1] = {0};
  	care_key_name[0] = "Authorization";
-@@ -3016,7 +3231,7 @@
+@@ -3016,7 +3243,37 @@
  		NULL, 0,
  		NULL, 0,
  		NULL, 0,
@@ -631,4 +652,34 @@
 +		request_url, 21,
  		care_key_name, 1,
  		0);
++
++	/* S-T11: bring up the :443 TLS listener in the SAME event loop as :80.
++	 * Read the device IP from /etc/ifcfg-eth0 (IPADDR) for the self-signed
++	 * cert SAN (same file the original reads for SN above). init_web_listen_tls
++	 * runs mzcert_ensure() -- self-signs on first boot; RSA-2048 keygen may take
++	 * several seconds on single-core ARM -- then mzcert_load(), and only sets
++	 * s_tls_ready=1 AFTER the cert+config are ready. Until then :80 serves
++	 * plaintext WITHOUT the 301 redirect (webapi.c send_redirect is gated on
++	 * s_tls_ready), so the device stays reachable during the keygen window and
++	 * only starts redirecting once HTTPS is actually up. Fallback: if IPADDR is
++	 * unreadable AND no cert exists yet, mzcert_ensure fails, init_web_listen_tls
++	 * returns early, s_tls_ready stays 0, and :80 keeps serving plaintext (never
++	 * brick access). If a cert already exists on disk, IPADDR is not needed --
++	 * mzcert_ensure keeps the existing cert and TLS still comes up. */
++	char device_ip[64] = {0};
++	{
++		struct key_value_file* eth0_kv = read_keyvalue_file(ETH0_SET_FILE);
++		if (eth0_kv != NULL)
++		{
++			const char* IPADDR = find_key_value(eth0_kv, "IPADDR");
++			if (IPADDR != NULL)
++			{
++				snprintf(device_ip, sizeof(device_ip), "%s", IPADDR);
++			}
++			free_keyvalue_file(eth0_kv);
++		}
++	}
++	init_web_listen_tls(WEB_SIP_SET_TLS_LISTEN_PORT, http_callback,
++		get_main_event_loop(),
++		WEB_SIP_SET_CRT_PATH, WEB_SIP_SET_KEY_PATH, device_ip);
  }
