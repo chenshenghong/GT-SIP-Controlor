@@ -5,6 +5,7 @@ CC_X86   = $(DOCKER) muslcc/x86_64:x86_64-linux-musl
 CFLAGS   = -static -no-pie -fno-pie -O2 -I.
 COMPAT   = socketbase.c hostsid.c keyvaluefile.c event.c webapi.c cJSON.c
 APPSRC   = build/websetsip.c build/main.c mzweb_zones.c serve_index.c
+COMPAT_TEST_keyvaluefile = keyvaluefile.c
 
 build/websetsip.c: ../../firmware-reference/websetsip.c websetsip-p7.patch
 	mkdir -p build
