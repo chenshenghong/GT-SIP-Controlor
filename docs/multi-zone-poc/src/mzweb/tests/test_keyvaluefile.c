@@ -19,6 +19,20 @@ int main(void) {
     assert(strcmp(find_key_value(kv, "WEB_PORT"), "8081") == 0);
     assert(strcmp(find_key_value(kv, "NEW_KEY"), "x") == 0);
     /* 非 KEY=VALUE 行保留原樣（防呆：不破壞原廠檔中的註解/空行） */
+    {
+        FILE* rf = fopen("/tmp/kv_test2", "r");
+        assert(rf);
+        char line[256];
+        int found_comment = 0;
+        while (fgets(line, sizeof(line), rf)) {
+            if (strstr(line, "# comment line")) {
+                found_comment = 1;
+                break;
+            }
+        }
+        fclose(rf);
+        assert(found_comment);
+    }
     free_keyvalue_file(kv);
     assert(read_keyvalue_file("/tmp/kv_nonexist_zzz") == NULL);
     printf("keyvaluefile OK\n");
