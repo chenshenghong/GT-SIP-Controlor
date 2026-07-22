@@ -1,6 +1,6 @@
 --- websetsip.c.orig
 +++ websetsip.c
-@@ -31,6 +31,9 @@
+@@ -31,7 +31,19 @@
  #include "webapi.h"
  #include "cjson.h"
  #include "readtemp.h"
@@ -8,27 +8,52 @@
 +extern void request_get_index(void* client);
 +#include "mzhash.h"
  
++/* SEC-05: brute-force login lockout state (file-scope; PoC uses a single
++ * process-wide counter, matching original single-session model; production
++ * hardening could key per-source-IP). */
++#ifndef LOCK_MS
++#define LOCK_MS 300000
++#endif
++static int s_login_fail = 0;
++static unsigned long long s_lock_until = 0;
++
  /*定义HTTP的监听端口*/
  #define WEB_SIP_SET_TCP_LISTEN_PORT 										80
-@@ -204,14 +207,28 @@
+ 
+@@ -156,6 +168,13 @@
+ 	char http_msg[512] = {0};
+ 	do
+ 	{
++		unsigned long long mn_now = get_main_event_loop()->mn_now;
++		if (mn_now < s_lock_until)
++		{
++			msg = "登录失败次数过多，请稍后再试";
++			code = "A005";
++			break;
++		}
+ 		if (content == NULL ||
+ 			content_len == 0)
+ 		{
+@@ -204,14 +223,35 @@
  			break;
  		}
  
 -		if (strlen(pass_word) != strlen(WEB_PASSWORD) ||
 -			strcmp(pass_word, WEB_PASSWORD) != 0)
--		{
--			msg = "密码不正确";
--			code = "A001";
--			free_keyvalue_file(keyvalue_file);
--			break;
--		}
 +		if (!mzhash_verify(pass_word, WEB_PASSWORD))
-+		{
-+			msg = "密码不正确";
-+			code = "A001";
-+			free_keyvalue_file(keyvalue_file);
-+			break;
-+		}
+ 		{
+ 			msg = "密码不正确";
+ 			code = "A001";
++			if (++s_login_fail >= 5)
++			{
++				s_lock_until = mn_now + LOCK_MS;
++				code = "A005";
++			}
+ 			free_keyvalue_file(keyvalue_file);
+ 			break;
+ 		}
++		s_login_fail = 0;
++		s_lock_until = 0;
 +		/* SEC-04: legacy plaintext WEB_PASSWORD -> upgrade to salted SHA-256 in place. */
 +		if (mzhash_is_legacy(WEB_PASSWORD))
 +		{
@@ -47,7 +72,7 @@
  		get_token_string(s_http_sip_set->now_token, 64);
  		s_http_sip_set->now_token_timestamp = get_main_event_loop()->mn_now;
  		snprintf(http_msg, 512, "{\"status\": \"success\",\"message\": \"登入成功\","
-@@ -511,6 +521,28 @@
+@@ -511,6 +551,28 @@
  }
  
  /*获取设备状态*/
@@ -76,7 +101,7 @@
  static void request_get_device_status(void* client)
  {
  	struct key_value_file* keyvalue_sip = read_keyvalue_file(WEB_SIP_SET_FILE);
-@@ -560,53 +592,68 @@
+@@ -560,53 +622,68 @@
  	now_timestamp %= (3600*1000);
  	int mins = now_timestamp/(60*1000);
  	
@@ -192,7 +217,7 @@
  }
  
  /*设置音量*/
-@@ -822,82 +869,69 @@
+@@ -822,82 +899,69 @@
  	const char* PCMA = find_key_value(keyvalue_file, "PCMA");
  	const char* OPUS = find_key_value(keyvalue_file, "OPUS");
  	
@@ -338,7 +363,7 @@
  }
  
  /*设置主sip账户信息*/
-@@ -2684,6 +2718,77 @@
+@@ -2684,6 +2748,77 @@
  }
  
  /*http回调函数*/
@@ -416,7 +441,7 @@
  static int http_callback(void* client, void* http_head, int request_type,
  	const char* content, int content_len)
  {
-@@ -2694,6 +2799,25 @@
+@@ -2694,6 +2829,25 @@
  		get_http_url(http_head, &url, &len);
  		if (len > 0)
  		{
@@ -442,7 +467,7 @@
  			if (strncmp("/auth/login", url, len) == 0)
  			{
  				/*处理登录*/
-@@ -2721,7 +2845,8 @@
+@@ -2721,7 +2875,8 @@
  			if (strncmp("/get/device/status", url, len) == 0)
  			{
  				/*获取设备状态*/
@@ -452,7 +477,7 @@
  			}
  			else
  			if (strncmp("/set/device/volume", url, len) == 0)
-@@ -2733,13 +2858,15 @@
+@@ -2733,13 +2888,15 @@
  			if (strncmp("/get/device/volume", url, len) == 0)
  			{
  				/*获取音量*/
@@ -470,7 +495,7 @@
  			}
  			else
  			if (strncmp("/set/sip/primary", url, len) == 0)
-@@ -2775,13 +2902,15 @@
+@@ -2775,13 +2932,15 @@
  			if (strncmp("/get/call/status", url, len) == 0)
  			{
  				/*获取SIP通话状态*/
@@ -488,7 +513,7 @@
  			}
  			else
  			if (strncmp("/set/network/config", url, len) == 0)
-@@ -2799,7 +2928,8 @@
+@@ -2799,7 +2958,8 @@
  			if (strncmp("/system/info", url, len) == 0)
  			{
  				/*获取系统运行信息*/
@@ -498,7 +523,7 @@
  			}
  			else
  			if (strncmp("/set/sip/multicast", url, len) == 0)
-@@ -2810,6 +2940,7 @@
+@@ -2810,6 +2970,7 @@
  			
  		}
  	}
@@ -506,7 +531,7 @@
  }
  
  /*定时重启*/
-@@ -2988,7 +3119,7 @@
+@@ -2988,7 +3149,7 @@
  		fclose(ifcfg_app);
  	}
  
@@ -515,7 +540,7 @@
  	request_url[0] = "/auth/login";
  	request_url[1] = "/auth/logout";
  	request_url[2] = "/auth/verify";
-@@ -3008,6 +3139,8 @@
+@@ -3008,6 +3169,8 @@
  	request_url[16] = "/system/info";
  	request_url[17] = "/auth/change_password";
  	request_url[18] = "/set/sip/multicast";
@@ -524,7 +549,7 @@
  
  	char* care_key_name[1] = {0};
  	care_key_name[0] = "Authorization";
-@@ -3016,7 +3149,7 @@
+@@ -3016,7 +3179,7 @@
  		NULL, 0,
  		NULL, 0,
  		NULL, 0,
