@@ -43,7 +43,7 @@
  		if (content == NULL ||
  			content_len == 0)
  		{
-@@ -204,13 +232,34 @@
+@@ -204,14 +232,35 @@
  			break;
  		}
  
@@ -60,7 +60,7 @@
 +			}
  			free_keyvalue_file(keyvalue_file);
  			break;
-+		}
+ 		}
 +		s_login_fail = 0;
 +		s_lock_until = 0;
 +		/* SEC-04: legacy plaintext WEB_PASSWORD -> upgrade to salted SHA-256 in place. */
@@ -77,10 +77,76 @@
 +				modify_key_value(keyvalue_file, "WEB_PASSWORD", new_hash);
 +				write_keyvalue_file(WEB_SIP_SET_FILE, keyvalue_file);
 +			}
- 		}
++		}
  		get_token_string(s_http_sip_set->now_token, 64);
  		s_http_sip_set->now_token_timestamp = get_main_event_loop()->mn_now;
-@@ -511,6 +560,28 @@
+ 		snprintf(http_msg, 512, "{\"status\": \"success\",\"message\": \"登入成功\","
+@@ -392,8 +441,9 @@
+ 
+ 		struct key_value_file* keyvalue_file = read_keyvalue_file(WEB_SIP_SET_FILE);
+ 		const char* WEB_PASSWORD = find_key_value(keyvalue_file, "WEB_PASSWORD");
+-		if (strlen(old_pd) != strlen(WEB_PASSWORD) ||
+-			strcmp(old_pd, WEB_PASSWORD) != 0)
++		/* SEC-06: old-password comparison now goes through mzhash_verify (hash or
++		 * legacy plaintext), matching request_login_cmd. */
++		if (!mzhash_verify(old_pd, WEB_PASSWORD))
+ 		{
+ 			msg = "密码不正确";
+ 			code = "E001";
+@@ -401,9 +451,51 @@
+ 			break;
+ 		}
+ 
+-		modify_key_value(keyvalue_file, "WEB_PASSWORD", new_pd);
++		/* SEC-06: enforce new-password complexity (>=8 chars, at least one letter
++		 * and one digit) before accepting the change. */
++		{
++			int has_alpha = 0, has_digit = 0;
++			const char* p;
++			for (p = new_pd; *p != '\0'; ++p)
++			{
++				if ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z'))
++					has_alpha = 1;
++				if (*p >= '0' && *p <= '9')
++					has_digit = 1;
++			}
++			if (strlen(new_pd) < 8 || !has_alpha || !has_digit)
++			{
++				msg = "新密码强度不足(至少8位且需同时包含英文字母与数字)";
++				code = "E001";
++				free_keyvalue_file(keyvalue_file);
++				break;
++			}
++		}
++
++		/* SEC-06: persist the new password as a salted hash (never plaintext).
++		 * SEC-06-fix: same fail-closed guard as the SEC-04 legacy migration --
++		 * mzhash_make() leaves new_hash empty if the DRBG/entropy source fails;
++		 * never persist an empty hash (that would wipe WEB_PASSWORD and lock the
++		 * account out permanently). */
++		{
++			char new_hash[128];
++			mzhash_make(new_pd, new_hash, sizeof(new_hash));
++			if (new_hash[0] == '\0')
++			{
++				msg = "密码修改失败，请重试";
++				code = "E001";
++				free_keyvalue_file(keyvalue_file);
++				break;
++			}
++			modify_key_value(keyvalue_file, "WEB_PASSWORD", new_hash);
++		}
+ 		write_keyvalue_file(WEB_SIP_SET_FILE, keyvalue_file);
+ 		free_keyvalue_file(keyvalue_file);
++		/* SEC-06: force re-login after a successful password change by
++		 * invalidating the current token; the old token is rejected (A003) by
++		 * request_verify_token_cmd / mzweb_check_token on its next use. */
++		memset(s_http_sip_set->now_token, 0, 64);
++		s_http_sip_set->now_token_timestamp = 0;
+ 		break;
+ 	}while(1);
+ 
+@@ -511,6 +603,28 @@
  }
  
  /*获取设备状态*/
@@ -109,7 +175,7 @@
  static void request_get_device_status(void* client)
  {
  	struct key_value_file* keyvalue_sip = read_keyvalue_file(WEB_SIP_SET_FILE);
-@@ -560,53 +631,68 @@
+@@ -560,53 +674,68 @@
  	now_timestamp %= (3600*1000);
  	int mins = now_timestamp/(60*1000);
  	
@@ -225,7 +291,7 @@
  }
  
  /*设置音量*/
-@@ -822,82 +908,69 @@
+@@ -822,82 +951,69 @@
  	const char* PCMA = find_key_value(keyvalue_file, "PCMA");
  	const char* OPUS = find_key_value(keyvalue_file, "OPUS");
  	
@@ -371,7 +437,7 @@
  }
  
  /*设置主sip账户信息*/
-@@ -2684,6 +2757,77 @@
+@@ -2684,6 +2800,77 @@
  }
  
  /*http回调函数*/
@@ -449,7 +515,7 @@
  static int http_callback(void* client, void* http_head, int request_type,
  	const char* content, int content_len)
  {
-@@ -2694,6 +2838,25 @@
+@@ -2694,6 +2881,25 @@
  		get_http_url(http_head, &url, &len);
  		if (len > 0)
  		{
@@ -475,7 +541,7 @@
  			if (strncmp("/auth/login", url, len) == 0)
  			{
  				/*处理登录*/
-@@ -2721,7 +2884,8 @@
+@@ -2721,7 +2927,8 @@
  			if (strncmp("/get/device/status", url, len) == 0)
  			{
  				/*获取设备状态*/
@@ -485,7 +551,7 @@
  			}
  			else
  			if (strncmp("/set/device/volume", url, len) == 0)
-@@ -2733,13 +2897,15 @@
+@@ -2733,13 +2940,15 @@
  			if (strncmp("/get/device/volume", url, len) == 0)
  			{
  				/*获取音量*/
@@ -503,7 +569,7 @@
  			}
  			else
  			if (strncmp("/set/sip/primary", url, len) == 0)
-@@ -2775,13 +2941,15 @@
+@@ -2775,13 +2984,15 @@
  			if (strncmp("/get/call/status", url, len) == 0)
  			{
  				/*获取SIP通话状态*/
@@ -521,7 +587,7 @@
  			}
  			else
  			if (strncmp("/set/network/config", url, len) == 0)
-@@ -2799,7 +2967,8 @@
+@@ -2799,7 +3010,8 @@
  			if (strncmp("/system/info", url, len) == 0)
  			{
  				/*获取系统运行信息*/
@@ -531,7 +597,7 @@
  			}
  			else
  			if (strncmp("/set/sip/multicast", url, len) == 0)
-@@ -2810,6 +2979,7 @@
+@@ -2810,6 +3022,7 @@
  			
  		}
  	}
@@ -539,7 +605,7 @@
  }
  
  /*定时重启*/
-@@ -2988,7 +3158,7 @@
+@@ -2988,7 +3201,7 @@
  		fclose(ifcfg_app);
  	}
  
@@ -548,7 +614,7 @@
  	request_url[0] = "/auth/login";
  	request_url[1] = "/auth/logout";
  	request_url[2] = "/auth/verify";
-@@ -3008,6 +3178,8 @@
+@@ -3008,6 +3221,8 @@
  	request_url[16] = "/system/info";
  	request_url[17] = "/auth/change_password";
  	request_url[18] = "/set/sip/multicast";
@@ -557,7 +623,7 @@
  
  	char* care_key_name[1] = {0};
  	care_key_name[0] = "Authorization";
-@@ -3016,7 +3188,7 @@
+@@ -3016,7 +3231,7 @@
  		NULL, 0,
  		NULL, 0,
  		NULL, 0,
