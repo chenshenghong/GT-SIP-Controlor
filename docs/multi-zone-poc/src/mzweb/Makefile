@@ -4,12 +4,19 @@ CC_ARM   = $(DOCKER) muslcc/x86_64:arm-linux-musleabi -march=armv7-a
 CC_X86   = $(DOCKER) muslcc/x86_64:x86_64-linux-musl
 CFLAGS   = -static -no-pie -fno-pie -O2 -I.
 COMPAT   = socketbase.c hostsid.c keyvaluefile.c event.c webapi.c cjson_vendor.c readtemp.c
+
+# --- T1: vendor mbedTLS 靜態編入 mzweb 目標 ---
+MBEDTLS_SRC = $(wildcard mbedtls/library/*.c)
+MBEDTLS_INC = -Imbedtls/include -I. -DMBEDTLS_CONFIG_FILE='"mbedtls_config.h"'
+COMPAT  += $(MBEDTLS_SRC)
+CFLAGS  += $(MBEDTLS_INC)
 APPSRC   = build/websetsip.c build/main.c mzweb_zones.c serve_index.c
 COMPAT_TEST_keyvaluefile = keyvaluefile.c
 COMPAT_TEST_cjson = cjson_vendor.c
 COMPAT_TEST_event = event.c
 COMPAT_TEST_webapi = event.c webapi.c socketbase.c
 COMPAT_TEST_readtemp = readtemp.c
+COMPAT_TEST_mbedtls_smoke = $(MBEDTLS_SRC)
 # test_webapi 用縮短的 idle timeout/清掃週期，讓 http_test.py 的 slow-loris 斷言免等 30s。
 # 僅作用於此測試二進位；production arm/x86 目標編 webapi.c 不帶此旗標，維持預設 30000ms。
 TESTDEF_webapi = -DIDLE_MS=1000 -DSWEEP_MS=250
