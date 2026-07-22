@@ -38,10 +38,6 @@ deploy)
 status)
 	echo "-- 程序:"
 	$CTL sh 'ps | grep mzrelay3 | grep -v grep | head -1; ls -la /opt/mzrelay3 /opt/mzrelay.conf /opt/mzzones.json /etc/init.d/S21mzrelay 2>&1'
-	echo "-- REST /get/sip/multicast/zones（啟用區摘要）:"
-	curl -s -m 5 "http://$HOST:$REST/get/sip/multicast/zones" -H "$TOK" \
-	  | python3 -c 'import json,sys; z=json.load(sys.stdin)["zones"]; en=[(r["zone_id"],r["multicast_address"],r["multicast_port"],r["priority"],r["audio_codec"]) for r in z if r["enabled"]]; print(f"  enabled {len(en)}/16:", en)' \
-	  || { echo "  REST 無回應 — daemon 未啟或埠不通"; exit 1; }
 	echo "-- mzweb（sipweb）:"
 	$CTL sh 'ps | grep sipweb | grep -v grep | head -1; ls -la /etc/sipweb/sipweb /etc/sipweb/sipweb.orig 2>&1'
 	if $CTL sh 'test -f /etc/sipweb/sipweb.orig && echo ORIG_YES || echo ORIG_NO' | grep -q ORIG_YES; then
@@ -60,6 +56,12 @@ status)
 	else
 		echo "  (本地無 $MZWEB_BIN，略過 md5 比對)"
 	fi
+	# mzweb 檢查段刻意排在 REST 檢查（下方，失敗會 exit 1）之前，
+	# 確保 mzrelay3 REST 掛掉時 mzweb 健康狀態仍能先印出來，不被蓋掉
+	echo "-- REST /get/sip/multicast/zones（啟用區摘要）:"
+	curl -s -m 5 "http://$HOST:$REST/get/sip/multicast/zones" -H "$TOK" \
+	  | python3 -c 'import json,sys; z=json.load(sys.stdin)["zones"]; en=[(r["zone_id"],r["multicast_address"],r["multicast_port"],r["priority"],r["audio_codec"]) for r in z if r["enabled"]]; print(f"  enabled {len(en)}/16:", en)' \
+	  || { echo "  REST 無回應 — daemon 未啟或埠不通"; exit 1; }
 	;;
 rollback)
 	echo "== 還原 /opt/mzrelay3.prev =="
@@ -79,7 +81,13 @@ mzweb-install)
 	[ -f "$MZWEB_BIN" ] || { echo "缺 $MZWEB_BIN binary，先在 mzweb/ 交叉編譯（見 mzweb/Makefile）"; exit 1; }
 	echo "⚠ 即將覆蓋設備系統常駐 web 服務執行檔 /etc/sipweb/sipweb =="
 	echo "== 首次備份原廠 sipweb -> /etc/sipweb/sipweb.orig（若已存在則跳過，不覆蓋既有備份）=="
-	$CTL sh '[ -f /etc/sipweb/sipweb.orig ] || cp /etc/sipweb/sipweb /etc/sipweb/sipweb.orig; test -f /etc/sipweb/sipweb.orig && echo ORIG_YES || echo ORIG_NO'
+	# mzctl.py 退出碼不反映遠端結果，備份是否成立須抓輸出字串判斷、gate 住後續 put/mv
+	BACKUP_CHECK=$($CTL sh '[ -f /etc/sipweb/sipweb.orig ] || cp /etc/sipweb/sipweb /etc/sipweb/sipweb.orig; test -f /etc/sipweb/sipweb.orig && echo ORIG_YES || echo ORIG_NO')
+	echo "$BACKUP_CHECK"
+	if echo "$BACKUP_CHECK" | grep -q ORIG_NO; then
+		echo "✗ 備份 /etc/sipweb/sipweb.orig 失敗（唯讀掛載/磁碟滿等），為避免無回退保護下覆蓋原廠檔，中止 =="
+		exit 1
+	fi
 	echo "== 上傳 mzweb binary =="
 	$CTL put "$MZWEB_BIN" /etc/sipweb/sipweb.new
 	echo "== 原子替換 /etc/sipweb/sipweb =="
@@ -96,7 +104,7 @@ mzweb-rollback)
 	if $CTL sh 'test -f /etc/sipweb/sipweb.orig && echo ORIG_YES || echo ORIG_NO' | grep -q ORIG_NO; then
 		echo "無 /etc/sipweb/sipweb.orig 可回退（需先成功跑過一次 mzweb-install 才有備份）"; exit 1
 	fi
-	$CTL sh 'cp /etc/sipweb/sipweb.orig /etc/sipweb/sipweb; reboot'
+	$CTL sh 'cp /etc/sipweb/sipweb.orig /etc/sipweb/sipweb; sync; reboot'
 	echo "已還原 /etc/sipweb/sipweb.orig 並觸發 reboot，設備重開機後套用原廠 sipweb"
 	;;
 *)
