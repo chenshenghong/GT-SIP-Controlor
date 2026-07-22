@@ -36,6 +36,11 @@ TESTDEF_webapi = -DIDLE_MS=1000 -DSWEEP_MS=250
 # OUT_MAX 覆蓋為 3MiB：test_webapi_tls 的 /big 刻意回 2MiB（遠大於 socket 送出緩衝 → 逼出
 # WANT_WRITE）＋標頭 > 2MiB production 預設，故此測試二進位放寬護欄；production 維持 2MiB。
 TESTDEF_webapi_tls = -DIDLE_MS=10000 -DOUT_TIMEOUT_MS=4000 -DHS_TIMEOUT_MS=10000 -DOUT_MAX=3145728 -DSWEEP_MS=250
+# --- SEC-05 測試專用：縮短 LOCK_MS，讓 test_sec05.py 能在測試視窗內驗證「鎖定到期後
+# 重置失敗計數，給全新 5 次機會」（見 websetsip-p7.patch 內 SEC-05-fix 註解），免等
+# production 預設的 5 分鐘。僅作用於此測試二進位（build/mzweb-x86-sec05）；production
+# x86-mzweb/arm-mzweb 仍用 patch 內建 LOCK_MS=300000 預設，不受影響。
+TESTDEF_sec05 = -DLOCK_MS=1500
 
 build/websetsip.c: ../../../firmware-reference/websetsip.c websetsip-p7.patch
 	mkdir -p build
@@ -49,6 +54,12 @@ arm-mzweb: build/websetsip.c
 
 x86-mzweb: build/websetsip.c
 	$(CC_X86) $(CFLAGS) -o build/mzweb-x86 $(APPSRC) $(COMPAT)
+
+# x86-mzweb-sec05：同 x86-mzweb，但 -DLOCK_MS 覆蓋為短值，供 tests/test_sec05.py 驗證
+# 「鎖定到期後重置」語意用。與 x86-mzweb 共用同一份 build/websetsip.c（同一 patch 產物），
+# 差異只在編譯時的 LOCK_MS 巨集覆蓋，不影響 production 目標。
+x86-mzweb-sec05: build/websetsip.c
+	$(CC_X86) $(CFLAGS) $(TESTDEF_sec05) -o build/mzweb-x86-sec05 $(APPSRC) $(COMPAT)
 
 # x86-orig：未修改原廠 websetsip.c（GBK 原始碼，非 patch/zones/serve_index 版）＋相容層。
 # 相容層正確性的整合閘門——只有把 T1–T5 一起連進 3022 行真實原廠碼才知道夠不夠用。
