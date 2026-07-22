@@ -222,8 +222,21 @@ static int parse_uint(const char* s, int len) {
     return (int)v;
 }
 
+/* Critical-fix：Host/URL header 注入（HTTP response splitting）防護。
+ * 逐行掃描僅認嚴格 "\r\n" 為行終止，裸 "\n"/裸 "\r"（未配對）會被併入該欄位值——
+ * 攻擊者可用 "Host: x\nSet-Cookie: evil\r\n" 讓偽標頭混進 send_redirect 組出的
+ * Location。has_ctl 掃 [s, s+n) 內是否含任何 < 0x20 的位元組（涵蓋 \r=0x0D、
+ * \n=0x0A 及其餘控制字元），供 URL/Host 使用前把關：含 1 律視為不可信、不得原樣
+ * 塞入回應標頭。 */
+static int has_ctl(const char* s, int n) {
+    for (int i = 0; i < n; i++)
+        if ((unsigned char)s[i] < 0x20) return 1;
+    return 0;
+}
+
 /* 解析 request line（method/url）＋逐行 headers（僅擷取 Authorization、Content-Length）。
- * hdr_len = header 區長度（"\r\n\r\n" 起點）。成功回 1，request line 畸形回 0。 */
+ * hdr_len = header 區長度（"\r\n\r\n" 起點）。成功回 1，request line 畸形回 0（含 URL
+ * 內嵌控制字元——防止其未經過濾就流入 send_redirect 的 Location）。 */
 static int parse_request(struct conn* c, int hdr_len) {
     char* base = c->buf;
     /* --- request line：base .. 第一個 "\r\n" --- */
@@ -242,6 +255,8 @@ static int parse_request(struct conn* c, int hdr_len) {
     c->is_get = ((sp1 - rls) == 3 && strncmp(rls, "GET", 3) == 0) ? 1 : 0;
     c->url = us;
     c->url_len = (int)(sp2 - us);
+    if (has_ctl(c->url, c->url_len)) return 0; /* URL 內嵌控制字元：畸形請求，拒收
+                                                  * ——絕不讓其流入 send_redirect 的 Location */
 
     /* --- header lines：request line 之後，逐行掃 --- */
     int p = rle + 2; /* 跳過 request line 的 \r\n */
@@ -291,12 +306,14 @@ static void send_404(struct conn* c) {
 }
 
 /* T4：:80 全轉址 https（憑證已就緒／s_tls_ready）。Location host 優先取請求 Host: header；
- * 取不到（畸形請求／HTTP/1.0 無 Host）則以 getsockname 取本機（server 端）IP 兜底，
- * 確保任何情況都給出可解析的 https:// 絕對網址，不留空 Location。 */
+ * 取不到（畸形請求／HTTP/1.0 無 Host）或該值含控制字元（Critical-fix：裸 \r/\n 注入，
+ * 見 has_ctl 註記——parse_request 對逐行掃描僅認嚴格 \r\n，裸換行會被併入 Host 值，
+ * 讓攻擊者夾帶偽標頭）則一律以 getsockname 取本機（server 端）IP 兜底，確保任何情況
+ * 都給出可解析且不可被注入的 https:// 絕對網址，不留空 Location。 */
 static void send_redirect(struct conn* c) {
     char hostbuf[128];
     const char* host; int hostlen;
-    if (c->host_len > 0 && c->host_len < (int)sizeof(hostbuf)) {
+    if (c->host_len > 0 && c->host_len < (int)sizeof(hostbuf) && !has_ctl(c->host, c->host_len)) {
         host = c->host; hostlen = c->host_len;
     } else {
         struct sockaddr_in sa; socklen_t sl = sizeof(sa);
