@@ -10,7 +10,7 @@
  
  /*定义HTTP的监听端口*/
  #define WEB_SIP_SET_TCP_LISTEN_PORT 										80
-@@ -204,14 +207,21 @@
+@@ -204,14 +207,28 @@
  			break;
  		}
  
@@ -34,8 +34,15 @@
 +		{
 +			char new_hash[128];
 +			mzhash_make(pass_word, new_hash, sizeof(new_hash));
-+			modify_key_value(keyvalue_file, "WEB_PASSWORD", new_hash);
-+			write_keyvalue_file(WEB_SIP_SET_FILE, keyvalue_file);
++			/* SEC-04-fix: mzhash_make() fail-closes (new_hash left empty) if the
++			 * DRBG/entropy source fails. Never persist an empty hash into
++			 * WEB_PASSWORD -- that would wipe the password and lock the account
++			 * out permanently. Skip this migration and retry on next login. */
++			if (new_hash[0] != '\0')
++			{
++				modify_key_value(keyvalue_file, "WEB_PASSWORD", new_hash);
++				write_keyvalue_file(WEB_SIP_SET_FILE, keyvalue_file);
++			}
 +		}
  		get_token_string(s_http_sip_set->now_token, 64);
  		s_http_sip_set->now_token_timestamp = get_main_event_loop()->mn_now;
