@@ -3,7 +3,7 @@ DOCKER   = docker run --rm --platform linux/amd64 -v "$(CURDIR)":/src -w /src --
 CC_ARM   = $(DOCKER) muslcc/x86_64:arm-linux-musleabi -march=armv7-a
 CC_X86   = $(DOCKER) muslcc/x86_64:x86_64-linux-musl
 CFLAGS   = -static -no-pie -fno-pie -O2 -I.
-COMPAT   = socketbase.c hostsid.c keyvaluefile.c event.c webapi.c cjson_vendor.c readtemp.c
+COMPAT   = socketbase.c hostsid.c keyvaluefile.c event.c webapi.c cjson_vendor.c readtemp.c mzcert.c
 
 # --- T1: vendor mbedTLS 靜態編入 mzweb 目標 ---
 MBEDTLS_SRC = $(wildcard mbedtls/library/*.c)
