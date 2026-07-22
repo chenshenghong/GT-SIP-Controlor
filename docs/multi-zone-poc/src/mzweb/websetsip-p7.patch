@@ -113,7 +113,63 @@
  			if (strncmp("/auth/login", url, len) == 0)
  			{
  				/*处理登录*/
-@@ -2810,6 +2902,7 @@
+@@ -2721,7 +2813,8 @@
+ 			if (strncmp("/get/device/status", url, len) == 0)
+ 			{
+ 				/*获取设备状态*/
+-				request_get_device_status(client);
++				if (mzweb_check_token(client, http_head) == 0)
++					request_get_device_status(client);
+ 			}
+ 			else
+ 			if (strncmp("/set/device/volume", url, len) == 0)
+@@ -2733,13 +2826,15 @@
+ 			if (strncmp("/get/device/volume", url, len) == 0)
+ 			{
+ 				/*获取音量*/
+-				request_get_device_volume(client);
++				if (mzweb_check_token(client, http_head) == 0)
++					request_get_device_volume(client);
+ 			}
+ 			else
+ 			if (strncmp("/get/sip/config", url, len) == 0)
+ 			{
+ 				/*获取SIP配置*/
+-				request_get_sip_config(client);
++				if (mzweb_check_token(client, http_head) == 0)
++					request_get_sip_config(client);
+ 			}
+ 			else
+ 			if (strncmp("/set/sip/primary", url, len) == 0)
+@@ -2775,13 +2870,15 @@
+ 			if (strncmp("/get/call/status", url, len) == 0)
+ 			{
+ 				/*获取SIP通话状态*/
+-				request_get_call_status(client);
++				if (mzweb_check_token(client, http_head) == 0)
++					request_get_call_status(client);
+ 			}
+ 			else
+ 			if (strncmp("/get/network/config", url, len) == 0)
+ 			{
+ 				/*获取网络配置*/
+-				request_get_network_config(client);
++				if (mzweb_check_token(client, http_head) == 0)
++					request_get_network_config(client);
+ 			}
+ 			else
+ 			if (strncmp("/set/network/config", url, len) == 0)
+@@ -2799,7 +2896,8 @@
+ 			if (strncmp("/system/info", url, len) == 0)
+ 			{
+ 				/*获取系统运行信息*/
+-				request_system_info(client);
++				if (mzweb_check_token(client, http_head) == 0)
++					request_system_info(client);
+ 			}
+ 			else
+ 			if (strncmp("/set/sip/multicast", url, len) == 0)
+@@ -2810,6 +2908,7 @@
  			
  		}
  	}
@@ -121,7 +177,7 @@
  }
  
  /*定时重启*/
-@@ -2988,7 +3081,7 @@
+@@ -2988,7 +3087,7 @@
  		fclose(ifcfg_app);
  	}
  
@@ -130,7 +186,7 @@
  	request_url[0] = "/auth/login";
  	request_url[1] = "/auth/logout";
  	request_url[2] = "/auth/verify";
-@@ -3008,6 +3101,8 @@
+@@ -3008,6 +3107,8 @@
  	request_url[16] = "/system/info";
  	request_url[17] = "/auth/change_password";
  	request_url[18] = "/set/sip/multicast";
@@ -139,7 +195,7 @@
  
  	char* care_key_name[1] = {0};
  	care_key_name[0] = "Authorization";
-@@ -3016,7 +3111,7 @@
+@@ -3016,7 +3117,7 @@
  		NULL, 0,
  		NULL, 0,
  		NULL, 0,
