@@ -261,6 +261,7 @@ int mzcert_load(const char *crt_path, const char *key_path,
     }
     if (mbedtls_pk_parse_keyfile(key_out, key_path, NULL,
                                  drbg ? mbedtls_ctr_drbg_random : NULL, drbg) != 0) {
+        mbedtls_x509_crt_free(crt_out);   /* crt 已解析成功，key 失敗時須釋放避免洩漏 */
         return -1;
     }
     return 0;
