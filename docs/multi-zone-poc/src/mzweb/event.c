@@ -38,21 +38,30 @@ void ev_unreg_fd(struct event_loop* loop, int fd) {
     for (int i = 0; i < s_loop.nfds; i++)
         if (s_loop.fds[i].fd == fd) { s_loop.fds[i] = s_loop.fds[--s_loop.nfds]; return; }
 }
+static int ev_fd_is_live(int fd) {
+    for (int i = 0; i < s_loop.nfds; i++) if (s_loop.fds[i].fd == fd) return 1;
+    return 0;
+}
 int event_loop_step(struct event_loop* loop, int max_wait_ms) {
+    /* snap 與 pfds 必須是同一份 poll 前狀態：先一次拍好，poll 之後 timer cb 就算
+     * ev_unreg_fd 重排 s_loop.fds，也不影響這裡已配對好的索引順序 */
     struct pollfd pfds[EV_MAX_FDS];
-    for (int i = 0; i < s_loop.nfds; i++) { pfds[i].fd = s_loop.fds[i].fd; pfds[i].events = POLLIN; pfds[i].revents = 0; }
-    int n = poll(pfds, s_loop.nfds, max_wait_ms);
+    struct ev_fd snap[EV_MAX_FDS];
+    int ns = s_loop.nfds;
+    for (int i = 0; i < ns; i++) {
+        snap[i] = s_loop.fds[i];
+        pfds[i].fd = s_loop.fds[i].fd; pfds[i].events = POLLIN; pfds[i].revents = 0;
+    }
+    int n = poll(pfds, ns, max_wait_ms);
     loop->mn_now = clock_time();
     for (int i = 0; i < s_loop.ntimers; i++) {
         TIMER_EVENT* t = s_loop.timers[i];
         if (t->armed && loop->mn_now >= t->fire_at) { t->armed = 0; t->cb(loop, NULL, 0); }
     }
     if (n > 0) {
-        /* 快照後回呼：cb 可能 ev_unreg_fd 改動陣列 */
-        struct ev_fd snap[EV_MAX_FDS]; int ns = s_loop.nfds;
-        for (int i = 0; i < ns; i++) snap[i] = s_loop.fds[i];
-        for (int i = 0; i < ns && i < EV_MAX_FDS; i++)
-            if (pfds[i].revents & (POLLIN | POLLHUP | POLLERR)) snap[i].cb(loop, snap[i].fd, snap[i].arg);
+        for (int i = 0; i < ns; i++)
+            if ((pfds[i].revents & (POLLIN | POLLHUP | POLLERR)) && ev_fd_is_live(snap[i].fd))
+                snap[i].cb(loop, snap[i].fd, snap[i].arg);
     }
     return n;
 }
