@@ -71,5 +71,25 @@ python3 src/mzctl.py sh 'chmod +x /opt/mzrelay3 /etc/init.d/S21mzrelay; sync'
 #   瀏覽器開 device-web/index.html，設備位址填 http://<device>:8090 登入即可
 ```
 
+## 佈署自動化與維運 runbook（P6）
+
+一鍵腳本 `src/mzdeploy.sh`（mac 端，經 mzctl.py root SSH；`MZHOST` 可換設備）：
+
+```bash
+./mzdeploy.sh status     # 健康檢查：程序 + 檔案完整性 + REST zones 摘要
+./mzdeploy.sh deploy     # 佈署/升級 mzrelay3（既有版自動備份 .prev；zones 設定不動）
+./mzdeploy.sh rollback   # 還原 .prev 前版並重啟 daemon
+./mzdeploy.sh redeploy   # 災難重佈（整包 rom 升級把 /opt 抹掉後）
+```
+
+**原廠韌體升級共存**（實測依據：升級=替換 `/opt/termapp`+reboot，見 firmware SSH 升級 memory）：
+
+| 升級方式 | 對 side-car 影響 | 處置 |
+|---|---|---|
+| **app 替換**（只換 `/opt/termapp`） | `/opt/mzrelay3`、`/opt/mzzones.json`、`/etc/init.d/S21mzrelay` 皆不受影響；reboot 後 S21 照常拉起 | 免動作；升級後跑 `./mzdeploy.sh status` 確認即可。若原廠升級重置 termapp 的組播收聽 group，對齊 `/opt/mzrelay.conf` 的 dst 參數 |
+| **整包 rom**（rootfs 重刷） | 三檔全滅（含 zones 表） | 升級**前**備份：`python3 mzctl.py sh 'cat /opt/mzzones.json' > mzzones.backup.json`；升級後 `./mzdeploy.sh redeploy`，再 put 回 mzzones.json 或經 device-web 重新配置 |
+
+已實測：`killall + rm /opt/mzrelay3` 模擬抹除 → `deploy` 一鍵恢復、zones 設定完好；`rollback` 還原 `.prev` 後 daemon 正常、REST 回報一致。
+
 ## 後續（見評估文件 §六）
-P5 config+device-web 對接、P6 韌體升級共存+佈署自動化+維運（開機自啟已在 P4.2 完成）。真實部署各區改 IGMP join 真實組播 group（取代 PoC 的單播 port），termapp 改聽專屬中繼 group（改 config 一個值、非改 binary）。
+P4–P6 全部完成。真實部署剩：G.711U 現場聽覺確認、（可選）REST token 產品化（隨機 token/對接原廠帳號體系）、與原廠需求單路線的取捨決策（評估文件 §八）。真實部署各區改 IGMP join 真實組播 group（取代 PoC 的單播 port），termapp 改聽專屬中繼 group（改 config 一個值、非改 binary）。
