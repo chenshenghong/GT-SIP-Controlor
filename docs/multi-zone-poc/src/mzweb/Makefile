@@ -26,6 +26,7 @@ COMPAT_TEST_mzcert = mzcert.c $(MBEDTLS_SRC)
 # mzhash 需要 mbedtls_ctr_drbg 產 salt，其熵源 mbedtls_hardware_poll() 由 mzcert.c 提供
 # （精簡 config 開 MBEDTLS_ENTROPY_HARDWARE_ALT，故連 mzhash 單元測試也需連進這顆符號）。
 COMPAT_TEST_mzhash = mzhash.c mzcert.c $(MBEDTLS_SRC)
+COMPAT_TEST_mzio_core = mzio_core.c
 COMPAT_TEST_webapi_tls = event.c webapi.c socketbase.c mzcert.c $(MBEDTLS_SRC)
 # test_webapi 用縮短的 idle timeout/清掃週期，讓 http_test.py 的 slow-loris 斷言免等 30s。
 # 僅作用於此測試二進位；production arm/x86 目標編 webapi.c 不帶此旗標，維持預設 30000ms。
