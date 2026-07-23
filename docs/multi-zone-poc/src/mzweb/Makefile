@@ -20,6 +20,7 @@ COMPAT_TEST_event = event.c
 # webapi.c 現在含 :443 TLS 終結（引用 mbedTLS＋mzcert），連 :80-only 測試也須連進這些單元。
 COMPAT_TEST_webapi = event.c webapi.c socketbase.c mzcert.c $(MBEDTLS_SRC)
 COMPAT_TEST_readtemp = readtemp.c
+COMPAT_TEST_txio = mzweb_txio.c mzsdk.c cjson_vendor.c keyvaluefile.c
 COMPAT_TEST_mbedtls_smoke = $(MBEDTLS_SRC)
 COMPAT_TEST_mzcert = mzcert.c $(MBEDTLS_SRC)
 # mzhash 需要 mbedtls_ctr_drbg 產 salt，其熵源 mbedtls_hardware_poll() 由 mzcert.c 提供
