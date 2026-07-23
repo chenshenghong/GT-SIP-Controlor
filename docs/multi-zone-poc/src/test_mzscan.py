@@ -218,5 +218,48 @@ class TestReconcile(unittest.TestCase):
         self.assertEqual(r["mac_mismatch"], [])
 
 
+PROBE_OUT = """===MD5TERMAPP===
+b0eed3b30bd4fa4f1599a9475296fb6d  /opt/termapp
+===MD5SIPWEB===
+abc123abc123abc123abc123abc12345  /etc/sipweb/sipweb
+===FILES===
+/opt/mzrelay3
+/etc/init.d/S21mzrelay
+===PS===
+ 1234 root     mzrelay3
+===DF===
+Filesystem           1K-blocks      Used Available Use% Mounted on
+/dev/root                11264      6144      5120  55% /
+===OPTWRITE===
+WRITE_OK
+===TERMCFG===
+MULTICAST_ADDRESS=239.192.1.1:2000
+===LOOPBACK80===
+HTTP/1.1 403 Forbidden
+===END===
+"""
+
+class TestParseProbe(unittest.TestCase):
+    def test_full_parse(self):
+        f = mzscan.parse_probe_output(PROBE_OUT)
+        self.assertEqual(f["termapp_md5"], "b0eed3b30bd4fa4f1599a9475296fb6d")
+        self.assertEqual(f["sipweb_md5"], "abc123abc123abc123abc123abc12345")
+        self.assertTrue(f["sidecar_relay_bin"])
+        self.assertTrue(f["sidecar_relay_running"])
+        self.assertTrue(f["sidecar_init"])
+        self.assertTrue(f["opt_writable"])
+        self.assertEqual(f["opt_free_kb"], 5120)
+        self.assertTrue(f["loopback80_403"])
+        self.assertEqual(f["termapp_multicast_addr"], "239.192.1.1:2000")
+    def test_missing_sections_are_none(self):
+        f = mzscan.parse_probe_output("===MD5TERMAPP===\ngarbage no md5\n===END===\n")
+        self.assertIsNone(f["termapp_md5"])
+        self.assertIsNone(f["opt_writable"])
+        self.assertIsNone(f["opt_free_kb"])
+    def test_write_fail(self):
+        f = mzscan.parse_probe_output("===OPTWRITE===\nWRITE_FAIL\n===END===\n")
+        self.assertIs(f["opt_writable"], False)
+
+
 if __name__ == "__main__":
     unittest.main()

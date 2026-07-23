@@ -198,3 +198,54 @@ def reconcile(expected, discovered):
                 "seen_mac": d.get("mac")
             })
     return out
+
+
+# 單次 SSH 往返收齊全部設備側事實（busybox sh 相容）。TERMCFG 命令為 Task 8 真機實查後的定稿：
+# 初值先用 grep 掃 /opt 常見 config；.70 實查若得出確切檔案路徑則改為直讀該檔。
+PROBE_CMD = (
+    'echo "===MD5TERMAPP==="; md5sum /opt/termapp 2>&1;'
+    'echo "===MD5SIPWEB==="; md5sum /etc/sipweb/sipweb 2>&1;'
+    'echo "===FILES==="; ls /opt/mzrelay3 /etc/init.d/S21mzrelay 2>/dev/null;'
+    'echo "===PS==="; ps | grep mzrelay3 | grep -v grep;'
+    'echo "===DF==="; df /opt 2>&1;'
+    'echo "===OPTWRITE==="; F=/opt/.mzscan.$$;'
+    ' if [ -e "$F" ]; then echo EXISTS; else (touch "$F" && rm "$F" && echo WRITE_OK) 2>/dev/null'
+    ' || echo WRITE_FAIL; fi;'
+    'echo "===TERMCFG==="; grep -rh "MULTICAST_ADDRESS" /opt 2>/dev/null | head -3;'
+    'echo "===LOOPBACK80==="; printf "GET /auth/login HTTP/1.1\\r\\nHost:127.0.0.1\\r\\n'
+    'Connection: close\\r\\n\\r\\n" | nc 127.0.0.1 80 2>/dev/null | head -1;'
+    'echo "===END==="'
+)
+
+_MD5_RE = re.compile(r"^([0-9a-f]{32})\s", re.M)
+
+def _sections(out):
+    parts = re.split(r"===([A-Z0-9]+)===\n?", out)
+    # parts = [prefix, TAG, body, TAG, body, ...]
+    return {parts[i]: parts[i + 1] for i in range(1, len(parts) - 1, 2)}
+
+def parse_probe_output(out):
+    s = _sections(out)
+    f = dict.fromkeys(("termapp_md5", "sipweb_md5", "sidecar_relay_bin",
+                       "sidecar_relay_running", "sidecar_init", "opt_writable",
+                       "opt_free_kb", "loopback80_403", "termapp_multicast_addr"))
+    for tag, key in (("MD5TERMAPP", "termapp_md5"), ("MD5SIPWEB", "sipweb_md5")):
+        m = _MD5_RE.search(s.get(tag, ""))
+        f[key] = m.group(1) if m else None
+    if "FILES" in s:
+        f["sidecar_relay_bin"] = "/opt/mzrelay3" in s["FILES"]
+        f["sidecar_init"] = "/etc/init.d/S21mzrelay" in s["FILES"]
+    if "PS" in s:
+        f["sidecar_relay_running"] = "mzrelay3" in s["PS"]
+    if "DF" in s:
+        m = re.search(r"^\S+\s+\d+\s+\d+\s+(\d+)\s", s["DF"], re.M)
+        f["opt_free_kb"] = int(m.group(1)) if m else None
+    if "OPTWRITE" in s:
+        body = s["OPTWRITE"]
+        f["opt_writable"] = True if "WRITE_OK" in body else (False if "WRITE_FAIL" in body else None)
+    if "TERMCFG" in s:
+        m = re.search(r"MULTICAST_ADDRESS\s*=\s*(\S+)", s["TERMCFG"])
+        f["termapp_multicast_addr"] = m.group(1) if m else None
+    if "LOOPBACK80" in s and s["LOOPBACK80"].strip():
+        f["loopback80_403"] = "403" in s["LOOPBACK80"].splitlines()[0]
+    return f
