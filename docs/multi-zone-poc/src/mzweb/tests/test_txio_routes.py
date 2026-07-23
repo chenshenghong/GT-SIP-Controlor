@@ -76,8 +76,17 @@ try:
         assert b"A003" in e.read()
     print("[3] no-token POST /set/io/config -> 401 A003 OK")
 
-    # 4) 帶有效 token POST /set/multicast/tx（任意 body）→ 200 + success（stub）
-    req = urllib.request.Request("http://127.0.0.1:80/set/multicast/tx", data=b'{}', headers=H)
+    # 4) 帶有效 token POST /set/multicast/tx（合法 payload；Task 3 起 handler 已填實，
+    #    非 stub，故需帶四個必要欄位才能驗到 success）→ 200 + success
+    req = urllib.request.Request(
+        "http://127.0.0.1:80/set/multicast/tx",
+        data=json.dumps({
+            "multicast_address": "225.1.1.2",
+            "multicast_port": 9001,
+            "enabled": True,
+            "audio_codec": "G.722",
+        }).encode(),
+        headers=H)
     raw = urllib.request.urlopen(req, timeout=5).read()
     assert b"success" in raw, raw
     print("[4] with-token POST /set/multicast/tx -> 200 success OK")

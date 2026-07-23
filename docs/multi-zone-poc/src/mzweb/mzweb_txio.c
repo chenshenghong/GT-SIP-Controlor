@@ -139,8 +139,83 @@ static void txio_send_success(void* client)
 /* --- handlers：Task 3（set_tx）/ Task 4（add_tx_*）/ Task 5（get_io/set_io）填實 --- */
 void mzweb_txio_set_tx(void* client, const char* content, int content_len)
 {
-    (void)content; (void)content_len;
-    txio_send_success(client);
+    const char* code = NULL;
+    const char* msg = NULL;
+    cJSON* root = NULL;
+    struct key_value_file* kv = NULL;
+    do
+    {
+        if (content == NULL || content_len == 0)
+            { msg = MZTXIO_MSG_EMPTY; code = "E001"; break; }
+        root = cJSON_Parse(content, content_len);
+        if (root == NULL)
+            { msg = MZTXIO_MSG_BADJSON; code = "E001"; break; }
+
+        cJSON* addr = cJSON_GetObjectItem(root, "multicast_address");
+        cJSON* port = cJSON_GetObjectItem(root, "multicast_port");
+        cJSON* enabled = cJSON_GetObjectItem(root, "enabled");
+        cJSON* codec = cJSON_GetObjectItem(root, "audio_codec");
+        if (addr == NULL || port == NULL || enabled == NULL || codec == NULL)
+            { msg = MZTXIO_MSG_MISSKEY; code = "E001"; break; }
+        if (!cJSON_IsString(addr) || !cJSON_IsNumber(port) ||
+            !cJSON_IsBool(enabled) || !cJSON_IsString(codec))
+            { msg = MZTXIO_MSG_BADTYPE; code = "E001"; break; }
+
+        const char* ip = cJSON_GetStringValue(addr);
+        if (!mztxio_valid_mcast_addr(ip))
+            { msg = MZTXIO_MSG_BAD_ADDR; code = "E001"; break; }
+        if (!mztxio_valid_port(port->valueint))
+            { msg = MZTXIO_MSG_BAD_PORT; code = "E001"; break; }
+        /* v1 codec 白名單僅 G.722（MTX-05；欄位保留為對稱/擴充） */
+        if (strcmp(cJSON_GetStringValue(codec), "G.722") != 0)
+            { msg = MZTXIO_MSG_BAD_CODEC; code = "E001"; break; }
+
+        kv = read_keyvalue_file(MZTXIO_IFCFG);
+        if (kv == NULL) { msg = MZTXIO_MSG_FAIL; code = "E001"; break; }
+
+        /* MTX-06 迴授防護：TX 目標 == 本機 RX 且要啟動 → 拒絕 */
+        if (cJSON_IsTrue(enabled))
+        {
+            const char* rx_addr = find_key_value(kv, "MULTICAST_ADDRESS");
+            const char* rx_port = find_key_value(kv, "MULTICAST_PORT");
+            char port_str[16] = {0};
+            snprintf(port_str, sizeof(port_str), "%d", port->valueint);
+            if (rx_addr != NULL && rx_port != NULL &&
+                strcmp(rx_addr, ip) == 0 && strcmp(rx_port, port_str) == 0)
+                { msg = MZTXIO_MSG_LOOPBACK; code = "E001"; break; }
+        }
+
+        /* save_flag 落盤（照原廠模式）：值有變才寫檔＋通知 */
+        int save_flag = 0;
+        char port_str[16] = {0};
+        snprintf(port_str, sizeof(port_str), "%d", port->valueint);
+        const char* en_str = cJSON_IsTrue(enabled) ? "true" : "false";
+        const char* pairs[4][2] = {
+            { "MULTICAST_TX_ADDRESS", ip },
+            { "MULTICAST_TX_PORT",    port_str },
+            { "MULTICAST_TX_ENABLED", en_str },
+            { "MULTICAST_TX_CODEC",   cJSON_GetStringValue(codec) },
+        };
+        int i;
+        for (i = 0; i < 4; i++)
+        {
+            const char* cur = find_key_value(kv, pairs[i][0]);
+            if (cur == NULL)          { add_key_value(kv, pairs[i][0], pairs[i][1]); save_flag = 1; }
+            else if (strcmp(cur, pairs[i][1]) != 0)
+                                      { modify_key_value(kv, pairs[i][0], pairs[i][1]); save_flag = 1; }
+        }
+        if (save_flag)
+        {
+            write_keyvalue_file(MZTXIO_IFCFG, kv);
+            mzsdk_send("{\"command\": \"set_sip_multicast_tx\",\"cseq\": 1}\r\n\r\n");
+        }
+        break;
+    } while (1);
+
+    if (kv != NULL) free_keyvalue_file(kv);
+    if (root != NULL) cJSON_Delete(root);
+    if (code != NULL) txio_send_error(client, code, msg);
+    else              txio_send_success(client);
 }
 void mzweb_txio_get_io(void* client) { txio_send_success(client); }
 void mzweb_txio_set_io(void* client, const char* content, int content_len)
