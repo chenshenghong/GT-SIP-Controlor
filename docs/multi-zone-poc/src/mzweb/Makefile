@@ -13,7 +13,7 @@ MBEDTLS_SRC = $(wildcard mbedtls/library/*.c)
 MBEDTLS_INC = -Imbedtls/include -DMBEDTLS_CONFIG_FILE='"mzweb_mbedtls_config.h"'
 COMPAT  += $(MBEDTLS_SRC)
 CFLAGS  += $(MBEDTLS_INC)
-APPSRC   = build/websetsip.c build/main.c mzweb_zones.c serve_index.c
+APPSRC   = build/websetsip.c build/main.c mzweb_zones.c serve_index.c mzweb_txio.c mzsdk.c
 COMPAT_TEST_keyvaluefile = keyvaluefile.c
 COMPAT_TEST_cjson = cjson_vendor.c
 COMPAT_TEST_event = event.c
@@ -49,6 +49,7 @@ build/websetsip.c: ../../../firmware-reference/websetsip.c websetsip-p7.patch
 	cp ../../../firmware-reference/main.c build/main.c
 	cp ../../../firmware-reference/websetsip.h build/websetsip.h
 	patch build/websetsip.c < websetsip-p7.patch
+	python3 txio_inject.py build/websetsip.c
 
 arm-mzweb: build/websetsip.c
 	$(CC_ARM) $(CFLAGS) -o build/mzweb-arm $(APPSRC) $(COMPAT)
