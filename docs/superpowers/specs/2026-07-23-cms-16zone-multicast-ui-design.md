@@ -57,7 +57,7 @@ export interface MulticastZone {
 // 能力偵測＋載入合一：一次探測回三態判別結果（供 composable 與表載入共用）。
 export type ZonesProbe =
   | { status: 'zones'; zones: MulticastZone[] }  // 支援：非空 zones 陣列
-  | { status: 'unsupported' }                    // 確定的舊韌體：RESP_PARSE / 解析成物件但無 zones / 空陣列
+  | { status: 'unsupported' }                    // 確定的舊韌體：HTTP 404 路由不存在 / 解析成物件但無 zones / 空陣列
   | { status: 'error' }                          // 傳輸失敗/逾時（已重試一次仍失敗）
 export async function probeSipMulticastZones(ip: string): Promise<ZonesProbe>
 
@@ -69,8 +69,8 @@ export async function setSipMulticastZones(
 
 - `probeSipMulticastZones`：`GET /get/sip/multicast/zones`，沿用 `deviceApi` 既有 https-first/token/GBK 修復管線。**須區分「舊韌體」與「傳輸失敗」**（斷鏈防護，見 §六 S2）：
   - 成功且回應含**非空** `zones` 陣列 → `{status:'zones', zones}`。
-  - 成功但解析成物件卻無 `zones`／空陣列，或 `ApiError.code==="RESP_PARSE"`（舊韌體對未知路徑回非 JSON）→ `{status:'unsupported'}`。
-  - `TIMEOUT`／傳輸/網路失敗 → **重試一次（~800ms）**後仍失敗 → `{status:'error'}`。
+  - 成功但解析成物件卻無 `zones`／空陣列，或 **HTTP 404**（路由不存在＝確定舊韌體）→ `{status:'unsupported'}`。
+  - **401/403/5xx（尤其 mzweb 於 mzrelay3 暫時不可用回的 503）／逾時／傳輸失敗 → `{status:'error'}`**（安全占位、不暴露單槽卡；`error` 時**重試一次（~800ms）**後仍失敗才定案）。⚠ 非 404 的 HTTP 錯誤絕不判 'unsupported'，否則 capable 設備瞬時 503 會誤顯危險單槽卡→斷鏈。
   - 判別（success/error 正規化後）交由純函式 `classifyZonesProbe`（§八）決定，供 jest 單測。
 - `setSipMulticastZones`：`POST /set/sip/multicast/zones`，body `{ zones }`（整表 16 筆；mzrelay3 亦接受 partial=缺 zone_id 保留現值，但 CMS 恆送全表）。**不走既有 `postRetry`**（其只回 boolean、丟棄 body，無法顯示 E001 指名的 zone），改用專用 axios 呼叫取完整解析 body。伺服器恆 HTTP 200：
   - 成功 `{"status":"success",...}` → `{ok:true}`。
@@ -121,9 +121,13 @@ export function validateZones(zones: MulticastZone[]): { zone_id: number; messag
 export function serializeZones(zones: MulticastZone[]): MulticastZone[]
 
 // 能力偵測判別（純函式，供 probeSipMulticastZones 與 jest 共用）。
-// 輸入為正規化後的 probe 結果：成功帶 data；失敗帶 ApiError code。
+// 輸入為正規化後的 probe 結果：ok=true 帶 zones；ok=false 帶 httpStatus（若設備有回應）。
+// 規則（安全方向，防斷鏈）：ok+非空 zones→'zones'；ok+空/無 zones→'unsupported'；
+//   HTTP 404（路由不存在＝確定舊韌體）→'unsupported'；401/403/5xx/逾時/無回應→'error'。
+//   ⚠ 關鍵：非 404 的 HTTP 錯誤（尤其 mzweb 於 mzrelay3 暫時不可用時回的 503）**不得**判 'unsupported'，
+//   否則會在 capable 設備上誤顯危險單槽卡→斷鏈。
 export function classifyZonesProbe(
-  r: { data?: unknown } | { errorCode?: string }
+  r: { ok?: boolean; zones?: unknown; httpStatus?: number }
 ): 'zones' | 'unsupported' | 'error'
 ```
 
@@ -135,7 +139,7 @@ export function classifyZonesProbe(
   - `normalizeZones`：少於 16 筆補滿、亂序/缺漏 zone_id 正確補位、null → 16 筆佔位、**含 null entry / zone_id==null 的髒陣列被過濾不汙染**。
   - `validateZones`：位址邊界(223/224/239/240)、**非法 dotted-quad（`224.500.1.1`、`224.256`、少段、非數字）被擋**、埠邊界(1023/1024/65535/65536)、優先權邊界(0/1/16/17、非整數)、codec 必選、佔位列略過、touched（停用但有值）仍驗、啟用區優先權重複偵測、多重錯誤聚合。
   - `serializeZones`：預設值套用（空 codec→G.722、空 port/prio→0）。
-  - `classifyZonesProbe`：`{data:{zones:[...]}}→'zones'`、`{data:{zones:[]}}→'unsupported'`、`{data:{}}→'unsupported'`、`{errorCode:'RESP_PARSE'}→'unsupported'`、`{errorCode:'TIMEOUT'}→'error'`。
+  - `classifyZonesProbe`：`{ok:true,zones:[...]}→'zones'`、`{ok:true,zones:[]}→'unsupported'`、`{ok:false,httpStatus:404}→'unsupported'`、`{ok:false,httpStatus:500}→'error'`、`{ok:false,httpStatus:401/403}→'error'`、`{ok:false}(無回應)→'error'`。**500→'error' 為斷鏈防護核心斷言（不得回退成 'unsupported'）**。
 - deviceApi（`probeSipMulticastZones`/`setSipMulticastZones`）：核心判別/解析已抽為純函式（`classifyZonesProbe`、E001 `message` 的 `errorZoneId` regex）單測；axios 層（重試、body 解析）以既有 deviceApi 測試模式覆蓋或靠真機驗收。
 - 元件/composable：純模組已涵蓋核心邏輯；元件層靠手動 + 真機驗收（能力四態、單槽卡隱藏、error 態重新偵測、E001 alert）。
 
