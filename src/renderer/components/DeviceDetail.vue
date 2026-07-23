@@ -110,30 +110,42 @@
 
         <hr class="section-divider" />
 
-        <h3>組播接收 (Multicast)</h3>
-        <div class="form-grid" @input="dirty.multicast = true" @change="dirty.multicast = true">
-          <div class="form-group">
-            <label>Multicast Address</label>
-            <input v-model="multicastForm.multicast_address" placeholder="239.168.12.1" />
-          </div>
-          <div class="form-group">
-            <label>Port</label>
-            <input v-model.number="multicastForm.multicast_port" type="number" placeholder="2000" />
-          </div>
-          <div class="form-group">
-            <label>Codec</label>
-            <select v-model="multicastForm.audio_codec">
-              <option value="G.722">G.722</option>
-              <option value="Opus">Opus</option>
-              <option value="G.711 uLaw">G.711 uLaw</option>
-              <option value="G.711 aLaw">G.711 aLaw</option>
-            </select>
-          </div>
-          <div class="form-group checkbox">
-            <label><input type="checkbox" v-model="multicastForm.enabled" /> 啟用組播</label>
-          </div>
+        <div v-if="zonesCapable === 'unknown'" class="mz-probe">偵測組播能力中…</div>
+        <div v-else-if="zonesCapable === 'error'" class="mz-probe">
+          組播能力偵測失敗。<button class="link-btn" @click="reprobeZones">重新偵測</button>
         </div>
-        <button class="primary-btn" @click="handleSetMulticast">儲存組播設定</button>
+        <template v-else-if="zonesCapable === 'unsupported'">
+          <h3>組播接收 (Multicast)</h3>
+          <div class="form-grid" @input="dirty.multicast = true" @change="dirty.multicast = true">
+            <div class="form-group">
+              <label>Multicast Address</label>
+              <input v-model="multicastForm.multicast_address" placeholder="239.168.12.1" />
+            </div>
+            <div class="form-group">
+              <label>Port</label>
+              <input v-model.number="multicastForm.multicast_port" type="number" placeholder="2000" />
+            </div>
+            <div class="form-group">
+              <label>Codec</label>
+              <select v-model="multicastForm.audio_codec">
+                <option value="G.722">G.722</option>
+                <option value="Opus">Opus</option>
+                <option value="G.711 uLaw">G.711 uLaw</option>
+                <option value="G.711 aLaw">G.711 aLaw</option>
+              </select>
+            </div>
+            <div class="form-group checkbox">
+              <label><input type="checkbox" v-model="multicastForm.enabled" /> 啟用組播</label>
+            </div>
+          </div>
+          <button class="primary-btn" @click="handleSetMulticast">儲存組播設定</button>
+        </template>
+        <!-- zonesCapable === 'zones'：不渲染單槽卡（改由『組播監聽區』分頁管理，防斷鏈） -->
+      </div>
+
+      <!-- Multicast Zones Tab -->
+      <div v-if="activeTab === 'mzone' && zonesCapable === 'zones'" class="tab-panel">
+        <MulticastZones :ip="device.ip" :initial-zones="zonesData" />
       </div>
 
       <!-- Call Tab -->
@@ -188,7 +200,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, toRef, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, toRef, computed, watch, onMounted, onUnmounted } from 'vue'
 import type { DeviceNode } from '@shared/types'
 import { useDevicePolling } from '@/composables/useDevicePolling'
 import {
@@ -196,6 +208,8 @@ import {
   callControl, setNetworkConfig, restartDevice,
   loginToDevice, getDeviceVolume, getSipConfig, getNetworkConfig,
 } from '@/composables/deviceApi'
+import MulticastZones from '@/components/MulticastZones.vue'
+import { useMulticastZonesCapability } from '@/composables/useMulticastZonesCapability'
 
 const props = defineProps<{ device: DeviceNode }>()
 const emit = defineEmits<{
@@ -203,17 +217,29 @@ const emit = defineEmits<{
   reconnect: [newIp: string]
 }>()
 
-const tabs = [
-  { id: 'status', label: '📊 狀態監控' },
-  { id: 'audio', label: '🔊 音頻控制' },
-  { id: 'sip', label: '📡 SIP / 組播' },
-  { id: 'call', label: '📞 通話控制' },
-  { id: 'network', label: '🌐 網路設定' },
-]
+const tabs = computed(() => {
+  const base = [
+    { id: 'status', label: '📊 狀態監控' },
+    { id: 'audio', label: '🔊 音頻控制' },
+    { id: 'sip', label: '📡 SIP / 組播' },
+    { id: 'call', label: '📞 通話控制' },
+    { id: 'network', label: '🌐 網路設定' },
+  ]
+  if (zonesCapable.value === 'zones') {
+    base.splice(3, 0, { id: 'mzone', label: '📡 組播監聽區' })
+  }
+  return base
+})
 
 const activeTab = ref('status')
 const deviceIp = toRef(() => props.device.ip)
 const polling = useDevicePolling(deviceIp)
+const { capable: zonesCapable, zones: zonesData, reprobe: reprobeZones } =
+  useMulticastZonesCapability(deviceIp)
+
+watch(zonesCapable, (v) => {
+  if (activeTab.value === 'mzone' && v !== 'zones') activeTab.value = 'status'
+})
 
 // Form states
 const audioForm = reactive({ broadcast_volume: props.device.playVol, microphone_volume: props.device.captureVol })
@@ -428,4 +454,7 @@ async function handleRestart() {
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
 
 @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+
+.mz-probe { color: #8b9dc3; font-size: 0.85rem; padding: 12px 0; }
+.link-btn { background: none; border: none; color: #4edea3; cursor: pointer; text-decoration: underline; padding: 0; }
 </style>
