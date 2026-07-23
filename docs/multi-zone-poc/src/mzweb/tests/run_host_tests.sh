@@ -24,6 +24,10 @@ exec docker run --rm --platform linux/amd64 -v "$PWD":/src -w /src python:3.12-a
     echo "== tests/test_txio_settx.py"
     if ! python3 tests/test_txio_settx.py; then echo "FAIL: tests/test_txio_settx.py"; rc=1; fi
   fi
+  if [ -x build/mzweb-x86 ] && [ -f tests/test_txio_io.py ]; then
+    echo "== tests/test_txio_io.py"
+    if ! python3 tests/test_txio_io.py; then echo "FAIL: tests/test_txio_io.py"; rc=1; fi
+  fi
   if [ -x build/test_webapi_tls ] && [ -f tests/https_test.py ]; then
     echo "== tests/https_test.py"
     if ! python3 tests/https_test.py; then echo "FAIL: tests/https_test.py"; rc=1; fi

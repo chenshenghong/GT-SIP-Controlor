@@ -2,6 +2,8 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <signal.h>   /* kill(SIGHUP) */
+#include <unistd.h>   /* rename/unlink 於 stdio；getpid 不需 */
 #include "cjson.h"
 #include "keyvaluefile.h"
 #include "webapi.h"
@@ -136,6 +138,79 @@ static void txio_send_success(void* client)
         "{\"status\": \"success\",\"message\": \"" MZTXIO_MSG_OK "\",\"data\": {}}");
 }
 
+/* --- IO 出廠預設表（Task 5） --- */
+
+/* 出廠預設 io_config（gpio 對映唯一真相之 web 側鏡像；mzio 端常數表見 mzio_core.c，
+ * 兩處以 tests/test_mzio_core.c 的一致性斷言互鎖）。回傳新建 cJSON 陣列（caller 擁有）。 */
+static cJSON* txio_default_io_config(void)
+{
+    static const struct { int id; const char* gpio; const char* mode;
+                          const char* trig; int db; const char* atype; const char* aparam; }
+    defs[6] = {
+        { 1, "",         "disabled", "edge",  30, "hangup",        ""    },
+        { 2, "GPIO5_5",  "input",    "level", 30, "multicast_ptt", "300" },
+        { 3, "GPIO1_6",  "disabled", "edge",  30, "hangup",        ""    },
+        { 4, "",         "disabled", "edge",  30, "hangup",        ""    },
+        { 5, "",         "disabled", "edge",  30, "hangup",        ""    },
+        { 6, "",         "disabled", "edge",  30, "hangup",        ""    },
+    };
+    cJSON* arr = cJSON_CreateArray();
+    int i;
+    for (i = 0; i < 6; i++)
+    {
+        cJSON* row = cJSON_CreateObject();
+        cJSON_AddNumberToObject(row, "id", defs[i].id);
+        cJSON_AddStringToObject(row, "gpio", defs[i].gpio);
+        cJSON_AddStringToObject(row, "mode", defs[i].mode);
+        cJSON_AddStringToObject(row, "contact", "NO");
+        cJSON_AddStringToObject(row, "trigger", defs[i].trig);
+        cJSON_AddNumberToObject(row, "debounce_ms", defs[i].db);
+        cJSON* act = cJSON_AddObjectToObject(row, "action");
+        cJSON_AddStringToObject(act, "type", defs[i].atype);
+        cJSON_AddStringToObject(act, "param", defs[i].aparam);
+        cJSON_AddItemToArray(arr, row);
+    }
+    return arr;
+}
+
+/* 讀整個檔案進 malloc buffer（回傳 NULL=不存在/失敗；out_len 可 NULL） */
+static char* txio_read_file(const char* path, int* out_len)
+{
+    FILE* f = fopen(path, "rb");
+    long sz;
+    char* buf;
+    if (f == NULL) return NULL;
+    if (fseek(f, 0, SEEK_END) != 0 || (sz = ftell(f)) < 0 || sz > 65536 ||
+        fseek(f, 0, SEEK_SET) != 0) { fclose(f); return NULL; }
+    buf = (char*)malloc((size_t)sz + 1);
+    if (buf == NULL) { fclose(f); return NULL; }
+    if (fread(buf, 1, (size_t)sz, f) != (size_t)sz) { fclose(f); free(buf); return NULL; }
+    fclose(f);
+    buf[sz] = 0;
+    if (out_len != NULL) *out_len = (int)sz;
+    return buf;
+}
+
+/* 讀 mzio.json → cJSON 陣列；無檔/壞檔 → 預設表 */
+static cJSON* txio_load_io_config(void)
+{
+    int len = 0;
+    char* buf = txio_read_file(MZIO_JSON, &len);
+    if (buf != NULL)
+    {
+        cJSON* root = cJSON_Parse(buf, len);
+        free(buf);
+        if (root != NULL)
+        {
+            cJSON* arr = cJSON_DetachItemFromObject(root, "io_config");
+            cJSON_Delete(root);
+            if (arr != NULL && cJSON_IsArray(arr)) return arr;
+            if (arr != NULL) cJSON_Delete(arr);
+        }
+    }
+    return txio_default_io_config();
+}
+
 /* --- handlers：Task 3（set_tx）/ Task 4（add_tx_*）/ Task 5（get_io/set_io）填實 --- */
 void mzweb_txio_set_tx(void* client, const char* content, int content_len)
 {
@@ -217,11 +292,136 @@ void mzweb_txio_set_tx(void* client, const char* content, int content_len)
     if (code != NULL) txio_send_error(client, code, msg);
     else              txio_send_success(client);
 }
-void mzweb_txio_get_io(void* client) { txio_send_success(client); }
+void mzweb_txio_get_io(void* client)
+{
+    cJSON* arr = txio_load_io_config();
+    cJSON* state_root = NULL;
+    int state_len = 0;
+    char* state_buf = txio_read_file(MZIO_STATE, &state_len);
+    cJSON* row;
+
+    if (state_buf != NULL)
+    {
+        state_root = cJSON_Parse(state_buf, state_len);
+        free(state_buf);
+    }
+
+    cJSON_ArrayForEach(row, arr)
+    {
+        cJSON* id = cJSON_GetObjectItem(row, "id");
+        int st = 0;
+        if (id != NULL && state_root != NULL)
+        {
+            char key[16];
+            cJSON* sv;
+            snprintf(key, sizeof(key), "%d", id->valueint);
+            sv = cJSON_GetObjectItem(state_root, key);
+            if (sv != NULL && cJSON_IsNumber(sv)) st = sv->valueint;
+        }
+        cJSON_AddNumberToObject(row, "state", st);
+    }
+    if (state_root != NULL) cJSON_Delete(state_root);
+
+    {
+        cJSON* root = cJSON_CreateObject();
+        char* body;
+        cJSON_AddItemToObject(root, "io_config", arr);
+        body = cJSON_PrintUnformatted(root);
+        txio_send_json(client, body != NULL ? body : "{\"io_config\":[]}");
+        if (body != NULL) free(body);
+        cJSON_Delete(root);
+    }
+}
+
 void mzweb_txio_set_io(void* client, const char* content, int content_len)
 {
-    (void)content; (void)content_len;
-    txio_send_success(client);
+    const char* code = NULL;
+    const char* msg = NULL;
+    cJSON* root = NULL;
+    cJSON* posted = NULL;
+    cJSON* merged = NULL;
+    do
+    {
+        cJSON* row;
+
+        if (content == NULL || content_len == 0)
+            { msg = MZTXIO_MSG_EMPTY; code = "E001"; break; }
+        root = cJSON_Parse(content, content_len);
+        if (root == NULL)
+            { msg = MZTXIO_MSG_BADJSON; code = "E001"; break; }
+        posted = cJSON_GetObjectItem(root, "io_config");
+
+        if (!mztxio_validate_io_config(posted, &msg))
+            { code = "E001"; break; }
+
+        merged = txio_load_io_config();
+        cJSON_ArrayForEach(row, merged)
+        {
+            cJSON* id = cJSON_GetObjectItem(row, "id");
+            cJSON* prow;
+            if (id == NULL) continue;
+            cJSON_ArrayForEach(prow, posted)
+            {
+                cJSON* pid = cJSON_GetObjectItem(prow, "id");
+                cJSON* v;
+                if (pid == NULL || pid->valueint != id->valueint) continue;
+                v = cJSON_GetObjectItem(prow, "mode");
+                if (v != NULL) { cJSON_ReplaceItemInObject(row, "mode", cJSON_Duplicate(v, 1)); }
+                v = cJSON_GetObjectItem(prow, "contact");
+                if (v != NULL) { cJSON_ReplaceItemInObject(row, "contact", cJSON_Duplicate(v, 1)); }
+                v = cJSON_GetObjectItem(prow, "trigger");
+                if (v != NULL) { cJSON_ReplaceItemInObject(row, "trigger", cJSON_Duplicate(v, 1)); }
+                v = cJSON_GetObjectItem(prow, "debounce_ms");
+                if (v != NULL) { cJSON_ReplaceItemInObject(row, "debounce_ms", cJSON_Duplicate(v, 1)); }
+                v = cJSON_GetObjectItem(prow, "action");
+                if (v != NULL) { cJSON_ReplaceItemInObject(row, "action", cJSON_Duplicate(v, 1)); }
+                break;
+            }
+        }
+
+        {
+            cJSON* out_root = cJSON_CreateObject();
+            char* body;
+            FILE* f;
+            const char* tmp_path = MZIO_JSON ".tmp";
+            cJSON_AddItemToObject(out_root, "io_config", cJSON_Duplicate(merged, 1));
+            body = cJSON_PrintUnformatted(out_root);
+            cJSON_Delete(out_root);
+            if (body == NULL) { msg = MZTXIO_MSG_FAIL; code = "E001"; break; }
+
+            f = fopen(tmp_path, "wb");
+            if (f == NULL) { free(body); msg = MZTXIO_MSG_FAIL; code = "E001"; break; }
+            if (fwrite(body, 1, strlen(body), f) != strlen(body))
+                { free(body); fclose(f); msg = MZTXIO_MSG_FAIL; code = "E001"; break; }
+            free(body);
+            fflush(f);
+            fsync(fileno(f));
+            fclose(f);
+            if (rename(tmp_path, MZIO_JSON) != 0)
+                { msg = MZTXIO_MSG_FAIL; code = "E001"; break; }
+        }
+
+        {
+            int len = 0;
+            char* pidbuf = txio_read_file(MZIO_PIDFILE, &len);
+            if (pidbuf != NULL)
+            {
+                int pid = atoi(pidbuf);
+                free(pidbuf);
+                if (pid > 1)
+                {
+                    if (kill((pid_t)pid, SIGHUP) != 0)
+                        fprintf(stderr, "mzweb_txio_set_io: kill(%d, SIGHUP) failed\n", pid);
+                }
+            }
+        }
+        break;
+    } while (1);
+
+    if (merged != NULL) cJSON_Delete(merged);
+    if (root != NULL) cJSON_Delete(root);
+    if (code != NULL) txio_send_error(client, code, msg);
+    else              txio_send_success(client);
 }
 void mzweb_txio_add_tx_config(cJSON* root, struct key_value_file* kv)
 {
