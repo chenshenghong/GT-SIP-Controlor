@@ -270,8 +270,6 @@ _SSH_OPTS = ["-p", str(SSH_PORT), "-oHostKeyAlgorithms=+ssh-rsa",
              "-oStrictHostKeyChecking=no", "-oUserKnownHostsFile=/dev/null",
              "-oConnectTimeout=8", "-oNumberOfPasswordPrompts=1", "-oLogLevel=ERROR"]
 
-REST_TOKEN = os.environ.get("MZSCAN_REST_TOKEN", "mzpoc-token")
-
 
 def dbp_sweep(broadcast, targets, timeout=4.0, retries=3):
     """broadcast=True 對 255.255.255.255 廣播；否則對 targets 逐台 unicast。回原始回應 dict 列表。"""
@@ -283,23 +281,25 @@ def dbp_sweep(broadcast, targets, timeout=4.0, retries=3):
     sock.settimeout(0.5)
     dests = ["255.255.255.255"] if broadcast else targets
     replies, deadline, next_send, sent = [], time.time() + timeout, 0.0, 0
-    while time.time() < deadline:
-        if sent < retries and time.time() >= next_send:
-            for d in dests:
-                try:
-                    sock.sendto(req, (d, DBP_PORT))
-                except OSError:
-                    pass
-            sent += 1
-            next_send = time.time() + 0.6
-        try:
-            data, _addr = sock.recvfrom(4096)
-            r = parse_dbp_reply(data)
-            if r:
-                replies.append(r)
-        except socket.timeout:
-            pass
-    sock.close()
+    try:
+        while time.time() < deadline:
+            if sent < retries and time.time() >= next_send:
+                for d in dests:
+                    try:
+                        sock.sendto(req, (d, DBP_PORT))
+                    except OSError:
+                        pass
+                sent += 1
+                next_send = time.time() + 0.6
+            try:
+                data, _addr = sock.recvfrom(4096)
+                r = parse_dbp_reply(data)
+                if r:
+                    replies.append(r)
+            except OSError:  # socket.timeout 是 OSError 子類，此捕捉包含廣播 unicast 時的 ConnectionRefusedError 等
+                pass
+    finally:
+        sock.close()
     return replies
 
 
@@ -312,7 +312,10 @@ def ssh_probe(ip, pw, timeout=15.0):
     argv = ["ssh", *_SSH_OPTS, "%s@%s" % (SSH_USER, ip), PROBE_CMD]
     pid, fd = pty.fork()
     if pid == 0:
-        os.execvp(argv[0], argv)
+        try:
+            os.execvp(argv[0], argv)
+        except OSError:
+            pass
         os._exit(127)
     buf, sent, deadline = b"", False, time.time() + timeout
     try:
@@ -351,6 +354,20 @@ def ssh_probe(ip, pw, timeout=15.0):
     return out, None
 
 
+def _parse_keyscan_line(line):
+    """Parse single ssh-keyscan output line, return SHA256 fingerprint or None if invalid."""
+    if line.startswith("#"):
+        return None
+    parts = line.split()
+    if len(parts) < 3:
+        return None
+    try:
+        digest = hashlib.sha256(base64.b64decode(parts[2])).digest()
+        return "SHA256:" + base64.b64encode(digest).decode().rstrip("=")
+    except (ValueError, Exception):  # ValueError/binascii.Error for malformed base64
+        return None
+
+
 def hostkey_fp(ip, timeout=8):
     """ssh-keyscan -t rsa → SHA256 指紋（base64 key 部分）。失敗回 None。"""
     try:
@@ -360,10 +377,9 @@ def hostkey_fp(ip, timeout=8):
     except (subprocess.TimeoutExpired, OSError):
         return None
     for line in out.splitlines():
-        parts = line.split()
-        if len(parts) >= 3 and not line.startswith("#"):
-            digest = hashlib.sha256(base64.b64decode(parts[2])).digest()
-            return "SHA256:" + base64.b64encode(digest).decode().rstrip("=")
+        fp = _parse_keyscan_line(line)
+        if fp:
+            return fp
     return None
 
 
@@ -383,9 +399,10 @@ def _http_get(url, headers=None, timeout=5, insecure=False):
 
 def http_probe(ip):
     """跳板機側 web/REST 行為探測（不持設備 web token、不登入）。"""
+    token = os.environ.get("MZSCAN_REST_TOKEN", "mzpoc-token")
     http80 = _http_get("http://%s/auth/login" % ip)
     https = _http_get("https://%s/get/device/status" % ip, insecure=True)
     rest = _http_get("http://%s:8090/get/sip/multicast/zones" % ip,
-                     headers={"Authorization": "Bearer " + REST_TOKEN})
+                     headers={"Authorization": "Bearer " + token})
     rest_ok = bool(rest and rest["status"] == 200 and rest["json"]) if rest is not None else None
     return {"http80": http80, "https": https, "rest8090_ok": rest_ok}

@@ -282,5 +282,31 @@ some===WEIRD===line should not split here
         self.assertIsNone(f["opt_writable"])
 
 
+class TestParseKeyscanLine(unittest.TestCase):
+    def test_comment_line(self):
+        """ssh-keyscan output comment line → None"""
+        line = "# SSH-2.0-OpenSSH_7.4"
+        self.assertIsNone(mzscan._parse_keyscan_line(line))
+
+    def test_malformed_base64(self):
+        """Malformed base64 in key field → None (ValueError caught)"""
+        line = "192.168.1.1 ssh-rsa !!INVALID_BASE64!!"
+        self.assertIsNone(mzscan._parse_keyscan_line(line))
+
+    def test_incomplete_base64(self):
+        """Incomplete/truncated base64 in key field → None"""
+        line = "192.168.1.1 ssh-rsa AAAAB3NzaC1yc2E"  # truncated, invalid padding
+        self.assertIsNone(mzscan._parse_keyscan_line(line))
+
+    def test_too_few_fields(self):
+        """Too few fields in line → None"""
+        line = "192.168.1.1 ssh-rsa"
+        self.assertIsNone(mzscan._parse_keyscan_line(line))
+
+    def test_empty_line(self):
+        """Empty line → None"""
+        self.assertIsNone(mzscan._parse_keyscan_line(""))
+
+
 if __name__ == "__main__":
     unittest.main()
