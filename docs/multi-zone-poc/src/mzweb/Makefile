@@ -64,6 +64,17 @@ x86-mzweb: build/websetsip.c
 x86-mzweb-sec05: build/websetsip.c
 	$(CC_X86) $(CFLAGS) $(TESTDEF_sec05) -o build/mzweb-x86-sec05 $(APPSRC) $(COMPAT)
 
+# --- mzio side-car daemon（Task 7；獨立編，不需 mbedTLS，不用 $(CFLAGS)/$(COMPAT)） ---
+MZIOSRC = mzio.c mzio_core.c mzsdk.c keyvaluefile.c cjson_vendor.c
+
+arm-mzio:
+	mkdir -p build
+	$(DOCKER) muslcc/x86_64:arm-linux-musleabi -march=armv7-a -static -no-pie -fno-pie -O2 -I. -o build/mzio-arm $(MZIOSRC)
+
+x86-mzio:
+	mkdir -p build
+	$(DOCKER) muslcc/x86_64:x86_64-linux-musl -static -no-pie -fno-pie -O2 -I. -o build/mzio-x86 $(MZIOSRC)
+
 # x86-orig：未修改原廠 websetsip.c（GBK 原始碼，非 patch/zones/serve_index 版）＋相容層。
 # 相容層正確性的整合閘門——只有把 T1–T5 一起連進 3022 行真實原廠碼才知道夠不夠用。
 # 用 GBK 原始檔（非 utf8 轉檔版）保住字節級相容；build/ 已 gitignore，原廠碼不進版控。
