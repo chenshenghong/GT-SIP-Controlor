@@ -105,13 +105,15 @@ describe('classifyZonesProbe', () => {
     expect(classifyZonesProbe({ ok: true, zones: [] })).toBe('unsupported')
     expect(classifyZonesProbe({ ok: true, zones: undefined })).toBe('unsupported')
   })
-  it('404（路由不存在，確定舊韌體）→ unsupported', () => {
+  it('403/404（路由確定不支援＝舊韌體）→ unsupported', () => {
+    // 真機實測：新版工廠 https 韌體(.72)未知 GET 路由回 403；我方 mzweb 未知路由回 404。
     expect(classifyZonesProbe({ ok: false, httpStatus: 404 })).toBe('unsupported')
+    expect(classifyZonesProbe({ ok: false, httpStatus: 403 })).toBe('unsupported')
   })
-  it('401/403/5xx（非 404 的 http 錯誤，非確定舊韌體）→ error', () => {
+  it('401/5xx（非路由不支援：auth／mzrelay3 暫時 503 等，capable 設備仍可能）→ error', () => {
     expect(classifyZonesProbe({ ok: false, httpStatus: 500 })).toBe('error')
+    expect(classifyZonesProbe({ ok: false, httpStatus: 503 })).toBe('error')
     expect(classifyZonesProbe({ ok: false, httpStatus: 401 })).toBe('error')
-    expect(classifyZonesProbe({ ok: false, httpStatus: 403 })).toBe('error')
   })
   it('錯誤無回應（逾時/傳輸）→ error', () => {
     expect(classifyZonesProbe({ ok: false })).toBe('error')

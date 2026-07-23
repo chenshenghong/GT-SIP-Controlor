@@ -94,12 +94,15 @@ export function serializeZones(zones: MulticastZone[]): MulticastZone[] {
   }))
 }
 
-/** 能力偵測判別：成功含非空 zones=zones；設備有回應但無 zones=unsupported；404=舊韌體=unsupported；其餘（401/403/5xx/逾時/無回應）=error。 */
+/** 能力偵測判別：成功含非空 zones=zones；設備有回應但無 zones=unsupported；
+ *  403/404=路由確定不支援=舊韌體=unsupported（顯單槽卡）；401/5xx/逾時/無回應=error（安全占位、可重探）。 */
 export function classifyZonesProbe(r: { ok?: boolean; zones?: unknown; httpStatus?: number }): 'zones' | 'unsupported' | 'error' {
   if (r.ok) return Array.isArray(r.zones) && r.zones.length > 0 ? 'zones' : 'unsupported'
-  // 只有「路由不存在」(404) 才是確定的舊韌體 → 單槽卡；401/403/5xx/逾時/傳輸失敗一律 'error'
-  // （安全占位、不暴露危險單槽寫入路徑、可重新偵測）——防 mzrelay3 暫時性 503 誤判斷鏈
-  if (r.httpStatus === 404) return 'unsupported'
+  // 「路由確定不支援」= 舊韌體 → 單槽卡。真機實測：新版工廠 https 韌體(.72)未知 GET 路由回 403、
+  // 我方 mzweb 未知路由回 404；而 capable mzweb 對 zones 路由絕不回 403/404（up→200、mzrelay3 down→503、
+  // 無 token→401）→ 403/404 皆可安全判 unsupported。5xx(尤其 mzweb 於 mzrelay3 暫時不可用回的 503)/401/
+  // 逾時/傳輸失敗一律 'error'（安全占位、不暴露危險單槽寫入路徑、可重新偵測）——防斷鏈。
+  if (r.httpStatus === 403 || r.httpStatus === 404) return 'unsupported'
   return 'error'
 }
 
