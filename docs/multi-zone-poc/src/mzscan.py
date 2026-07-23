@@ -4,6 +4,8 @@
 import base64, json, re
 
 DBP_PORT = 58001
+TERMAPP_MD5_V211 = "b0eed3b30bd4fa4f1599a9475296fb6d"  # v2.1.1 NetPlayer, 1748236 bytes
+
 # 同 src/main/dbpDiscover.ts 的 IFCFG-APP key 清單（QueryTool 抓包實證）
 _KEY_NAMES = ["RegAddr","ServerPort","RegUser","RegPswd","OutVol","MicVol",
               "Key1A","Key1B","ConnectMode","SWversion","PTT","COR",
@@ -68,3 +70,26 @@ def merge_discovery(replies):
                     cur[k] = r[k]
 
     return by_ip
+
+
+def decide_fw_ver(termapp_md5, dbp_ver):
+    """spec §四 韌體決策表。md5 為準；DBP 單源不足採信。"""
+    if termapp_md5 == TERMAPP_MD5_V211:
+        return "2.1.1"
+    if termapp_md5 is not None and dbp_ver == "2.1.0":
+        return "2.1.0"
+    return "unknown"
+
+
+def decide_web_type(sipweb_md5, mzweb_known_md5s, https_probe, http80_probe, loopback80_403):
+    """spec §四 五層有序決策樹。"""
+    if sipweb_md5 is not None and sipweb_md5 in mzweb_known_md5s:
+        return "mzweb"
+    if https_probe and https_probe.get("ok") and https_probe.get("status") == 401:
+        return "https"
+    if http80_probe and http80_probe.get("ok"):
+        if http80_probe.get("status") == 200 and http80_probe.get("json"):
+            return "lgw"
+        if http80_probe.get("status") == 403 and loopback80_403 is True:
+            return "hbi"
+    return "unknown"

@@ -84,5 +84,46 @@ class TestDbp(unittest.TestCase):
         fws = {v.get("fw_ver_dbp") for v in variants}
         self.assertEqual(fws, {"2.1.0", "2.1.1"})
 
+class TestFwDecision(unittest.TestCase):
+    V211 = mzscan.TERMAPP_MD5_V211
+
+    def test_md5_match_wins(self):          # md5==已知 → 2.1.1（DBP 任意）
+        self.assertEqual(mzscan.decide_fw_ver(self.V211, "2.1.0"), "2.1.1")
+        self.assertEqual(mzscan.decide_fw_ver(self.V211, None), "2.1.1")
+
+    def test_md5_other_dbp_210(self):       # md5≠已知 + DBP=2.1.0 → 2.1.0
+        self.assertEqual(mzscan.decide_fw_ver("deadbeef", "2.1.0"), "2.1.0")
+
+    def test_md5_other_dbp_211_conflict(self):  # 矛盾 → unknown
+        self.assertEqual(mzscan.decide_fw_ver("deadbeef", "2.1.1"), "unknown")
+
+    def test_no_md5_any_dbp(self):          # 讀不到 md5 → DBP 單源不足採信
+        self.assertEqual(mzscan.decide_fw_ver(None, "2.1.0"), "unknown")
+        self.assertEqual(mzscan.decide_fw_ver(None, None), "unknown")
+
+
+class TestWebType(unittest.TestCase):
+    MZ = {"abc123"}
+
+    def test_mzweb_md5_first(self):
+        self.assertEqual(mzscan.decide_web_type("abc123", self.MZ, None, None, None), "mzweb")
+
+    def test_https(self):
+        r = mzscan.decide_web_type("x", self.MZ, {"ok": True, "status": 401, "json": False}, None, None)
+        self.assertEqual(r, "https")
+
+    def test_lgw(self):
+        r = mzscan.decide_web_type("x", self.MZ, None, {"ok": True, "status": 200, "json": True}, None)
+        self.assertEqual(r, "lgw")
+
+    def test_hbi_needs_loopback_403_too(self):
+        p80 = {"ok": True, "status": 403, "json": False}
+        self.assertEqual(mzscan.decide_web_type("x", self.MZ, None, p80, True), "hbi")
+        self.assertEqual(mzscan.decide_web_type("x", self.MZ, None, p80, None), "unknown")
+
+    def test_all_dark_unknown(self):
+        self.assertEqual(mzscan.decide_web_type(None, self.MZ, None, None, None), "unknown")
+
+
 if __name__ == "__main__":
     unittest.main()
