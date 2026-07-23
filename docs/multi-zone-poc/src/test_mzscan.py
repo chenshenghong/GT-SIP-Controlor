@@ -308,5 +308,49 @@ class TestParseKeyscanLine(unittest.TestCase):
         self.assertIsNone(mzscan._parse_keyscan_line(""))
 
 
+import json, os, tempfile
+
+def row(ip, action="done", fp=None):
+    return {"ip": ip, "action": action, "ssh_hostkey_fp": fp, "fw_ver": "2.1.1",
+            "errors": []}
+
+class TestInventory(unittest.TestCase):
+    def test_top_level_fields(self):
+        inv = mzscan.build_inventory([row("1.1.1.1")], {"missing": [], "unexpected": [],
+                                     "mac_mismatch": []}, {"file": "f.txt", "count": 1},
+                                     "2026-07-23T10:00:00", "2026-07-23T10:05:00")
+        for k in ("schema_version", "scan_id", "valid_until", "producer", "summary"):
+            self.assertIn(k, inv)
+        self.assertTrue(inv["valid_until"].startswith("2026-07-24T10:05:00"))
+    def test_no_expect_no_action(self):
+        inv = mzscan.build_inventory([row("1.1.1.1")], None, None,
+                                     "2026-07-23T10:00:00", "2026-07-23T10:05:00")
+        self.assertNotIn("action", inv["devices"][0])
+        self.assertNotIn("reconciliation", inv)
+    def test_no_password_leak(self):
+        os.environ["MZSCAN_SSH_PW"] = "sekret"
+        inv = mzscan.build_inventory([row("1.1.1.1")], None, None,
+                                     "2026-07-23T10:00:00", "2026-07-23T10:05:00")
+        self.assertNotIn("sekret", json.dumps(inv))
+    def test_write_atomic(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "inv.json")
+            mzscan.write_atomic(p, {"a": 1})
+            self.assertEqual(json.load(open(p)), {"a": 1})
+            self.assertEqual(os.listdir(d), ["inv.json"])  # 無殘留 tmp
+
+class TestSummary(unittest.TestCase):
+    def test_counts(self):
+        inv = mzscan.build_inventory(
+            [row("1.1.1.1"), row("1.1.1.2", "needs-fw-upgrade")],
+            {"missing": ["1.1.1.3"], "unexpected": [], "mac_mismatch": []},
+            {"file": "f.txt", "count": 3},
+            "2026-07-23T10:00:00", "2026-07-23T10:05:00")
+        t = mzscan.summary_table(inv)
+        self.assertIn("done", t)
+        self.assertIn("needs-fw-upgrade", t)
+        self.assertIn("missing", t)
+
+
 if __name__ == "__main__":
     unittest.main()

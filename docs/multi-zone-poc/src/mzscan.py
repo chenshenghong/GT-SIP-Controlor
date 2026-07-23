@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # mzscan.py — gt-sip-gw fleet pre-flight scanner（子專案 C）
 # Spec: docs/superpowers/specs/2026-07-23-mzscan-inventory-design.md
-import base64, json, re, ipaddress
+import base64, json, re, ipaddress, sys, datetime, uuid, collections, argparse
 
 DBP_PORT = 58001
 TERMAPP_MD5_V211 = "b0eed3b30bd4fa4f1599a9475296fb6d"  # v2.1.1 NetPlayer, 1748236 bytes
@@ -259,6 +259,7 @@ def parse_probe_output(out):
 
 # Task 6: I/O 層 — DBP 收發、pty-SSH、host-key 指紋、HTTP/REST 探測
 import socket, time, os, pty, select, signal, hashlib, subprocess, ssl, urllib.request, urllib.error
+from concurrent.futures import ThreadPoolExecutor
 
 
 SSH_PORT = 9521
@@ -406,3 +407,129 @@ def http_probe(ip):
                      headers={"Authorization": "Bearer " + token})
     rest_ok = bool(rest and rest["status"] == 200 and rest["json"]) if rest is not None else None
     return {"http80": http80, "https": https, "rest8090_ok": rest_ok}
+
+
+# Task 7: inventory 組裝、原子輸出、摘要表、probe_device、CLI main
+SCHEMA_VERSION = "1"
+PRODUCER = "mzscan/1.0"
+
+def build_inventory(rows, recon, expect_meta, started, finished):
+    fin = datetime.datetime.fromisoformat(finished)
+    inv = {"schema_version": SCHEMA_VERSION, "scan_id": str(uuid.uuid4()),
+           "producer": PRODUCER, "started_at": started, "finished_at": finished,
+           "valid_until": (fin + datetime.timedelta(hours=24)).isoformat()}
+    if expect_meta is None:
+        # discovery report 模式：不產 action（spec §五）
+        rows = [{k: v for k, v in r.items() if k != "action"} for r in rows]
+    else:
+        inv["expect"] = expect_meta
+        inv["reconciliation"] = recon
+    counts = collections.Counter(r.get("action", "discovered") for r in rows)
+    inv["summary"] = dict(counts)
+    inv["devices"] = rows
+    return inv
+
+def write_atomic(path, obj):
+    tmp = path + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(obj, fh, ensure_ascii=False, indent=1)
+    os.replace(tmp, path)
+
+def summary_table(inv):
+    lines = ["== mzscan %s  devices=%d ==" % (inv["scan_id"][:8], len(inv["devices"]))]
+    for action, n in sorted(inv["summary"].items()):
+        ips = [d["ip"] for d in inv["devices"] if d.get("action", "discovered") == action]
+        lines.append("  %-22s %3d  %s" % (action, n, " ".join(ips[:8])
+                                          + (" …" if len(ips) > 8 else "")))
+    recon = inv.get("reconciliation")
+    if recon:
+        lines.append("  missing=%s unexpected=%s mac_mismatch=%d"
+                     % (recon["missing"] or "-", recon["unexpected"] or "-",
+                        len(recon["mac_mismatch"])))
+    return "\n".join(lines)
+
+
+MZWEB_KNOWN_MD5S = set()   # main() 啟動時以 --mzweb-bin 或內嵌常數初始化（Task 8 定稿常數）
+
+def probe_device(ip, dbp_rec, pw, timeout=15.0):
+    row = {"ip": ip, "mac": (dbp_rec or {}).get("mac"),
+           "fw_ver_dbp": (dbp_rec or {}).get("fw_ver_dbp"),
+           "reachable_dbp": dbp_rec is not None,
+           "dbp_conflict": bool((dbp_rec or {}).get("dbp_conflict")), "errors": []}
+    if row["dbp_conflict"]:
+        row["dbp_variants"] = dbp_rec["dbp_variants"]
+    row["ssh_hostkey_fp"] = hostkey_fp(ip)
+    out, err = ssh_probe(ip, pw, timeout)
+    row["ssh_ok"] = out is not None
+    if err:
+        row["errors"].append(err)
+    facts = parse_probe_output(out) if out else dict.fromkeys(
+        ("termapp_md5", "sipweb_md5", "sidecar_relay_bin", "sidecar_relay_running",
+         "sidecar_init", "opt_writable", "opt_free_kb", "loopback80_403",
+         "termapp_multicast_addr"))
+    row.update(facts)
+    hp = http_probe(ip)
+    row["sidecar_rest_ok"] = hp["rest8090_ok"]
+    row["fw_ver"] = decide_fw_ver(facts["termapp_md5"], row["fw_ver_dbp"])
+    row["web_type"] = decide_web_type(facts["sipweb_md5"], MZWEB_KNOWN_MD5S,
+                                      hp["https"], hp["http80"], facts["loopback80_403"])
+    for k in ("termapp_md5", "sipweb_md5", "opt_writable", "loopback80_403"):
+        if facts.get(k) is None:
+            row["errors"].append("probe %s unknown" % k)
+    return row
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="gt-sip-gw fleet pre-flight scanner")
+    ap.add_argument("fleet", nargs="?", help="fleet.txt: IP[,MAC] per line (positional alias for --expect)")
+    ap.add_argument("--expect", help="fleet.txt: IP[,MAC] per line")
+    ap.add_argument("--workers", type=int, default=8)
+    ap.add_argument("--timeout", type=float, default=15.0)
+    ap.add_argument("--mzweb-bin", help="local mzweb-arm build to trust as mzweb md5")
+    ap.add_argument("--out", default=".", help="output dir")
+    args = ap.parse_args(argv)
+    expect_path = args.expect or args.fleet
+    pw = os.environ.get("MZSCAN_SSH_PW")
+    if not pw:
+        print("MZSCAN_SSH_PW not set", file=sys.stderr)
+        return 2
+    if args.mzweb_bin:
+        MZWEB_KNOWN_MD5S.add(hashlib.md5(open(args.mzweb_bin, "rb").read()).hexdigest())
+    started = datetime.datetime.now().isoformat(timespec="seconds")
+
+    expected = None
+    if expect_path:
+        expected = parse_fleet(open(expect_path).read())
+    discovered = merge_discovery(dbp_sweep(broadcast=True, targets=[]))
+    if expected:                       # missing 台 unicast 補掃（spec §七）
+        missing = [e["ip"] for e in expected if e["ip"] not in discovered]
+        if missing:
+            discovered.update(merge_discovery(dbp_sweep(broadcast=False, targets=missing)))
+    targets = sorted(set(discovered) | ({e["ip"] for e in expected} if expected else set()))
+    print("discovered %d, probing %d ..." % (len(discovered), len(targets)))
+
+    with ThreadPoolExecutor(max_workers=args.workers) as ex:
+        rows = list(ex.map(lambda ip: probe_device(ip, discovered.get(ip), pw, args.timeout),
+                           targets))
+    # 先算 dups、標 hostkey_dup，再對每台 classify（classify 讀 hostkey_dup 欄，順序不可顛倒）
+    dups = find_hostkey_dups(rows)
+    for r in rows:
+        r["hostkey_dup"] = r.get("ssh_hostkey_fp") in dups
+    if expected is not None:
+        for r in rows:
+            r["action"] = classify(r)
+    if dups:
+        print("!! duplicate host-key fingerprints (possible MITM): %s" % dups, file=sys.stderr)
+
+    finished = datetime.datetime.now().isoformat(timespec="seconds")
+    recon = reconcile(expected, discovered) if expected else None
+    meta = {"file": expect_path, "count": len(expected)} if expected else None
+    inv = build_inventory(rows, recon, meta, started, finished)
+    out_path = os.path.join(args.out, "inventory-%s.json"
+                            % datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
+    write_atomic(out_path, inv)
+    print(summary_table(inv))
+    print("inventory: %s" % out_path)
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())
