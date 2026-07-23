@@ -259,6 +259,27 @@ class TestParseProbe(unittest.TestCase):
     def test_write_fail(self):
         f = mzscan.parse_probe_output("===OPTWRITE===\nWRITE_FAIL\n===END===\n")
         self.assertIs(f["opt_writable"], False)
+    def test_body_contains_weird_tags(self):
+        """Body 內偶現 ===XXX=== 樣式（如 TERMCFG grep 掃到的設定檔內容）時，
+        正確分割應錨定整行，不被迷惑。未錨定會造成錯位切段、FILES 內容被截斷。"""
+        # 此測試驗證 body 含 ===WEIRD=== 時，FILES 仍能保留完整內容（/etc/init.d/S21mzrelay）
+        probe_out = """===FILES===
+/opt/mzrelay3
+some===WEIRD===line should not split here
+/etc/init.d/S21mzrelay
+===PS===
+ 1234 root     mzrelay3
+===END===
+"""
+        f = mzscan.parse_probe_output(probe_out)
+        # FILES body 應包含完整的兩行路徑，不因中間的 ===WEIRD=== 而截斷
+        # 檢查兩個檔案都被正確偵測
+        self.assertTrue(f["sidecar_relay_bin"], "FILES 應包含 /opt/mzrelay3")
+        self.assertTrue(f["sidecar_init"], "FILES 應包含 /etc/init.d/S21mzrelay（不被 ===WEIRD=== 截斷）")
+    def test_exists_is_none(self):
+        """OPTWRITE 段含 EXISTS（殘留測試檔）→ opt_writable=None（未實測寫入=未知）"""
+        f = mzscan.parse_probe_output("===OPTWRITE===\nEXISTS\n===END===\n")
+        self.assertIsNone(f["opt_writable"])
 
 
 if __name__ == "__main__":

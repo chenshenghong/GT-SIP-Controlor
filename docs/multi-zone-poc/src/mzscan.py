@@ -200,8 +200,8 @@ def reconcile(expected, discovered):
     return out
 
 
-# 單次 SSH 往返收齊全部設備側事實（busybox sh 相容）。TERMCFG 命令為 Task 8 真機實查後的定稿：
-# 初值先用 grep 掃 /opt 常見 config；.70 實查若得出確切檔案路徑則改為直讀該檔。
+# 單次 SSH 往返收齊全部設備側事實（busybox sh 相容）。TERMCFG 命令暫定策略：
+# 先用 grep 掃 /opt 常見 config；待 Task 8 真機實查後定稿——若得出確切檔案路徑則改為直讀該檔。
 PROBE_CMD = (
     'echo "===MD5TERMAPP==="; md5sum /opt/termapp 2>&1;'
     'echo "===MD5SIPWEB==="; md5sum /etc/sipweb/sipweb 2>&1;'
@@ -220,7 +220,8 @@ PROBE_CMD = (
 _MD5_RE = re.compile(r"^([0-9a-f]{32})\s", re.M)
 
 def _sections(out):
-    parts = re.split(r"===([A-Z0-9]+)===\n?", out)
+    # TAG 錨定整行（^...$，flags=re.M）防止 body 內偶現 ===XXX=== 樣式（如 TERMCFG grep 結果）錯位切段
+    parts = re.split(r"^===([A-Z0-9]+)===\s*$", out, flags=re.M)
     # parts = [prefix, TAG, body, TAG, body, ...]
     return {parts[i]: parts[i + 1] for i in range(1, len(parts) - 1, 2)}
 
@@ -238,14 +239,19 @@ def parse_probe_output(out):
     if "PS" in s:
         f["sidecar_relay_running"] = "mzrelay3" in s["PS"]
     if "DF" in s:
+        # df 輸出可能折行（Available 欄），\s 容錯跨換行；穩定版應改用 column(1) index 定位
         m = re.search(r"^\S+\s+\d+\s+\d+\s+(\d+)\s", s["DF"], re.M)
         f["opt_free_kb"] = int(m.group(1)) if m else None
     if "OPTWRITE" in s:
         body = s["OPTWRITE"]
+        # WRITE_OK → True（成功寫入）；WRITE_FAIL → False（寫入失敗）；
+        # EXISTS（殘留測試檔）→ None（未實測寫入，狀態未知）
         f["opt_writable"] = True if "WRITE_OK" in body else (False if "WRITE_FAIL" in body else None)
     if "TERMCFG" in s:
         m = re.search(r"MULTICAST_ADDRESS\s*=\s*(\S+)", s["TERMCFG"])
         f["termapp_multicast_addr"] = m.group(1) if m else None
-    if "LOOPBACK80" in s and s["LOOPBACK80"].strip():
-        f["loopback80_403"] = "403" in s["LOOPBACK80"].splitlines()[0]
+    if "LOOPBACK80" in s:
+        body = s["LOOPBACK80"].strip()
+        if body:  # 確保有非空白內容
+            f["loopback80_403"] = "403" in body.splitlines()[0]
     return f
