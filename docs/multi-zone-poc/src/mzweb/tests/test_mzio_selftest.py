@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Task 7 mzio -t 組態自檢（不碰 GPIO/網路，容器可跑）。四條斷言（brief Step 1）：
+"""Task 7 mzio -t 組態自檢（不碰 GPIO/網路，容器可跑）。五條斷言（brief Step 1 + 對抗審查 Minor）：
   1. 無 config 檔（MZIO_JSON 指向不存在路徑）→ mzio -t exit 0，stdout 含 "io2"（id2 內建
      預設啟用）且含 "gpio45"（GPIO5_5 → Linux 45 對映正確）
   2. config 檔含 id2 mode:"disabled" → mzio -t stdout 顯示 0 個啟用腳、exit 0
   3. config 檔壞 JSON → mzio -t exit 0 並 stderr 警告 fallback 預設（與 mzweb GET 行為一致）
   4. config 檔 id2 debounce_ms:999（非法）→ mzio -t exit 1（fail loudly，防手改壞檔靜默上線）
+  5. config 檔兩列同 id2（重複 id）→ mzio -t exit 1（Minor 對抗審查：daemon 端原本不查重複
+     id，手改設定檔可對同一 gpio 開兩個 fd、雙 dispatch；此斷言修前為 fail，修後轉綠）
 """
 import json
 import os
@@ -92,9 +94,26 @@ def test_invalid_value_fails_closed():
         os.unlink(path)
 
 
+def test_dup_id_fails_closed():
+    path = "/tmp/mzio_selftest_dupid.json"
+    write_cfg(path, [
+        _row(1),
+        _row(2, gpio="GPIO5_5", mode="input", trigger="level",
+             action={"type": "multicast_ptt", "param": "300"}),
+        _row(2, gpio="GPIO5_5", mode="disabled"),
+        _row(4), _row(5), _row(6),
+    ])
+    try:
+        p = run_t(path)
+        assert p.returncode == 1, (p.stdout, p.stderr)
+    finally:
+        os.unlink(path)
+
+
 if __name__ == "__main__":
     test_no_config_uses_builtin_defaults()
     test_id2_disabled_shows_zero_enabled()
     test_bad_json_falls_back_with_warning()
     test_invalid_value_fails_closed()
+    test_dup_id_fails_closed()
     print("test_mzio_selftest: ALL PASS")

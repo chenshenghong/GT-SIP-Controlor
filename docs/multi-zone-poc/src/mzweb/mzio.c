@@ -147,11 +147,25 @@ static int mzio_validate_row(cJSON* row)
     return 1;
 }
 
+/* Minor 對抗審查修復：web 端（mzweb_txio.c）用 seen[] 拒收重複 id，daemon 端原本沒查，
+ * 手改 /opt/mzio.json 塞兩列同 id 會對同一 gpio 開兩個 fd、雙 dispatch。此處鏡像同規則，
+ * 視為壞值走既有 fail-closed 路徑（啟動 exit 1；SIGHUP 保留舊 config）。 */
 static int mzio_validate_array(cJSON* arr)
 {
     cJSON* row;
+    int seen[7] = { 0 };   /* index 1..6 對應 id */
     if (arr == NULL || !cJSON_IsArray(arr)) return 0;
-    cJSON_ArrayForEach(row, arr) { if (!mzio_validate_row(row)) return 0; }
+    cJSON_ArrayForEach(row, arr)
+    {
+        cJSON* id;
+        if (!mzio_validate_row(row)) return 0;
+        id = cJSON_GetObjectItem(row, "id");
+        if (id->valueint >= 1 && id->valueint <= 6)
+        {
+            if (seen[id->valueint]) return 0;
+            seen[id->valueint] = 1;
+        }
+    }
     return 1;
 }
 
@@ -337,6 +351,16 @@ static int build_chans(cJSON* arr, struct chan* chans, int max)
                 is_ptt = 1;
                 if (aparamj != NULL && cJSON_GetStringValue(aparamj) != NULL)
                     tail_ms = atoi(cJSON_GetStringValue(aparamj));
+                /* I3 對抗審查修復：mzio_sm 只實作 level 語意（去抖後穩定即視為按住）。
+                 * long_press/edge 目前會被當 level 處理，行為與宣告不符，需明確告警而非
+                 * 靜默退化——v1 仍放行運作（web 端 schema 允許這些 trigger 值）。 */
+                {
+                    cJSON* trigj = cJSON_GetObjectItem(row, "trigger");
+                    const char* trig = cJSON_GetStringValue(trigj);
+                    if (trig != NULL && strcmp(trig, "level") != 0)
+                        fprintf(stderr, "mzio: io%d trigger '%s' not implemented for multicast_ptt, treating as level\n",
+                                id, trig);
+                }
             }
         }
 
@@ -473,6 +497,19 @@ int main(int argc, char** argv)
         {
             cJSON* newarr;
             g_reload = 0;
+            /* C1 對抗審查修復：重建 chans 前先掃描舊 sm，任一 tx_on（按住中或 tail 未到期）
+             * 就先停 TX，語意比照 SIGTERM 退出路徑（下方 564-567 行）。否則 build_chans
+             * 對 sm 重新 init 會把 tx_on 歸零、但 MULTICAST_TX_ENABLED 已寫 true 且 termapp
+             * 仍在推流，造成孤兒麥克風廣播（真機才會觸發：按住 PTT 中送 SIGHUP → 放開 →
+             * 需確認 TX 已停，容器無 sysfs edge 無法自動化覆蓋此路徑）。 */
+            for (i = 0; i < n; i++)
+            {
+                if (chans[i].sm.tx_on)
+                {
+                    set_tx_enabled(0);
+                    fprintf(stderr, "mzio: SIGHUP reload while io%d TX active, stopping TX first\n", chans[i].id);
+                }
+            }
             if (mzio_load_config(&newarr, 1) == 0)
             {
                 for (i = 0; i < n; i++) if (chans[i].fd >= 0) close(chans[i].fd);
