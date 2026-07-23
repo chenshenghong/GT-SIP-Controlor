@@ -7,8 +7,9 @@ import { useAuthStore } from '@/stores/auth'
 import { DEVICE_DEFAULT_USERNAME, DEVICE_DEFAULT_PASSWORD } from '@shared/constants'
 import type {
   DeviceStatus, VolumeConfig, SipConfig, SipConfigResponse, MulticastConfig,
-  SipParameters, SipCodecs, CallStatus, NetworkConfig,
+  SipParameters, SipCodecs, CallStatus, NetworkConfig, MulticastZone, ZonesProbe,
 } from '@shared/types'
+import { classifyZonesProbe, parseZoneIdFromMessage } from '@shared/multicastZones'
 
 /** Firmware responds in GBK (Content-Type: ...;charset=GBK) */
 const gbkDecoder = new TextDecoder('gbk')
@@ -365,6 +366,53 @@ export async function setSipMulticast(
   config: MulticastConfig
 ): Promise<boolean> {
   return postRetry(createDeviceApiClient(ip), '/set/sip/multicast', config)
+}
+
+/**
+ * 4.7 探測設備是否支援 16 區多監聽區（能力偵測）。
+ * 區分「舊韌體/未支援」與「逾時/傳輸失敗」——後者不可回退顯示危險單槽卡（斷鏈防護）。
+ * error（無回應）時重試一次；仍失敗才回 {status:'error'}。
+ */
+export async function probeSipMulticastZones(ip: string): Promise<ZonesProbe> {
+  const api = createDeviceApiClient(ip)
+  const attempt = async (): Promise<ZonesProbe> => {
+    try {
+      const res = await api.get('/get/sip/multicast/zones')
+      const data = res.data as { zones?: unknown } | null
+      const kind = classifyZonesProbe({ ok: true, zones: data?.zones })
+      if (kind === 'zones') return { status: 'zones', zones: (data as { zones: MulticastZone[] }).zones }
+      return { status: 'unsupported' }
+    } catch (err: unknown) {
+      const httpStatus = (err as { response?: { status?: number } })?.response?.status
+      const kind = classifyZonesProbe({ ok: false, httpStatus })
+      return kind === 'error' ? { status: 'error' } : { status: 'unsupported' }
+    }
+  }
+  let r = await attempt()
+  if (r.status === 'error') {
+    await new Promise((res) => setTimeout(res, 800))
+    r = await attempt()
+  }
+  return r
+}
+
+/**
+ * 4.8 整表 16 筆一次送。不走 postRetry（其只回 boolean、丟棄 body），改用專用呼叫取
+ * 完整解析 body 以顯示 E001 指名的 zone。伺服器恆 HTTP 200，status:"error"+E001 為業務拒絕。
+ */
+export async function setSipMulticastZones(
+  ip: string, zones: MulticastZone[]
+): Promise<{ ok: boolean; errorZoneId?: number; message?: string }> {
+  const api = createDeviceApiClient(ip)
+  try {
+    const res = await api.post('/set/sip/multicast/zones', { zones })
+    const data = res.data as { status?: string; message?: string } | null
+    if (data?.status === 'success') return { ok: true }
+    const message = data?.message ?? '設備拒絕儲存'
+    return { ok: false, message, errorZoneId: parseZoneIdFromMessage(message) }
+  } catch {
+    return { ok: false, message: '設備無回應或連線失敗' }
+  }
 }
 
 /** 4.5 Set SIP advanced parameters */
