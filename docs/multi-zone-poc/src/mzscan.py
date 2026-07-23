@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # mzscan.py — gt-sip-gw fleet pre-flight scanner（子專案 C）
 # Spec: docs/superpowers/specs/2026-07-23-mzscan-inventory-design.md
-import base64, json, re
+import base64, json, re, ipaddress
 
 DBP_PORT = 58001
 TERMAPP_MD5_V211 = "b0eed3b30bd4fa4f1599a9475296fb6d"  # v2.1.1 NetPlayer, 1748236 bytes
@@ -137,3 +137,58 @@ def find_hostkey_dups(rows):
             dups.add(fp)
         seen.add(fp)
     return dups
+
+
+def _norm_mac(m):
+    """Normalize MAC: remove - and : separators, convert to lowercase. None → None."""
+    return re.sub(r"[-:]", "", m).lower() if m else None
+
+
+def parse_fleet(text):
+    """Parse fleet.txt: each line is 'IP[,MAC]', skip comments and blanks.
+
+    Raises ValueError with line number if IP format is invalid.
+    Returns list of {ip, mac} dicts (mac=None if not specified).
+    """
+    rows = []
+    for ln, line in enumerate(text.splitlines(), 1):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = [p.strip() for p in line.split(",")]
+        try:
+            ipaddress.ip_address(parts[0])
+        except ValueError:
+            raise ValueError("fleet.txt line %d: bad IP %r" % (ln, parts[0]))
+        rows.append({"ip": parts[0], "mac": parts[1] if len(parts) > 1 and parts[1] else None})
+    return rows
+
+
+def reconcile(expected, discovered):
+    """Reconcile expected fleet against discovered devices.
+
+    expected: list[{ip, mac}] from parse_fleet
+    discovered: dict[ip_str -> {mac, ...}] from merge_discovery
+
+    Returns {
+        "missing": sorted list of IPs in expected but not discovered,
+        "unexpected": sorted list of IPs in discovered but not expected,
+        "mac_mismatch": list of {ip, expected_mac, seen_mac} for MAC differences
+                        (MAC comparison ignores case and - vs : separator)
+    }
+    """
+    exp_ips = {e["ip"] for e in expected}
+    out = {
+        "missing": sorted(exp_ips - set(discovered)),
+        "unexpected": sorted(set(discovered) - exp_ips),
+        "mac_mismatch": []
+    }
+    for e in expected:
+        d = discovered.get(e["ip"])
+        if d and e["mac"] and _norm_mac(e["mac"]) != _norm_mac(d.get("mac")):
+            out["mac_mismatch"].append({
+                "ip": e["ip"],
+                "expected_mac": e["mac"],
+                "seen_mac": d.get("mac")
+            })
+    return out

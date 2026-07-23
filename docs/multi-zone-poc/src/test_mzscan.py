@@ -181,5 +181,28 @@ class TestHostkeyDup(unittest.TestCase):
         self.assertEqual(mzscan.find_hostkey_dups(rows), {"A"})
 
 
+class TestFleet(unittest.TestCase):
+    def test_parse(self):
+        rows = mzscan.parse_fleet("# c\n192.168.1.140\n192.168.1.141,00:11:22:33:44:55\n\n")
+        self.assertEqual(rows[0], {"ip": "192.168.1.140", "mac": None})
+        self.assertEqual(rows[1]["mac"], "00:11:22:33:44:55")
+    def test_bad_ip_raises(self):
+        with self.assertRaises(ValueError):
+            mzscan.parse_fleet("not-an-ip\n")
+
+class TestReconcile(unittest.TestCase):
+    EXP = [{"ip": "1.1.1.1", "mac": "00-11-22-33-44-55"}, {"ip": "1.1.1.2", "mac": None}]
+    def test_missing_and_unexpected(self):
+        r = mzscan.reconcile(self.EXP, {"1.1.1.1": {"mac": "00-11-22-33-44-55"},
+                                        "9.9.9.9": {"mac": "FF"}})
+        self.assertEqual(r["missing"], ["1.1.1.2"])
+        self.assertEqual(r["unexpected"], ["9.9.9.9"])
+    def test_mac_mismatch_case_and_sep_insensitive(self):
+        r = mzscan.reconcile(self.EXP, {"1.1.1.1": {"mac": "00:11:22:33:44:55"}})
+        self.assertEqual(r["mac_mismatch"], [])
+        r2 = mzscan.reconcile(self.EXP, {"1.1.1.1": {"mac": "AA:BB:CC:DD:EE:FF"}})
+        self.assertEqual(r2["mac_mismatch"][0]["ip"], "1.1.1.1")
+
+
 if __name__ == "__main__":
     unittest.main()
