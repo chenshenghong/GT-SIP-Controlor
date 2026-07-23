@@ -94,10 +94,12 @@ export function serializeZones(zones: MulticastZone[]): MulticastZone[] {
   }))
 }
 
-/** 能力偵測判別：成功含非空 zones=zones；設備有回應但無 zones/http 錯=unsupported；無回應=error。 */
+/** 能力偵測判別：成功含非空 zones=zones；設備有回應但無 zones=unsupported；404=舊韌體=unsupported；其餘（401/403/5xx/逾時/無回應）=error。 */
 export function classifyZonesProbe(r: { ok?: boolean; zones?: unknown; httpStatus?: number }): 'zones' | 'unsupported' | 'error' {
   if (r.ok) return Array.isArray(r.zones) && r.zones.length > 0 ? 'zones' : 'unsupported'
-  if (r.httpStatus != null) return 'unsupported'
+  // 只有「路由不存在」(404) 才是確定的舊韌體 → 單槽卡；401/403/5xx/逾時/傳輸失敗一律 'error'
+  // （安全占位、不暴露危險單槽寫入路徑、可重新偵測）——防 mzrelay3 暫時性 503 誤判斷鏈
+  if (r.httpStatus === 404) return 'unsupported'
   return 'error'
 }
 

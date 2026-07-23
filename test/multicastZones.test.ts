@@ -105,9 +105,13 @@ describe('classifyZonesProbe', () => {
     expect(classifyZonesProbe({ ok: true, zones: [] })).toBe('unsupported')
     expect(classifyZonesProbe({ ok: true, zones: undefined })).toBe('unsupported')
   })
-  it('錯誤帶 http status（設備有回應）→ unsupported', () => {
+  it('404（路由不存在，確定舊韌體）→ unsupported', () => {
     expect(classifyZonesProbe({ ok: false, httpStatus: 404 })).toBe('unsupported')
-    expect(classifyZonesProbe({ ok: false, httpStatus: 500 })).toBe('unsupported')
+  })
+  it('401/403/5xx（非 404 的 http 錯誤，非確定舊韌體）→ error', () => {
+    expect(classifyZonesProbe({ ok: false, httpStatus: 500 })).toBe('error')
+    expect(classifyZonesProbe({ ok: false, httpStatus: 401 })).toBe('error')
+    expect(classifyZonesProbe({ ok: false, httpStatus: 403 })).toBe('error')
   })
   it('錯誤無回應（逾時/傳輸）→ error', () => {
     expect(classifyZonesProbe({ ok: false })).toBe('error')
