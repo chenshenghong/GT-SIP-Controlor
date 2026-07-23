@@ -7,6 +7,8 @@
 #   ./mzdeploy.sh redeploy       災難重佈（韌體整包升級抹除 /opt 後）：deploy + 提示 zones 需重配或還原備份
 #   ./mzdeploy.sh mzweb-install  佈署 mzweb（重建版 sipweb）到 /etc/sipweb/sipweb（首次自動備份 .orig）
 #   ./mzdeploy.sh mzweb-rollback 還原 /etc/sipweb/sipweb.orig（原廠 sipweb）並重開機
+#   ./mzdeploy.sh mzio-install   佈署 mzio（IO 動作 side-car）到 /opt/mzio（既有 binary 先備份為 .prev）
+#   ./mzdeploy.sh mzio-status    健康檢查：mzio 程序、狀態檔、開機自啟檔案完整性
 #
 # 環境變數：MZHOST（預設 192.168.0.70，傳遞給 mzctl.py）、MZREST（預設 8090）
 # 本地 mzweb binary 路徑：mzweb/build/mzweb-arm（此腳本在 src/ 內執行，相對路徑以 src/ 為基準）
@@ -103,6 +105,16 @@ mzweb-install)
 	echo "== 驗證 web 服務是否已起（本機 loopback，busybox 無 wget 改 nc）=="
 	$CTL sh 'printf "GET /get/device/status HTTP/1.1\r\nHost:127.0.0.1\r\nConnection: close\r\n\r\n" | nc 127.0.0.1 80 2>/dev/null | head -c 96; echo'
 	;;
+mzio-install)
+	[ -f mzweb/build/mzio-arm ] || { echo "缺 mzio-arm，先 make arm-mzio"; exit 1; }
+	$CTL sh 'test -f /opt/mzio && cp /opt/mzio /opt/mzio.prev || true'
+	$CTL put mzweb/build/mzio-arm /opt/mzio
+	$CTL put S21mzio /etc/init.d/S21mzio
+	$CTL sh 'chmod +x /opt/mzio /etc/init.d/S21mzio; killall mzio 2>/dev/null; sleep 1; /etc/init.d/S21mzio; sleep 1; ps | grep mzio | grep -v grep | head -2; sync'
+	;;
+mzio-status)
+	$CTL sh 'ps | grep mzio | grep -v grep; cat /tmp/mzio_state 2>/dev/null; ls -la /opt/mzio /opt/mzio.json /etc/init.d/S21mzio 2>&1; tail -5 /tmp/mzio.boot.log 2>/dev/null'
+	;;
 mzweb-rollback)
 	echo "⚠ 即將還原原廠 sipweb 並重開機設備 =="
 	if $CTL sh 'test -f /etc/sipweb/sipweb.orig && echo ORIG_YES || echo ORIG_NO' | grep -q ORIG_NO; then
@@ -113,6 +125,6 @@ mzweb-rollback)
 	echo "已還原 /etc/sipweb/sipweb.orig（rogue hbi_web）＋S20ipgaurd 並觸發 reboot；回到部署前狀態（:80 web off）"
 	;;
 *)
-	echo "usage: $0 {deploy|status|rollback|redeploy|mzweb-install|mzweb-rollback}"; exit 2
+	echo "usage: $0 {deploy|status|rollback|redeploy|mzweb-install|mzweb-rollback|mzio-install|mzio-status}"; exit 2
 	;;
 esac

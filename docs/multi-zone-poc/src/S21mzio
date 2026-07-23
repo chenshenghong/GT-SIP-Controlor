@@ -1,0 +1,14 @@
+#!/bin/sh
+# S21mzio — IO 動作 side-car autostart。rcS 無參數呼叫 -> start。
+BIN=/opt/mzio
+case "${1:-start}" in
+start)
+	[ -x "$BIN" ] || exit 0
+	"$BIN" 2>>/tmp/mzio.boot.log &
+	echo "mzio: autostart armed"
+	;;
+stop)
+	killall mzio 2>/dev/null
+	;;
+esac
+exit 0
