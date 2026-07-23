@@ -266,6 +266,60 @@ try:
     assert empty_msg in raw, raw
     print("[10] empty body -> E001 empty JSON OK")
 
+    # 11. 帶 token GET /get/sip/config -> multicast_tx_config 反映目前 ifcfg 值
+    #     （沿用 [9] 最後一次落盤：239.0.0.1:8000 enabled=false G.722；
+    #     [1] 的 225.1.1.1:9000/true 已被 [9] 覆寫）
+    req = urllib.request.Request(
+        "http://127.0.0.1:80/get/sip/config", headers=H, method="GET")
+    raw = urllib.request.urlopen(req, timeout=5).read()
+    body = json.loads(raw.decode("gbk"))
+    assert body["multicast_tx_config"] == {
+        "multicast_address": "239.0.0.1",
+        "multicast_port": 8000,
+        "enabled": False,
+        "audio_codec": "G.722",
+    }, body["multicast_tx_config"]
+    print("[11] GET /get/sip/config -> multicast_tx_config reflects persisted values OK")
+
+    # 12. /etc/ifcfg-sip 無 MULTICAST_TX_* 時（rm 後重啟 server）-> multicast_tx_config 回預設
+    cfg_lines = [l for l in read_ifcfg().splitlines() if not l.startswith("MULTICAST_TX_")]
+    with open(IFCFG, "w", encoding="latin1") as f:
+        f.write("\n".join(cfg_lines) + "\n")
+    p.kill()
+    p.wait(timeout=5)
+    p = subprocess.Popen(["build/mzweb-x86"])
+    time.sleep(1)
+    tok = login()
+    assert tok and len(tok) == 32, repr(tok)
+    H = {"Authorization": "Bearer " + tok, "Content-Type": "application/json"}
+    req = urllib.request.Request(
+        "http://127.0.0.1:80/get/sip/config", headers=H, method="GET")
+    raw = urllib.request.urlopen(req, timeout=5).read()
+    body = json.loads(raw.decode("gbk"))
+    assert body["multicast_tx_config"] == {
+        "multicast_address": "239.0.0.100",
+        "multicast_port": 9000,
+        "enabled": False,
+        "audio_codec": "G.722",
+    }, body["multicast_tx_config"]
+    print("[12] no MULTICAST_TX_* in ifcfg after restart -> multicast_tx_config defaults OK")
+
+    # 13. 帶 token GET /get/device/status -> sip_status.multicast_tx_status 依 ENABLED
+    #     （此時 [12] 剛重啟、無 MULTICAST_TX_ENABLED -> 視同關閉）
+    req = urllib.request.Request(
+        "http://127.0.0.1:80/get/device/status", headers=H, method="GET")
+    raw = urllib.request.urlopen(req, timeout=5).read()
+    body = json.loads(raw.decode("gbk"))
+    sip_status = body["sip_status"]
+    assert "multicast_tx_status" in sip_status, sip_status
+    off_status = "\xb9\xd8\xb1\xd5".encode("latin1").decode("gbk")
+    assert sip_status["multicast_tx_status"] == {
+        "status": off_status,
+        "address": "239.0.0.100:9000",
+        "audio_codec": "G.722",
+    }, sip_status["multicast_tx_status"]
+    print("[13] GET /get/device/status -> sip_status.multicast_tx_status (OFF, default) OK")
+
     print("txio_settx OK")
 except Exception:
     sys.stdout.flush()

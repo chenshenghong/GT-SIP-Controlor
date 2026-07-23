@@ -223,5 +223,31 @@ void mzweb_txio_set_io(void* client, const char* content, int content_len)
     (void)content; (void)content_len;
     txio_send_success(client);
 }
-void mzweb_txio_add_tx_config(cJSON* root, struct key_value_file* kv) { (void)root; (void)kv; }
-void mzweb_txio_add_tx_status(cJSON* sip_status, struct key_value_file* kv) { (void)sip_status; (void)kv; }
+void mzweb_txio_add_tx_config(cJSON* root, struct key_value_file* kv)
+{
+    const char* a = find_key_value(kv, "MULTICAST_TX_ADDRESS");
+    const char* p = find_key_value(kv, "MULTICAST_TX_PORT");
+    const char* e = find_key_value(kv, "MULTICAST_TX_ENABLED");
+    const char* c = find_key_value(kv, "MULTICAST_TX_CODEC");
+    cJSON* tx = cJSON_AddObjectToObject(root, "multicast_tx_config");
+    cJSON_AddStringToObject(tx, "multicast_address", a == NULL ? "239.0.0.100" : a);
+    cJSON_AddRawToObject(tx, "multicast_port", p == NULL ? "9000" : p);
+    cJSON_AddRawToObject(tx, "enabled", e == NULL ? "false" : e);
+    cJSON_AddStringToObject(tx, "audio_codec", c == NULL ? "G.722" : c);
+}
+
+void mzweb_txio_add_tx_status(cJSON* sip_status, struct key_value_file* kv)
+{
+    const char* a = find_key_value(kv, "MULTICAST_TX_ADDRESS");
+    const char* p = find_key_value(kv, "MULTICAST_TX_PORT");
+    const char* e = find_key_value(kv, "MULTICAST_TX_ENABLED");
+    const char* c = find_key_value(kv, "MULTICAST_TX_CODEC");
+    int on = (e != NULL && strncmp(e, "true", 4) == 0);
+    char addr_buf[64] = {0};
+    snprintf(addr_buf, sizeof(addr_buf), "%s:%s",
+             a == NULL ? "239.0.0.100" : a, p == NULL ? "9000" : p);
+    cJSON* st = cJSON_AddObjectToObject(sip_status, "multicast_tx_status");
+    cJSON_AddStringToObject(st, "status", on ? MZTXIO_TXSTAT_ON : MZTXIO_TXSTAT_OFF);
+    cJSON_AddStringToObject(st, "address", addr_buf);
+    cJSON_AddStringToObject(st, "audio_codec", c == NULL ? "G.722" : c);
+}
