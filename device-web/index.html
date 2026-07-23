@@ -329,6 +329,7 @@ function api(method, path, body){
     for(let attempt=0; attempt<=maxAttempts; attempt++){
       try{
         const data = await rawRequest(method, path, body, tok, base);
+        setConn("ok","已連線");   // 設備有回應＝可達：任何視圖皆更新連線徽章（修系統維護等非 dashboard 頁徽章永卡「連線中…」）
         if(data && data.status==="error"){
           const code = data.error_code || "ERR";
           if(code==="A002" || code==="A003"){          // token 過期/無效
@@ -1071,7 +1072,7 @@ async function renderSystem(c){
     info.innerHTML = kv("CPU 使用率","",(s.cpu_usage??"—")+" %") +
        kv("記憶體使用","",(s.memory_usage??"—")+" %") + kv("磁碟使用","",(s.disk_usage??"—")+" %") +
        kv("溫度","",(s.temperature??"—")+" °C") + kv("運行時間","",s.uptime);
-  }catch(e){ const info=$("#sys-info"); if(info) info.innerHTML=errBox("讀取系統資訊失敗",e); }
+  }catch(e){ setConn("err","連線異常"); const info=$("#sys-info"); if(info) info.innerHTML=errBox("讀取系統資訊失敗",e); }
 }
 async function doReboot(){
   try{ await POST("/system/restart",{confirm:true}); }

@@ -16,9 +16,9 @@
 |---|---|
 | 自研 multi-zone 可行嗎？ | **可行——已真機驗證**。執行面走「側車（side-car）RTP 仲裁中繼」，不改閉源 termapp。 |
 | 最大不確定性（原） | **切流時 termapp 的 jitter buffer 對 RTP 流跳變的反應**——原列 PoC 第一優先。**✅ 已驗證通過**：RTP 重寫（統一 SSRC/連續 seq-ts/切換 marker）後，反覆搶佔切流**乾淨、無爆音**，使用者聽覺確認。 |
-| 已驗證（2026-07-21） | P0 自製 ARM binary 設備原生執行 ✅／P1 side-car 透明中繼、termapp 零改動收播 ✅／P2 多區搶佔（≤50ms）+ 靜默恢復 + 不混音 + 切流無爆音 ✅。 |
-| 次要風險（未消） | 各區 codec 混用、26MB RAM／單核資源預算（16 區壓測）、與原廠韌體升級的共存、維運游離。 |
-| 建議 | **核心假設已通過，自研技術可行性成立**。續推工程整合（P4–P6：規模/config/開機/維運），與原廠需求單並行作為時程保險。 |
+| 已驗證（2026-07-21〜22） | P0 自製 ARM binary 設備原生執行 ✅／P1 side-car 透明中繼、termapp 零改動收播 ✅／P2 多區搶佔（≤50ms）+ 靜默恢復 + 不混音 + 切流無爆音 ✅／**P4** 16 區規模（VmRSS 44KB、CPU ≈0.6%）+ 斷電重啟自恢復 + codec 混切 relay 面 ✅／**P5** mzrelay3 真實 IGMP join + 自帶 REST + device-web 真頁面閉環 ✅／**P6** 佈署自動化 + 升級共存 runbook ✅。 |
+| 次要風險（未消） | 維運游離（自研 daemon 不在原廠保固範圍）為長期成本——已拍板由我方承擔（§八-3）。codec 已收斂：config 決定、G.722/G.711U 皆支援、全環境統一即可。 |
+| 建議 | **P0–P6 全數完成，自研路線已達可部署雛形**（mzrelay3 + device-web + mzdeploy）。與原廠需求單並行策略不變：原廠原生實作仍是正解（無維運游離），自研作時程保險與談判籌碼；§八決策點待拍板。 |
 | 不建議 | 反組譯 patch termapp（B/C 路，風險高、不可維護）；完全重寫 termapp（工程量不切實際）。 |
 
 **一句話**：我們無法讓閉源的 termapp 自己聽 16 區，但可以自研一支輕量 daemon 替它聽 16 區、做優先權仲裁，再把「勝出的那一路」餵給 termapp 當單流播放——termapp 現成的解碼／音頻輸出／G.722 時鐘修正全部沿用。成敗取決於「餵入的流切換時 termapp 是否平順接受」。
@@ -199,18 +199,19 @@
 - [ ] （待補）G.722 各區音調/語速壓測（無 2× 回歸；驗收 #8、MZ-04）；端到端切流延遲量測（R5）。
 - **Go/No-go**：✅ 切流體感乾淨 → 自研技術可行性成立 → 進 P4 工程整合。
 
-### P4 — 規模與 codec 邊界　⏳ 待做
-- [ ] 16 區全 enabled、輪流送流，每區皆可收播（驗收 #6，R3 壓測記憶體/CPU/socket）。
-- [ ] 斷電重啟：全區設定與 join 自動恢復（驗收 #7、MZ-05）。
-- [ ] codec 邊界：全 G.722 OK 後，測 G.711U/G.722 混用行為，界定支援範圍（R2）。
+### P4 — 規模與 codec 邊界　✅ **完成**（2026-07-22 真機 `.70`）
+- [x] 16 區全 enabled、輪流送流，每區皆可收播（驗收 #6）：16 區逐一 SWITCH 覆蓋完整、低優先循環中被高優先秒插並自動回落。**R3 徹底排除**——VmRSS **44KB**、VmSize 180KB、20 fd、單執行緒、CPU ≈**0.6%**（36 jiffies/57s），系統 free 前後不變（測試腳本 `src/p4scale.sh`）。
+- [x] 斷電重啟：全區設定與 join 自動恢復（驗收 #7、MZ-05）：binary＋config 落 `/opt`（jffs2 持久），`/etc/init.d/S21mzrelay` 開機自啟（rcS 不帶參數呼叫→腳本預設 start；guarded＋背景化不阻塞開機；`src/S21mzrelay`、`src/mzrelay.conf.example`）。真機 `reboot` 後 16 區設定全恢復、轉發正常（G.722 送流即 SWITCH）。註：`/tmp` 為 tmpfs 重啟即清，測試素材需重推——正式部署一切持久物只放 `/opt`。
+- [x] codec 邊界：G.711U/G.722 混用行為，界定支援範圍（R2）：`mzrelay2` 改 **PT 透傳**（不再硬貼 PT9；G.722/PCMU 皆 20ms@8kHz RTP clock，ts+=160 通用）、`mztone` 加 pt 參數。實測純 G.711U、G.722↔G.711U 混用搶佔切換：relay 轉發與仲裁全部正常、**termapp 全程不重啟不掉線**（pid 不變）；termapp binary 內含 G711/PCMU/PCMA/G722/"payload type" 字串，具多 codec 處理路徑。**現場聽覺確認（2026-07-22 完成，兩輪）**：① config=G.722 時，G.711U（PT0 透傳）完全無聲、G.722 對照組清楚出聲；② 把 `MULTICAST_CODEC` 切 G.711U 並重啟後，**G.711U 清楚出聲**。→ **結論：termapp 按 config 解碼、不理 RTP PT；G.722 與 G.711U 皆原生支援，但同一時間只有一種**。場景上組播源固定編碼、無混用需求（拍板見 §八-5），全環境統一單一 codec 即可——**side-car 路線無 codec 缺口**。R2 完全收斂。
 
-### P5 — 控制面 ＋ device-web 對接
-- [ ] 控制面選項 1（mzrelay 自帶 REST）：`GET/POST /…/zones`，整表覆寫、priority 唯一性伺服器端驗證、佔位列規則（需求單 §四）。
-- [ ] device-web「📡 組播監聽區」頁對接、載入 16 區、改任一區儲存即時生效免重啟、GET 回報與畫面一致（驗收 #10、#1 向下相容）。
+### P5 — 控制面 ＋ device-web 對接　✅ **完成**（2026-07-22 真機 `.70`）
+- [x] 控制面選項 1（mzrelay 自帶 REST）：`src/mzrelay3.c`——16 區表落 `/opt/mzzones.json`、**真實 IGMP join**（`IP_ADD_MEMBERSHIP`，一區失敗不影響他區）、自帶 REST `:8090`（`GET/POST /get|set/sip/multicast/zones` ＋ 最小 `/auth/login` 發 Bearer token ＋ CORS preflight）。整表覆寫、E001 指名 `zone_id`（位址 224–239、埠 1024–65535、priority 1–16 且啟用區唯一、codec 白名單、佔位列規則含停用半成品拒收）本地驗證矩陣 8/8 全過；POST 後**熱套用 re-join 免重啟**、原子持久化（tmp+rename+sync）。同優先權改為**先到先播**（v2 為低 index 贏，不合規格）。
+- [x] device-web「📡 組播監聽區」頁對接（真頁面、瀏覽器實測）：host 指 `http://192.168.0.70:8090` 登入→載入 16 區→改 zone 2 埠儲存→「已儲存」→ relay **pid 不變**即時 re-join→RTP 打新埠立刻出流→頁面重載與 GET 一致（驗收 #10）。
+- **⚠ 對原廠規格的回饋（實測發現）**：韌體 GET 若對「未配置佔位列」回傳預設 codec 字串（如 `G.722`），device-web 的 touched 判定會把佔位列當已配置列，**整表存檔被前端擋死**——韌體 GET 對純佔位列必須回 `audio_codec:""`（device-web 才會插「請選擇」哨兵並視為未動）。此點需求單 §4.2 只寫了 POST 方向，建議補進需求單告知原廠。
 
-### P6 — 共存與維運
-- [ ] 原廠韌體升級（app 替換／整包 rom）後 mzrelay 的存活與重佈流程。
-- [ ] 佈署自動化腳本（比照本 session 升級腳本）＋回退方案＋維運 runbook。
+### P6 — 共存與維運　✅ **完成**（2026-07-22 真機 `.70`）
+- [x] 原廠韌體升級後 mzrelay 存活與重佈：**app 替換**（只換 `/opt/termapp`）不觸及 side-car 三檔，reboot 後 S21 照常拉起、免動作；**整包 rom** 三檔全滅→`mzdeploy.sh redeploy`＋事前備份 `/opt/mzzones.json`（流程表見 `docs/multi-zone-poc/README.md` runbook）。
+- [x] 佈署自動化 `src/mzdeploy.sh`：`deploy`（自動備份 `.prev`、zones 不動）/`status`（程序+檔案完整性+REST 摘要）/`rollback`/`redeploy`。實測：模擬抹除→一鍵恢復 zones 完好；rollback 還原後 REST 一致。
 
 ---
 
@@ -221,21 +222,24 @@
 | P0–P1 | toolchain＋最小中繼閉環 | 3–5 天 | ✅ **完成**（2026-07-21）|
 | P2 | 多區 join＋仲裁 | 3–5 天 | ✅ **完成** |
 | P3 | RTP 重寫＋切流調校（原**變數最大**） | 3–10 天 | ✅ **核心完成**（切流平順已證；G.722 壓測/延遲量測待補）|
-| P4 | 規模/codec/開機恢復 | 3–5 天 | ⏳ 待做 |
-| P5 | 控制面＋device-web | 3–5 天 | ⏳ 待做 |
-| P6 | 共存/佈署/維運 | 2–3 天 | ⏳ 待做 |
+| P4 | 規模/codec/開機恢復 | 3–5 天 | ✅ **完成**（2026-07-22；G.711U 聽覺確認待現場）|
+| P5 | 控制面＋device-web | 3–5 天 | ✅ **完成**（2026-07-22）|
+| P6 | 共存/佈署/維運 | 2–3 天 | ✅ **完成**（2026-07-22）|
+| P7 | websetsip 整合（自建 mzweb 收攏控制面到 :80） | — | ✅ **完成**（2026-07-22）；真機驗收見 `multi-zone-poc/p7-acceptance.md` |
+| P8 | mzweb v6.1.2 安全強化（HTTPS/mbedTLS、SEC-01~09、FW-01/02） | — | ✅ **完成**（2026-07-23）；真機驗收見 `multi-zone-poc/mzweb-security-acceptance.md` |
 | **合計** | PoC→可用 | **約 4–8 週**（視 P3） | 分水嶺 P3 已過 |
 
 > **原「分水嶺」P3（切流平順度）已通過**——自研技術可行性成立。剩餘 P4–P6 為工程整合（規模、config/REST 對接、開機自啟、維運），無原理性未知數。
 
 ---
 
-## 八、策略決策點（需人拍板）
+## 八、策略決策點（✅ 2026-07-22 已拍板）
 
-1. **自研 vs 等原廠**：原廠韌體是「原生多區 join」（無 R1 切流風險、無維運游離），但受制於原廠排程/意願；自研快、可控，但 R1/R7/R8 是長期成本。**建議**：以 PoC P0–P3 當「技術探針」平行推進，不放棄向原廠施壓；P3 通過再論產品化。
-2. **控制面路線**：PoC 用隔離的 mzrelay 自帶 REST（低風險）；產品化再考慮自編 websetsip 整合。
-3. **維運歸屬**：自研元件成為我方長期責任，需納入升級/佈署自動化（已有本 session 的腳本基礎）。
-4. **適用範圍**：先在 `.70` PoC；新興國小 30 台為潛在受益場域，但**客戶生產設備的自研佈署須另行風險評估與授權**（不在本 PoC 範圍）。
+1. **自研 vs 等原廠 → 拍板：自研直接產品化**。不等原廠排程；接受維運歸屬我方（決策 3 的自動化腳本為基礎）。
+2. **控制面路線 → 拍板：整合進 websetsip(:80)**（源碼在手，`docs/firmware-reference/websetsip.c`）。產品化工作：websetsip 新增需求單 §四的兩條 zones 路由（沿用其既有 Bearer token 鑑權），寫 `/opt/mzzones.json` 後通知 mzrelay3 重載；mzrelay3 自帶 REST :8090 降為 PoC/除錯用。
+3. **維運歸屬 → 拍板：我方承擔**，以 `mzdeploy.sh` + S21 + runbook 為維運基線。
+4. **適用範圍 → 拍板：`.70` 續掛觀察長期穩定性**（記憶體/死機/重啟回復），為場域部署累積證據；客戶生產設備部署仍須另行風險評估與授權。
+5. **codec 邊界（新增，依現場聽測）**：實測 termapp 只按 `MULTICAST_CODEC` config 解碼、不理 RTP PT——每區混用不做（場景上組播源固定編碼，無混用需求）；支援範圍＝全域統一單一 codec。SIP 通話面 config 旗標 `G722/PCMA/PCMU/OPUS=true` 四編碼原生支援，與組播收播互不影響。全域 G.711U 可行性已補測確認：config 切 G.711U 重啟後清楚出聲（P4.3 兩輪聽測）。
 
 ---
 

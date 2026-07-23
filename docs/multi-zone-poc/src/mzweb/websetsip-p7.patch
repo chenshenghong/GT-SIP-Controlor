@@ -1,0 +1,685 @@
+--- websetsip.c.orig
++++ websetsip.c
+@@ -31,10 +31,29 @@
+ #include "webapi.h"
+ #include "cjson.h"
+ #include "readtemp.h"
++#include "mzweb_zones.h"
++extern void request_get_index(void* client);
++#include "mzhash.h"
++#include "mzcert.h"
+ 
++/* SEC-05: brute-force login lockout state (file-scope; PoC uses a single
++ * process-wide counter, matching original single-session model; production
++ * hardening could key per-source-IP). */
++#ifndef LOCK_MS
++#define LOCK_MS 300000
++#endif
++static int s_login_fail = 0;
++static unsigned long long s_lock_until = 0;
++
+ /*定义HTTP的监听端口*/
+ #define WEB_SIP_SET_TCP_LISTEN_PORT 										80
+ 
++/* S-T11: HTTPS listener port + self-signed cert/key paths (bootstrapped by
++ * init_web_listen_tls at startup; see init_sip_web_set_svr). */
++#define WEB_SIP_SET_TLS_LISTEN_PORT 443
++#define WEB_SIP_SET_CRT_PATH "/etc/sipweb/mz.crt"
++#define WEB_SIP_SET_KEY_PATH "/etc/sipweb/mz.key"
++
+ /*定义token有效期*/
+ #define TOKEN_EXPIRES_MAX_SECONDS 											3600
+ 
+@@ -156,6 +175,22 @@
+ 	char http_msg[512] = {0};
+ 	do
+ 	{
++		unsigned long long mn_now = get_main_event_loop()->mn_now;
++		/* SEC-05-fix: lockout window has expired -- reset the fail counter so the
++		 * user gets a fresh 5 attempts, instead of the residual count immediately
++		 * re-tripping the lock on the very next wrong password (effectively a
++		 * permanent lockout until a successful login). */
++		if (s_lock_until != 0 && mn_now >= s_lock_until)
++		{
++			s_login_fail = 0;
++			s_lock_until = 0;
++		}
++		if (mn_now < s_lock_until)
++		{
++			msg = "登录失败次数过多，请稍后再试";
++			code = "A005";
++			break;
++		}
+ 		if (content == NULL ||
+ 			content_len == 0)
+ 		{
+@@ -204,13 +239,34 @@
+ 			break;
+ 		}
+ 
+-		if (strlen(pass_word) != strlen(WEB_PASSWORD) ||
+-			strcmp(pass_word, WEB_PASSWORD) != 0)
++		if (!mzhash_verify(pass_word, WEB_PASSWORD))
+ 		{
+ 			msg = "密码不正确";
+ 			code = "A001";
++			if (++s_login_fail >= 5)
++			{
++				s_lock_until = mn_now + LOCK_MS;
++				code = "A005";
++			}
+ 			free_keyvalue_file(keyvalue_file);
+ 			break;
++		}
++		s_login_fail = 0;
++		s_lock_until = 0;
++		/* SEC-04: legacy plaintext WEB_PASSWORD -> upgrade to salted SHA-256 in place. */
++		if (mzhash_is_legacy(WEB_PASSWORD))
++		{
++			char new_hash[128];
++			mzhash_make(pass_word, new_hash, sizeof(new_hash));
++			/* SEC-04-fix: mzhash_make() fail-closes (new_hash left empty) if the
++			 * DRBG/entropy source fails. Never persist an empty hash into
++			 * WEB_PASSWORD -- that would wipe the password and lock the account
++			 * out permanently. Skip this migration and retry on next login. */
++			if (new_hash[0] != '\0')
++			{
++				modify_key_value(keyvalue_file, "WEB_PASSWORD", new_hash);
++				write_keyvalue_file(WEB_SIP_SET_FILE, keyvalue_file);
++			}
+ 		}
+ 		get_token_string(s_http_sip_set->now_token, 64);
+ 		s_http_sip_set->now_token_timestamp = get_main_event_loop()->mn_now;
+@@ -392,8 +448,9 @@
+ 
+ 		struct key_value_file* keyvalue_file = read_keyvalue_file(WEB_SIP_SET_FILE);
+ 		const char* WEB_PASSWORD = find_key_value(keyvalue_file, "WEB_PASSWORD");
+-		if (strlen(old_pd) != strlen(WEB_PASSWORD) ||
+-			strcmp(old_pd, WEB_PASSWORD) != 0)
++		/* SEC-06: old-password comparison now goes through mzhash_verify (hash or
++		 * legacy plaintext), matching request_login_cmd. */
++		if (!mzhash_verify(old_pd, WEB_PASSWORD))
+ 		{
+ 			msg = "密码不正确";
+ 			code = "E001";
+@@ -401,9 +458,51 @@
+ 			break;
+ 		}
+ 
+-		modify_key_value(keyvalue_file, "WEB_PASSWORD", new_pd);
++		/* SEC-06: enforce new-password complexity (>=8 chars, at least one letter
++		 * and one digit) before accepting the change. */
++		{
++			int has_alpha = 0, has_digit = 0;
++			const char* p;
++			for (p = new_pd; *p != '\0'; ++p)
++			{
++				if ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z'))
++					has_alpha = 1;
++				if (*p >= '0' && *p <= '9')
++					has_digit = 1;
++			}
++			if (strlen(new_pd) < 8 || !has_alpha || !has_digit)
++			{
++				msg = "新密码强度不足(至少8位且需同时包含英文字母与数字)";
++				code = "E001";
++				free_keyvalue_file(keyvalue_file);
++				break;
++			}
++		}
++
++		/* SEC-06: persist the new password as a salted hash (never plaintext).
++		 * SEC-06-fix: same fail-closed guard as the SEC-04 legacy migration --
++		 * mzhash_make() leaves new_hash empty if the DRBG/entropy source fails;
++		 * never persist an empty hash (that would wipe WEB_PASSWORD and lock the
++		 * account out permanently). */
++		{
++			char new_hash[128];
++			mzhash_make(new_pd, new_hash, sizeof(new_hash));
++			if (new_hash[0] == '\0')
++			{
++				msg = "密码修改失败，请重试";
++				code = "E001";
++				free_keyvalue_file(keyvalue_file);
++				break;
++			}
++			modify_key_value(keyvalue_file, "WEB_PASSWORD", new_hash);
++		}
+ 		write_keyvalue_file(WEB_SIP_SET_FILE, keyvalue_file);
+ 		free_keyvalue_file(keyvalue_file);
++		/* SEC-06: force re-login after a successful password change by
++		 * invalidating the current token; the old token is rejected (A003) by
++		 * request_verify_token_cmd / mzweb_check_token on its next use. */
++		memset(s_http_sip_set->now_token, 0, 64);
++		s_http_sip_set->now_token_timestamp = 0;
+ 		break;
+ 	}while(1);
+ 
+@@ -511,6 +610,28 @@
+ }
+ 
+ /*获取设备状态*/
++/* SEC-09-fix2: cJSON_PrintUnformatted()/malloc() can return NULL under memory
++ * pressure; the original stack-buffer version could not fail this way. Both
++ * heap paths below must check for NULL before strlen()/snprintf() dereference it.
++ * This fallback itself uses only stack buffers so it cannot fail the same way. */
++static void mzweb_send_alloc_failure(void* client)
++{
++	char http_msg[64] = {0};
++	snprintf(http_msg, sizeof(http_msg), "{\"status\": \"error\", \"message\": \"out of memory\"}");
++	char buffer[256] = {0};
++	int len = snprintf(buffer, sizeof(buffer), "HTTP/1.1 500 Internal Server Error\r\n"
++							 "Server: %s\r\n"
++							 "Connection: close\r\n"
++							 "Content-Type: application/json;charset=GBK\r\n"
++							 "Content-Length: %d\r\n"
++							 "Allow: %s\r\n\r\n%s",
++							 HBI_WEB_SERVER,
++							 (int)strlen(http_msg),
++							 HBI_WEB_METHOD,
++							 http_msg);
++	web_snd_data(client, buffer, len);
++}
++
+ static void request_get_device_status(void* client)
+ {
+ 	struct key_value_file* keyvalue_sip = read_keyvalue_file(WEB_SIP_SET_FILE);
+@@ -560,53 +681,68 @@
+ 	now_timestamp %= (3600*1000);
+ 	int mins = now_timestamp/(60*1000);
+ 	
+-	char http_msg[2048] = {0};
+-	snprintf(http_msg, 2048, "{\"sip_status\": "
+-								"{\"primary_line\": %s, "
+-								"\"multicast_status\": %s,  "
+-								"\"device_info\": "
+-								"{\"model\": \"%s\", "
+-								"\"hardware_version\": \"%s\", "
+-								"\"software_version\": \"%s\", "
+-								"\"uptime\": \"%d天 %d小時 %d分鐘\", "
+-								"\"broadcast_volume"": %s, "
+-								"\"microphone_volume\": %s}, "
+-								"\"network_info\": "
+-								"{\"mac_address\": \"%s\", "
+-								"\"ip_allocation\": \"static\", "
+-								"\"ip_address\": \"%s\", "
+-								"\"subnet_mask\": \"%s\", "
+-								"\"gateway\": \"%s\", "
+-								"\"dns\": \"%s\"}}",
+-   								primary_line_status,
+-   								backup_line_status,
+-   								MODEL==NULL?"":MODEL,
+-   								HARD_VER==NULL?"":HARD_VER,
+-   								SOFT_VER==NULL?"":SOFT_VER,
+-   								days, hours, mins,
+-   								PLAY_VOL,
+-   								CAP_VOL,
+-   								MACADDR,
+-   								IPADDR,
+-   								NETMASK,
+-   								GATEWAY,
+-   								NS1==NULL?"":NS1);
+-	
+-	free_keyvalue_file(keyvalue_sip);
+-	free_keyvalue_file(keyvalue_eth0);
+-	
+-	char buffer[2048] = {0};
+-	int len = snprintf(buffer, 2048, "HTTP/1.1 200 OK\r\n"
+-					   			 "Server: %s\r\n"
+-					   			 "Connection: close\r\n"
+-					   			 "Content-Type: application/json;charset=GBK\r\n"
+-					   			 "Content-Length: %d\r\n"
+-					   			 "Allow: %s\r\n\r\n%s",
+-					   			 HBI_WEB_SERVER,
+-					   			 strlen(http_msg),
+-					   			 HBI_WEB_METHOD,
+-					   			 http_msg);
+-	web_snd_data(client, buffer, len);
++	cJSON* root = cJSON_CreateObject();
++	cJSON* sip_status = cJSON_AddObjectToObject(root, "sip_status");
++	/* primary_line/multicast_status are pre-formatted JSON fragments (see above);
++	 * embed as raw JSON, matching original unquoted %s injection. */
++	cJSON_AddRawToObject(sip_status, "primary_line", primary_line_status);
++	cJSON_AddRawToObject(sip_status, "multicast_status", backup_line_status);
++
++	/* FW-02 fix: device_info/network_info are root-level siblings of sip_status,
++	 * not nested inside it. */
++	char uptime_buf[64] = {0};
++	snprintf(uptime_buf, sizeof(uptime_buf), "%d天 %d小時 %d分鐘", days, hours, mins);
++	cJSON* device_info = cJSON_AddObjectToObject(root, "device_info");
++	cJSON_AddStringToObject(device_info, "model", MODEL==NULL?"":MODEL);
++	cJSON_AddStringToObject(device_info, "hardware_version", HARD_VER==NULL?"":HARD_VER);
++	cJSON_AddStringToObject(device_info, "software_version", SOFT_VER==NULL?"":SOFT_VER);
++	cJSON_AddStringToObject(device_info, "uptime", uptime_buf);
++	/* FW-01 fix: broadcast_volume key now closes correctly (cJSON always emits well-formed
++	 * keys); kept as raw JSON number, matching original unquoted %s injection. */
++	cJSON_AddRawToObject(device_info, "broadcast_volume", PLAY_VOL==NULL?"0":PLAY_VOL);
++	cJSON_AddRawToObject(device_info, "microphone_volume", CAP_VOL==NULL?"0":CAP_VOL);
++
++	cJSON* network_info = cJSON_AddObjectToObject(root, "network_info");
++	cJSON_AddStringToObject(network_info, "mac_address", MACADDR==NULL?"":MACADDR);
++	cJSON_AddStringToObject(network_info, "ip_allocation", "static");
++	cJSON_AddStringToObject(network_info, "ip_address", IPADDR==NULL?"":IPADDR);
++	cJSON_AddStringToObject(network_info, "subnet_mask", NETMASK==NULL?"":NETMASK);
++	cJSON_AddStringToObject(network_info, "gateway", GATEWAY==NULL?"":GATEWAY);
++	cJSON_AddStringToObject(network_info, "dns", NS1==NULL?"":NS1);
++
++	free_keyvalue_file(keyvalue_sip);
++	free_keyvalue_file(keyvalue_eth0);
++
++	char* http_msg = cJSON_PrintUnformatted(root);
++	cJSON_Delete(root);
++	if (http_msg == NULL)
++	{
++		mzweb_send_alloc_failure(client);
++		return;
++	}
++
++	size_t http_msg_len = strlen(http_msg);
++	size_t buffer_cap = http_msg_len + 512;
++	char* buffer = (char*)malloc(buffer_cap);
++	if (buffer == NULL)
++	{
++		cJSON_free(http_msg);
++		mzweb_send_alloc_failure(client);
++		return;
++	}
++	int len = snprintf(buffer, buffer_cap, "HTTP/1.1 200 OK\r\n"
++							 "Server: %s\r\n"
++							 "Connection: close\r\n"
++							 "Content-Type: application/json;charset=GBK\r\n"
++							 "Content-Length: %d\r\n"
++							 "Allow: %s\r\n\r\n%s",
++							 HBI_WEB_SERVER,
++							 (int)http_msg_len,
++							 HBI_WEB_METHOD,
++							 http_msg);
++	web_snd_data(client, buffer, len);
++	free(buffer);
++	cJSON_free(http_msg);
+ }
+ 
+ /*设置音量*/
+@@ -822,82 +958,69 @@
+ 	const char* PCMA = find_key_value(keyvalue_file, "PCMA");
+ 	const char* OPUS = find_key_value(keyvalue_file, "OPUS");
+ 	
+-	char http_msg[2048] = {0};
+-	snprintf(http_msg, 2048, "{"
+-								"\"primary_line\": {"
+-								"\"server_address\": \"%s\", "
+-								"\"server_port\": %s, "
+-								"\"user_id\": \"%s\", "
+-								"\"password\": \"%s\", "
+-								"\"auto_answer\": %s, "
+-								"\"register_timeout\": %s, "
+-								"\"transport_protocol\": \"%s\"}, "
+-								/*"\"backup_line\": {"
+-								"\"server_address\": \"%s\", "
+-								"\"server_port\": %s, "
+-								"\"user_id\": \"%s\", "
+-								"\"password\": \"%s\", "
+-								"\"auto_answer\": %s, "
+-								"\"register_timeout\": %s, "
+-								"\"transport_protocol\": \"%s\"}, "*/
+-								"\"multicast_config\": {"
+-								"\"multicast_address\": \"%s\", "
+-								"\"multicast_port\": %s, "
+-								"\"enabled\": %s, "
+-								"\"audio_codec\": \"%s\"}, "
+-								"\"sip_parameters\": {"
+-								"\"local_port\": %s, "
+-								"\"rtp_start_port\": %s, "
+-								"\"rtp_end_port\": %s, "
+-								"\"rtp_timeout\": %s, "
+-								"\"echo_cancellation\": %s}, "
+-								"\"audio_codecs\": {"
+-								"\"g722\": %s, "
+-								"\"opus\": %s, "
+-								"\"g711_ulaw\": %s, "
+-								"\"g711_alaw\": %s}}",
+-								PRIMARY_SERVER_ADDRESS==NULL?"":PRIMARY_SERVER_ADDRESS,
+-								PRIMARY_SERVER_PORT==NULL?"0":PRIMARY_SERVER_PORT,
+-								PRIMARY_USER_ID==NULL?"":PRIMARY_USER_ID,
+-								PRIMARY_PASSWORD==NULL?"":PRIMARY_PASSWORD,
+-								PRIMARY_AUTO_ANSWER==NULL?"true":PRIMARY_AUTO_ANSWER,
+-								PRIMARY_REGISTER_TIMEOUT==NULL?"300":PRIMARY_REGISTER_TIMEOUT,
+-								PRIMARY_TRANSPORT_PROTOCL==NULL?"TCP":PRIMARY_TRANSPORT_PROTOCL,
+-								/*BACKUP_SERVER_ADDRESS=NULL?"":BACKUP_SERVER_ADDRESS,
+-								BACKUP_SERVER_PORT=NULL?"0":BACKUP_SERVER_PORT,
+-								BACKUP_USER_ID=NULL?"":BACKUP_USER_ID,
+-								BACKUP_PASSWORD=NULL?"":BACKUP_PASSWORD,
+-								BACKUP_AUTO_ANSWER=NULL?"true":BACKUP_AUTO_ANSWER,
+-								BACKUP_REGISTER_TIMEOUT=NULL?"300":BACKUP_REGISTER_TIMEOUT,
+-								BACKUP_TRANSPORT_PROTOCL=NULL?"TCP":BACKUP_TRANSPORT_PROTOCL,*/
+-								MULTICAST_ADDRESS==NULL?"":MULTICAST_ADDRESS,
+-								MULTICAST_PORT==NULL?"0":MULTICAST_PORT,
+-								MULTICAST_ENABLED==NULL?"false":MULTICAST_ENABLED,
+-								MULTICAST_CODEC==NULL?"":MULTICAST_CODEC,								
+-								LOCAL_PORT==NULL?"0":LOCAL_PORT,
+-								RTP_START_PORT==NULL?"0":RTP_START_PORT,
+-								RTP_END_PORT==NULL?"0":RTP_END_PORT,
+-								RTP_TIMEOUT==NULL?"0":RTP_TIMEOUT,
+-								ECHO_CANCELLATION==NULL?"true":ECHO_CANCELLATION,
+-								G722==NULL?"true":G722,
+-								OPUS==NULL?"true":OPUS,
+-								PCMU==NULL?"true":PCMU,
+-								PCMA==NULL?"true":PCMA);
+-	
+-	free_keyvalue_file(keyvalue_file);
+-	
+-	char buffer[2048] = {0};
+-	int len = snprintf(buffer, 2048, "HTTP/1.1 200 OK\r\n"
+-					   			 "Server: %s\r\n"
+-					   			 "Connection: close\r\n"
+-					   			 "Content-Type: application/json;charset=GBK\r\n"
+-					   			 "Content-Length: %d\r\n"
+-					   			 "Allow: %s\r\n\r\n%s",
+-					   			 HBI_WEB_SERVER,
+-					   			 strlen(http_msg),
+-					   			 HBI_WEB_METHOD,
+-					   			 http_msg);
+-	web_snd_data(client, buffer, len);
++	cJSON* root = cJSON_CreateObject();
++	cJSON* primary_line = cJSON_AddObjectToObject(root, "primary_line");
++	cJSON_AddStringToObject(primary_line, "server_address", PRIMARY_SERVER_ADDRESS==NULL?"":PRIMARY_SERVER_ADDRESS);
++	cJSON_AddRawToObject(primary_line, "server_port", PRIMARY_SERVER_PORT==NULL?"0":PRIMARY_SERVER_PORT);
++	cJSON_AddStringToObject(primary_line, "user_id", PRIMARY_USER_ID==NULL?"":PRIMARY_USER_ID);
++	/* SEC-09: password now built via cJSON_AddStringToObject -> print_string_ptr auto-escapes
++	 * '"'/'\\'/control chars, so a password containing those can no longer break JSON syntax. */
++	cJSON_AddStringToObject(primary_line, "password", "********"); /* SEC-02: mask always, never read PRIMARY_PASSWORD */
++	cJSON_AddRawToObject(primary_line, "auto_answer", PRIMARY_AUTO_ANSWER==NULL?"true":PRIMARY_AUTO_ANSWER);
++	cJSON_AddRawToObject(primary_line, "register_timeout", PRIMARY_REGISTER_TIMEOUT==NULL?"300":PRIMARY_REGISTER_TIMEOUT);
++	cJSON_AddStringToObject(primary_line, "transport_protocol", PRIMARY_TRANSPORT_PROTOCL==NULL?"TCP":PRIMARY_TRANSPORT_PROTOCL);
++
++	cJSON* multicast_config = cJSON_AddObjectToObject(root, "multicast_config");
++	cJSON_AddStringToObject(multicast_config, "multicast_address", MULTICAST_ADDRESS==NULL?"":MULTICAST_ADDRESS);
++	cJSON_AddRawToObject(multicast_config, "multicast_port", MULTICAST_PORT==NULL?"0":MULTICAST_PORT);
++	cJSON_AddRawToObject(multicast_config, "enabled", MULTICAST_ENABLED==NULL?"false":MULTICAST_ENABLED);
++	cJSON_AddStringToObject(multicast_config, "audio_codec", MULTICAST_CODEC==NULL?"":MULTICAST_CODEC);
++
++	cJSON* sip_parameters = cJSON_AddObjectToObject(root, "sip_parameters");
++	cJSON_AddRawToObject(sip_parameters, "local_port", LOCAL_PORT==NULL?"0":LOCAL_PORT);
++	cJSON_AddRawToObject(sip_parameters, "rtp_start_port", RTP_START_PORT==NULL?"0":RTP_START_PORT);
++	cJSON_AddRawToObject(sip_parameters, "rtp_end_port", RTP_END_PORT==NULL?"0":RTP_END_PORT);
++	cJSON_AddRawToObject(sip_parameters, "rtp_timeout", RTP_TIMEOUT==NULL?"0":RTP_TIMEOUT);
++	cJSON_AddRawToObject(sip_parameters, "echo_cancellation", ECHO_CANCELLATION==NULL?"true":ECHO_CANCELLATION);
++
++	cJSON* audio_codecs = cJSON_AddObjectToObject(root, "audio_codecs");
++	cJSON_AddRawToObject(audio_codecs, "g722", G722==NULL?"true":G722);
++	cJSON_AddRawToObject(audio_codecs, "opus", OPUS==NULL?"true":OPUS);
++	cJSON_AddRawToObject(audio_codecs, "g711_ulaw", PCMU==NULL?"true":PCMU);
++	cJSON_AddRawToObject(audio_codecs, "g711_alaw", PCMA==NULL?"true":PCMA);
++
++	free_keyvalue_file(keyvalue_file);
++
++	char* http_msg = cJSON_PrintUnformatted(root);
++	cJSON_Delete(root);
++	if (http_msg == NULL)
++	{
++		mzweb_send_alloc_failure(client);
++		return;
++	}
++
++	size_t http_msg_len = strlen(http_msg);
++	size_t buffer_cap = http_msg_len + 512;
++	char* buffer = (char*)malloc(buffer_cap);
++	if (buffer == NULL)
++	{
++		cJSON_free(http_msg);
++		mzweb_send_alloc_failure(client);
++		return;
++	}
++	int len = snprintf(buffer, buffer_cap, "HTTP/1.1 200 OK\r\n"
++							 "Server: %s\r\n"
++							 "Connection: close\r\n"
++							 "Content-Type: application/json;charset=GBK\r\n"
++							 "Content-Length: %d\r\n"
++							 "Allow: %s\r\n\r\n%s",
++							 HBI_WEB_SERVER,
++							 (int)http_msg_len,
++							 HBI_WEB_METHOD,
++							 http_msg);
++	web_snd_data(client, buffer, len);
++	free(buffer);
++	cJSON_free(http_msg);
+ }
+ 
+ /*设置主sip账户信息*/
+@@ -2122,6 +2245,11 @@
+ 		{
+ 			save_flag = 1;
+ 			modify_key_value(keyvalue_file, "IPADDR", ip);
++			/* S-T11: device IP changed -> the self-signed cert SAN=<old IP> is
++			 * now stale. Delete crt/key so init_web_listen_tls re-signs with the
++			 * new IP on the next boot (the reboot timer below restarts the device
++			 * after a successful network change). */
++			mzcert_invalidate(WEB_SIP_SET_CRT_PATH, WEB_SIP_SET_KEY_PATH);
+ 		}
+ 		
+ 		const char* NETMASK = find_key_value(keyvalue_file, "NETMASK");
+@@ -2684,6 +2812,77 @@
+ }
+ 
+ /*http回调函数*/
++/* P7: zones route token check. Comparison logic and error JSON body copied
++ * verbatim from request_verify_token_cmd (incl. len == strlen(now_token) - 1
++ * off-by-one quirk and A002/A003 codes). Difference: this is an auth gate --
++ * success returns 0 (no reply; zones handler forwards), failure sends the error
++ * reply then returns -1, with HTTP status 401 instead of the legacy 200 (zones
++ * is a new authenticated API using real HTTP status codes, consistent with 503). */
++static int mzweb_check_token(void* client, void* http_head)
++{
++	char* code = NULL;
++	char* msg = NULL;
++	char* value = NULL;
++	int len = 0;
++	get_http_head(http_head, "Authorization", &value, &len);
++
++	if (len > 7)
++	{
++		len -= 7;
++		value += strlen("Bearer ");
++		if (len == (strlen(s_http_sip_set->now_token) - 1) &&
++			strncmp(value, s_http_sip_set->now_token, len) == 0)
++		{
++			if (s_http_sip_set->now_token_timestamp + TOKEN_EXPIRES_MAX_SECONDS*1000
++				<= get_main_event_loop()->mn_now)
++			{
++				memset(s_http_sip_set->now_token, 0, 64);
++				s_http_sip_set->now_token_timestamp = 0;
++
++				code = "A002";
++				msg = "Token已过期";
++			}
++			else
++			{
++				s_http_sip_set->now_token_timestamp = get_main_event_loop()->mn_now;
++			}
++		}
++		else
++		{
++			code = "A003";
++			msg = "该Token非当前有效Token";
++		}
++	}
++	else
++	{
++		code = "A003";
++		msg = "没有Token信息";
++	}
++
++	if (msg == NULL && code == NULL)
++	{
++		return 0;
++	}
++
++	char http_msg[512] = {0};
++	snprintf(http_msg, 512, "{\"status\": \"error\",\"message\": \"操作失敗\","
++		"\"error_code\": \"%s\",  \"details\": \"%s\"}",
++		code, msg);
++	char buffer[1024] = {0};
++	len = snprintf(buffer, 1024, "HTTP/1.1 401 Unauthorized\r\n"
++							 "Server: %s\r\n"
++							 "Connection: close\r\n"
++							 "Content-Type: application/json;charset=GBK\r\n"
++							 "Content-Length: %d\r\n"
++							 "Allow: %s\r\n\r\n%s",
++							 HBI_WEB_SERVER,
++							 strlen(http_msg),
++							 HBI_WEB_METHOD,
++							 http_msg);
++	web_snd_data(client, buffer, len);
++	return -1;
++}
++
+ static int http_callback(void* client, void* http_head, int request_type,
+ 	const char* content, int content_len)
+ {
+@@ -2694,6 +2893,25 @@
+ 		get_http_url(http_head, &url, &len);
+ 		if (len > 0)
+ 		{
++			if (len == (int)strlen("/get/sip/multicast/zones") &&
++				strncmp("/get/sip/multicast/zones", url, len) == 0)
++			{
++				if (mzweb_check_token(client, http_head) == 0)
++					mzweb_forward_zones(client, 0, NULL, 0);
++			}
++			else
++			if (len == (int)strlen("/set/sip/multicast/zones") &&
++				strncmp("/set/sip/multicast/zones", url, len) == 0)
++			{
++				if (mzweb_check_token(client, http_head) == 0)
++					mzweb_forward_zones(client, 1, content, content_len);
++			}
++			else
++			if (len == 1 && url[0] == '/')
++			{
++				request_get_index(client);
++			}
++			else
+ 			if (strncmp("/auth/login", url, len) == 0)
+ 			{
+ 				/*处理登录*/
+@@ -2721,7 +2939,8 @@
+ 			if (strncmp("/get/device/status", url, len) == 0)
+ 			{
+ 				/*获取设备状态*/
+-				request_get_device_status(client);
++				if (mzweb_check_token(client, http_head) == 0)
++					request_get_device_status(client);
+ 			}
+ 			else
+ 			if (strncmp("/set/device/volume", url, len) == 0)
+@@ -2733,13 +2952,15 @@
+ 			if (strncmp("/get/device/volume", url, len) == 0)
+ 			{
+ 				/*获取音量*/
+-				request_get_device_volume(client);
++				if (mzweb_check_token(client, http_head) == 0)
++					request_get_device_volume(client);
+ 			}
+ 			else
+ 			if (strncmp("/get/sip/config", url, len) == 0)
+ 			{
+ 				/*获取SIP配置*/
+-				request_get_sip_config(client);
++				if (mzweb_check_token(client, http_head) == 0)
++					request_get_sip_config(client);
+ 			}
+ 			else
+ 			if (strncmp("/set/sip/primary", url, len) == 0)
+@@ -2775,13 +2996,15 @@
+ 			if (strncmp("/get/call/status", url, len) == 0)
+ 			{
+ 				/*获取SIP通话状态*/
+-				request_get_call_status(client);
++				if (mzweb_check_token(client, http_head) == 0)
++					request_get_call_status(client);
+ 			}
+ 			else
+ 			if (strncmp("/get/network/config", url, len) == 0)
+ 			{
+ 				/*获取网络配置*/
+-				request_get_network_config(client);
++				if (mzweb_check_token(client, http_head) == 0)
++					request_get_network_config(client);
+ 			}
+ 			else
+ 			if (strncmp("/set/network/config", url, len) == 0)
+@@ -2799,7 +3022,8 @@
+ 			if (strncmp("/system/info", url, len) == 0)
+ 			{
+ 				/*获取系统运行信息*/
+-				request_system_info(client);
++				if (mzweb_check_token(client, http_head) == 0)
++					request_system_info(client);
+ 			}
+ 			else
+ 			if (strncmp("/set/sip/multicast", url, len) == 0)
+@@ -2810,6 +3034,7 @@
+ 			
+ 		}
+ 	}
++	return 0;
+ }
+ 
+ /*定时重启*/
+@@ -2988,7 +3213,7 @@
+ 		fclose(ifcfg_app);
+ 	}
+ 
+-	char* request_url[19] = {0};
++	char* request_url[21] = {0};
+ 	request_url[0] = "/auth/login";
+ 	request_url[1] = "/auth/logout";
+ 	request_url[2] = "/auth/verify";
+@@ -3008,6 +3233,8 @@
+ 	request_url[16] = "/system/info";
+ 	request_url[17] = "/auth/change_password";
+ 	request_url[18] = "/set/sip/multicast";
++	request_url[19] = "/get/sip/multicast/zones";
++	request_url[20] = "/set/sip/multicast/zones";
+ 
+ 	char* care_key_name[1] = {0};
+ 	care_key_name[0] = "Authorization";
+@@ -3016,7 +3243,37 @@
+ 		NULL, 0,
+ 		NULL, 0,
+ 		NULL, 0,
+-		request_url, 19,
++		request_url, 21,
+ 		care_key_name, 1,
+ 		0);
++
++	/* S-T11: bring up the :443 TLS listener in the SAME event loop as :80.
++	 * Read the device IP from /etc/ifcfg-eth0 (IPADDR) for the self-signed
++	 * cert SAN (same file the original reads for SN above). init_web_listen_tls
++	 * runs mzcert_ensure() -- self-signs on first boot; RSA-2048 keygen may take
++	 * several seconds on single-core ARM -- then mzcert_load(), and only sets
++	 * s_tls_ready=1 AFTER the cert+config are ready. Until then :80 serves
++	 * plaintext WITHOUT the 301 redirect (webapi.c send_redirect is gated on
++	 * s_tls_ready), so the device stays reachable during the keygen window and
++	 * only starts redirecting once HTTPS is actually up. Fallback: if IPADDR is
++	 * unreadable AND no cert exists yet, mzcert_ensure fails, init_web_listen_tls
++	 * returns early, s_tls_ready stays 0, and :80 keeps serving plaintext (never
++	 * brick access). If a cert already exists on disk, IPADDR is not needed --
++	 * mzcert_ensure keeps the existing cert and TLS still comes up. */
++	char device_ip[64] = {0};
++	{
++		struct key_value_file* eth0_kv = read_keyvalue_file(ETH0_SET_FILE);
++		if (eth0_kv != NULL)
++		{
++			const char* IPADDR = find_key_value(eth0_kv, "IPADDR");
++			if (IPADDR != NULL)
++			{
++				snprintf(device_ip, sizeof(device_ip), "%s", IPADDR);
++			}
++			free_keyvalue_file(eth0_kv);
++		}
++	}
++	init_web_listen_tls(WEB_SIP_SET_TLS_LISTEN_PORT, http_callback,
++		get_main_event_loop(),
++		WEB_SIP_SET_CRT_PATH, WEB_SIP_SET_KEY_PATH, device_ip);
+ }

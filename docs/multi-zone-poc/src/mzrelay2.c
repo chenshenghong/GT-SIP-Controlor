@@ -102,15 +102,16 @@ int main(int argc, char **argv) {
 
                 if (i == win) {
                     int marker = (cur != win) ? 1 : 0;   /* talkspurt start on switch */
+                    int pt = buf[1] & 0x7f;              /* P4: pass through zone's codec PT */
                     buf[0] = 0x80;
-                    buf[1] = (unsigned char)(9 | (marker ? 0x80 : 0));
+                    buf[1] = (unsigned char)(pt | (marker ? 0x80 : 0));
                     buf[2] = (out_seq >> 8) & 0xff; buf[3] = out_seq & 0xff;
                     buf[4] = (out_ts >> 24) & 0xff; buf[5] = (out_ts >> 16) & 0xff;
                     buf[6] = (out_ts >> 8) & 0xff;  buf[7] = out_ts & 0xff;
                     buf[8] = (out_ssrc >> 24) & 0xff; buf[9] = (out_ssrc >> 16) & 0xff;
                     buf[10] = (out_ssrc >> 8) & 0xff; buf[11] = out_ssrc & 0xff;
                     sendto(tx, buf, (size_t)n, 0, (struct sockaddr *)&da, sizeof(da));
-                    out_seq++; out_ts += 160;            /* G.722 20ms @ 8kHz RTP clock */
+                    out_seq++; out_ts += 160;            /* 20ms @ 8kHz RTP clock (G.722 & PCMU) */
                     if (cur != win) {
                         fprintf(stderr, "[%ld] SWITCH -> zone%d (port %d prio %d)\n",
                                 t, win, z[win].port, z[win].prio);
