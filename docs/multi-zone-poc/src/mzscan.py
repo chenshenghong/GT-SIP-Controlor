@@ -114,7 +114,7 @@ def classify(f):
     # rule4: probe-incomplete = 資訊不足（任何關鍵欄 unknown/None）或衝突
     unknown = (f.get("fw_ver") == "unknown" or f.get("web_type") == "unknown"
                or f.get("opt_writable") is None or f.get("opt_free_kb") is None
-               or f.get("ssh_ok") is None
+               or f.get("ssh_ok") is None or f.get("ssh_hostkey_fp") is None
                or any(f.get(k) is None for k in _SIDECAR_KEYS))
     if unknown or f.get("dbp_conflict") or f.get("hostkey_dup"):
         return "blocked:probe-incomplete"
@@ -126,6 +126,17 @@ def classify(f):
         return "needs-sidecar"
     # rule7: 完成
     return "done"
+
+def sidecar_partial(f):
+    """spec 非阻斷修正 4：sidecar 四項「部分綠」（非全 true 亦非全 false）→ True（半套安裝）。
+
+    全 true（已完整裝好）或全 false（尚未部署，正常初始狀態）皆非半套，回 False。
+    任一欄為 None（unknown）時，classify 早已判 blocked:probe-incomplete，此函式的呼叫方
+    只在 needs-sidecar/done 分支使用，故不特別處理 None 語意。
+    """
+    vals = [bool(f.get(k)) for k in _SIDECAR_KEYS]
+    return any(vals) and not all(vals)
+
 
 def find_hostkey_dups(rows):
     seen, dups = set(), set()
@@ -214,7 +225,9 @@ def reconcile(expected, discovered):
 # 在設備本機以 nc 對 127.0.0.1:8090 探測（busybox 無 curl/wget，已用 which 確認）；不需
 # Authorization header（loopback 免驗證，已實測驗證）。
 # 審查修訂：只驗狀態列 200 不夠——:8090 若被其他服務占用、回 200 但非 zones JSON 會誤判
-# sidecar_rest_ok=True，故多抓 body（head -c 512）供 parse 端同時驗狀態列與 JSON 起始。
+# sidecar_rest_ok=True，故多抓 body 供 parse 端嚴格 json.loads 驗證。
+# Codex PR 審查修正：16 區 zones JSON 約 2KB，原 head -c 512 會截斷造成嚴格解析誤殺真設備，
+# 改 head -c 8192。
 PROBE_CMD = (
     'echo "===MD5TERMAPP==="; md5sum /opt/termapp 2>&1;'
     'echo "===MD5SIPWEB==="; md5sum /etc/sipweb/sipweb 2>&1;'
@@ -228,8 +241,11 @@ PROBE_CMD = (
     'echo "===LOOPBACK80==="; printf "GET /auth/login HTTP/1.1\\r\\nHost:127.0.0.1\\r\\n'
     'Connection: close\\r\\n\\r\\n" | nc 127.0.0.1 80 2>/dev/null | head -1;'
     'echo "===REST8090==="; printf "GET /get/sip/multicast/zones HTTP/1.1\\r\\n'
-    'Host:127.0.0.1\\r\\nConnection: close\\r\\n\\r\\n" | nc 127.0.0.1 8090 2>/dev/null | head -c 512;'
-    'echo "===END==="'
+    'Host:127.0.0.1\\r\\nConnection: close\\r\\n\\r\\n" | nc 127.0.0.1 8090 2>/dev/null | head -c 8192;'
+    # head -c 截斷不保證輸出以換行結尾——若 body 剛好無尾端換行，緊接著的
+    # echo "===END===" 會與 JSON 最後一個位元組黏在同一行，讓嚴格 json.loads 誤判失敗
+    # （真機 .70 smoke 實測發現）。這裡補一個空 echo 強制換行，確保 END tag 落在獨立行。
+    'echo; echo "===END==="'
 )
 
 _MD5_RE = re.compile(r"^([0-9a-f]{32})\s", re.M)
@@ -240,10 +256,16 @@ def _status_token(line, code):
     return len(parts) >= 2 and parts[1] == code
 
 def _rest8090_ok(raw):
-    """REST8090 段判定：狀態列須精確 200，且 body 首個非空行以 {/[ 開頭或含 "zones" 字樣，
-    避免 :8090 被其他服務占用、回 200 但非 zones JSON 時被誤判為 sidecar 健康。"""
+    """REST8090 段判定：狀態列須精確 200，且 body 須為嚴格合法 JSON object，且含
+    list 型別的 "zones" 欄位——阻斷性修正 2：先前只驗首字元 {/[ 或子字串 "zones" 會
+    fail-open（{}、{not-json、任意 array 皆誤判 True）。改嚴格 json.loads 驗證。"""
     if not raw:
         return None
+    # 真機 .70 smoke 實測發現：pty ONLCR 會把 printf 內建的字面 \r\n 再轉一次，導致遠端
+    # HTTP 回應在跨 pty 傳回時每行都變成 \r\r\n（雙 \r）。splitlines() 會把落單的 \r 當成
+    # 獨立行界，讓 lines.index("") 抓到錯誤的（過早的）header/body 分界，使真正的 header
+    # 欄位被誤併入 body 造成嚴格 JSON 解析失敗。統一先去除所有 \r 正規化為純 \n 行界。
+    raw = raw.replace("\r", "")
     lines = raw.splitlines()
     if not lines:
         return None
@@ -256,8 +278,12 @@ def _rest8090_ok(raw):
     body_lines = [l for l in lines[blank + 1:] if l.strip()]
     if not body_lines:
         return False
-    first = body_lines[0].strip()
-    return first[:1] in ("{", "[") or any("zones" in l for l in body_lines)
+    body = "\n".join(body_lines)
+    try:
+        parsed = json.loads(body)
+    except ValueError:
+        return False  # 無效 JSON（截斷/畸形）
+    return isinstance(parsed, dict) and isinstance(parsed.get("zones"), list)
 
 def _sections(out):
     # TAG 錨定整行（^...$，flags=re.M）防止 body 內偶現 ===XXX=== 樣式（如 TERMCFG grep 結果）錯位切段
@@ -304,6 +330,7 @@ def parse_probe_output(out):
 
 # Task 6: I/O 層 — DBP 收發、pty-SSH、host-key 指紋、HTTP/REST 探測
 import socket, time, os, pty, select, signal, hashlib, subprocess, ssl, urllib.request, urllib.error
+import getpass
 from concurrent.futures import ThreadPoolExecutor
 
 
@@ -414,10 +441,16 @@ def _parse_keyscan_line(line):
         return None
 
 
+def _remaining(deadline, floor=1):
+    """單台總預算 deadline 剩餘秒數，下限 floor（避免 0/負值傳給下游 timeout 參數）。"""
+    return max(floor, deadline - time.time())
+
+
 def hostkey_fp(ip, timeout=8):
     """ssh-keyscan -t rsa → SHA256 指紋（base64 key 部分）。失敗回 None。"""
     try:
-        out = subprocess.run(["ssh-keyscan", "-p", str(SSH_PORT), "-T", str(timeout),
+        keyscan_t = max(1, int(round(timeout)))
+        out = subprocess.run(["ssh-keyscan", "-p", str(SSH_PORT), "-T", str(keyscan_t),
                               "-t", "rsa", ip],
                              capture_output=True, text=True, timeout=timeout + 4).stdout
     except (subprocess.TimeoutExpired, OSError):
@@ -443,15 +476,15 @@ def _http_get(url, headers=None, timeout=5, insecure=False):
         return None
 
 
-def http_probe(ip):
+def http_probe(ip, timeout=5):
     """跳板機側 web 行為探測（不持設備 web token、不登入）。
 
     Task 8 真機實查：REST :8090 為 mzrelay3 啟動參數固定 bind 在 127.0.0.1（loopback-only 安全設計），
     跳板機遠端連線必被拒——sidecar_rest_ok 改經 SSH 在設備本機以 nc 探測（見 PROBE_CMD 的 REST8090 段/
     parse_probe_output），不再由本函式負責。
     """
-    http80 = _http_get("http://%s/auth/login" % ip)
-    https = _http_get("https://%s/get/device/status" % ip, insecure=True)
+    http80 = _http_get("http://%s/auth/login" % ip, timeout=timeout)
+    https = _http_get("https://%s/get/device/status" % ip, insecure=True, timeout=timeout)
     return {"http80": http80, "https": https}
 
 
@@ -468,7 +501,7 @@ def build_inventory(rows, recon, expect_meta, started, finished):
         # discovery report 模式：不產 action（spec §五）
         rows = [{k: v for k, v in r.items() if k != "action"} for r in rows]
     else:
-        inv["expect"] = expect_meta
+        inv["expect_file"] = expect_meta
         inv["reconciliation"] = recon
     counts = collections.Counter(r.get("action", "discovered") for r in rows)
     inv["summary"] = dict(counts)
@@ -508,14 +541,17 @@ _PROBE_UNKNOWN_CHECK_KEYS = ("termapp_md5", "sipweb_md5", "opt_writable", "loopb
 def probe_device(ip, dbp_rec, pw, timeout=15.0):
     """單台完整深探組 row。任何未預期例外皆保底回傳含 crashed 錯誤的 row，絕不讓 ex.map 整批中斷。"""
     try:
+        deadline = time.time() + timeout
         row = {"ip": ip, "mac": (dbp_rec or {}).get("mac"),
                "fw_ver_dbp": (dbp_rec or {}).get("fw_ver_dbp"),
                "reachable_dbp": dbp_rec is not None,
                "dbp_conflict": bool((dbp_rec or {}).get("dbp_conflict")), "errors": []}
         if row["dbp_conflict"]:
             row["dbp_variants"] = dbp_rec["dbp_variants"]
-        row["ssh_hostkey_fp"] = hostkey_fp(ip)
-        out, err = ssh_probe(ip, pw, timeout)
+        row["ssh_hostkey_fp"] = hostkey_fp(ip, timeout=_remaining(deadline))
+        if row["ssh_hostkey_fp"] is None:
+            row["errors"].append("ssh_hostkey_fp unknown (keyscan failed)")
+        out, err = ssh_probe(ip, pw, _remaining(deadline))
         row["ssh_ok"] = out is not None
         if err:
             row["errors"].append(err)
@@ -524,10 +560,18 @@ def probe_device(ip, dbp_rec, pw, timeout=15.0):
              "sidecar_init", "opt_writable", "opt_free_kb", "loopback80_403",
              "termapp_multicast_addr", "sidecar_rest_ok"))
         row.update(facts)
-        hp = http_probe(ip)
+        hp = http_probe(ip, timeout=_remaining(deadline))
         row["fw_ver"] = decide_fw_ver(facts["termapp_md5"], row["fw_ver_dbp"])
         row["web_type"] = decide_web_type(facts["sipweb_md5"], MZWEB_KNOWN_MD5S,
                                           hp["https"], hp["http80"], facts["loopback80_403"])
+        if row["fw_ver"] == "unknown":
+            row["errors"].append(
+                "fw_ver unknown (termapp_md5=%r dbp_ver=%r: md5/DBP 矛盾或雙缺)"
+                % (facts["termapp_md5"], row["fw_ver_dbp"]))
+        if row["web_type"] == "unknown":
+            row["errors"].append(
+                "web_type unknown (sipweb_md5=%r https=%r http80=%r loopback80_403=%r)"
+                % (facts["sipweb_md5"], hp["https"], hp["http80"], facts["loopback80_403"]))
         for k in _PROBE_UNKNOWN_CHECK_KEYS:
             if facts.get(k) is None:
                 row["errors"].append("probe %s unknown" % k)
@@ -550,6 +594,8 @@ def main(argv=None):
     ap.add_argument("--out", default=".", help="output dir")
     args = ap.parse_args(argv)
     pw = os.environ.get("MZSCAN_SSH_PW")
+    if pw is None and sys.stdin.isatty():
+        pw = getpass.getpass("MZSCAN_SSH_PW (root SSH password): ")
     if pw is None:
         print("MZSCAN_SSH_PW not set", file=sys.stderr)
         return 2
@@ -588,6 +634,8 @@ def main(argv=None):
     if expected is not None:
         for r in rows:
             r["action"] = classify(r)
+            if r["action"] == "needs-sidecar" and sidecar_partial(r):
+                r["sidecar_partial"] = True
     if dups:
         print("!! duplicate host-key fingerprints (possible MITM): %s" % dups, file=sys.stderr)
 

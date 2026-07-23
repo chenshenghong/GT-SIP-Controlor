@@ -129,7 +129,7 @@ def facts(**kw):
     base = dict(reachable_dbp=True, ssh_ok=True, opt_writable=True, opt_free_kb=5000,
                 fw_ver="2.1.1", web_type="mzweb", dbp_conflict=False, hostkey_dup=False,
                 sidecar_relay_bin=True, sidecar_relay_running=True,
-                sidecar_init=True, sidecar_rest_ok=True)
+                sidecar_init=True, sidecar_rest_ok=True, ssh_hostkey_fp="SHA256:abc")
     base.update(kw)
     return base
 
@@ -167,12 +167,32 @@ class TestClassify(unittest.TestCase):
     def test_conflict_combo_blocks(self):
         # Minor 1：多條件衝突（dbp_conflict=True + fw_ver="2.1.0"）→ blocked:probe-incomplete（rule4 優先）
         self.assertEqual(mzscan.classify(facts(dbp_conflict=True, fw_ver="2.1.0")), "blocked:probe-incomplete")
+    def test_sidecar_partial_false_when_all_green(self):
+        # 非阻斷性修正 4：sidecar 四項全綠 → sidecar_partial 為 False（無需區分半套）
+        self.assertFalse(mzscan.sidecar_partial(facts()))
+
+    def test_sidecar_partial_true_when_some_green_some_not(self):
+        # 非阻斷性修正 4：sidecar 四項「部分綠」（不是全 false 也不是全 true）→ sidecar_partial=True
+        self.assertTrue(mzscan.sidecar_partial(facts(sidecar_rest_ok=False)))
+
+    def test_sidecar_partial_false_when_all_false(self):
+        # 全部未裝（全 false）非「半套」，屬正常未部署狀態 → sidecar_partial=False
+        f = facts(sidecar_relay_bin=False, sidecar_relay_running=False,
+                  sidecar_init=False, sidecar_rest_ok=False)
+        self.assertFalse(mzscan.sidecar_partial(f))
+
     def test_unknown_never_done(self):
         # 不變式：任何關鍵欄 unknown → 必為 blocked:probe-incomplete，永不 done
         for k in ("fw_ver", "web_type", "opt_writable", "opt_free_kb", "ssh_ok",
-                  "sidecar_relay_bin", "sidecar_relay_running", "sidecar_init", "sidecar_rest_ok"):
+                  "sidecar_relay_bin", "sidecar_relay_running", "sidecar_init", "sidecar_rest_ok",
+                  "ssh_hostkey_fp"):
             v = "unknown" if k in ("fw_ver", "web_type") else None
             self.assertEqual(mzscan.classify(facts(**{k: v})), "blocked:probe-incomplete", k)
+
+    def test_ssh_hostkey_fp_none_blocks(self):
+        # 阻斷性修正 1：keyscan 失敗（ssh_hostkey_fp=None）即使其餘全綠仍不可 done
+        # （TOFU pin 安全控制：資訊不足永不 done）
+        self.assertEqual(mzscan.classify(facts(ssh_hostkey_fp=None)), "blocked:probe-incomplete")
 
 class TestHostkeyDup(unittest.TestCase):
     def test_dup_found(self):
@@ -265,6 +285,59 @@ class TestParseProbe(unittest.TestCase):
         """REST8090 段空白（nc 連線被拒/無輸出）→ sidecar_rest_ok=None（unknown）"""
         f = mzscan.parse_probe_output("===REST8090===\n\n===END===\n")
         self.assertIsNone(f["sidecar_rest_ok"])
+    def test_rest8090_200_empty_object_is_false(self):
+        """阻斷性修正 2：body 為合法 JSON 但缺 zones 欄位（{}）→ False（嚴格 schema 驗證，不能 fail-open）。"""
+        raw = ("===REST8090===\n"
+               "HTTP/1.1 200 OK\n"
+               "Content-Type: application/json\n"
+               "\n"
+               "{}\n"
+               "===END===\n")
+        f = mzscan.parse_probe_output(raw)
+        self.assertIs(f["sidecar_rest_ok"], False)
+    def test_rest8090_200_invalid_json_is_false(self):
+        """阻斷性修正 2：body 以 { 開頭但非合法 JSON（截斷/畸形）→ False（改嚴格 json.loads，不再只驗首字元）。"""
+        raw = ("===REST8090===\n"
+               "HTTP/1.1 200 OK\n"
+               "Content-Type: application/json\n"
+               "\n"
+               "{not-json\n"
+               "===END===\n")
+        f = mzscan.parse_probe_output(raw)
+        self.assertIs(f["sidecar_rest_ok"], False)
+    def test_rest8090_200_json_array_is_false(self):
+        """阻斷性修正 2：body 為合法 JSON 但頂層是 array（非 object）→ False（不符 zones schema）。"""
+        raw = ("===REST8090===\n"
+               "HTTP/1.1 200 OK\n"
+               "Content-Type: application/json\n"
+               "\n"
+               "[1, 2, 3]\n"
+               "===END===\n")
+        f = mzscan.parse_probe_output(raw)
+        self.assertIs(f["sidecar_rest_ok"], False)
+    def test_rest8090_200_full_zones_json_is_true(self):
+        """阻斷性修正 2：完整 {"zones": [...]} → True（嚴格驗證下的真陽性）。"""
+        raw = ('===REST8090===\n'
+               'HTTP/1.1 200 OK\n'
+               'Content-Type: application/json\n'
+               '\n'
+               '{"zones": [{"id": 1, "name": "room1"}, {"id": 2, "name": "room2"}]}\n'
+               '===END===\n')
+        f = mzscan.parse_probe_output(raw)
+        self.assertIs(f["sidecar_rest_ok"], True)
+    def test_rest8090_pty_doubled_crlf_still_parses_true(self):
+        """真機 .70 smoke 實測發現：pty ONLCR 會把 printf 內建的字面 \\r\\n 再轉一次，
+        遠端 HTTP 回應每行變成 \\r\\r\\n（雙 \\r），若不正規化會讓 header 被誤併入 body
+        導致嚴格 json.loads 失敗——正規化後仍應正確判 True。"""
+        raw = ("===REST8090===\n"
+               "HTTP/1.1 200 OK\r\r\n"
+               "Content-Type: application/json\r\r\n"
+               "Content-Length: 13\r\r\n"
+               "\r\r\n"
+               '{"zones": []}\n'
+               "===END===\n")
+        f = mzscan.parse_probe_output(raw)
+        self.assertIs(f["sidecar_rest_ok"], True)
     def test_rest8090_200_but_not_json_is_false(self):
         """:8090 被其他服務占用、回 200 但 body 非 JSON（如 HTML）→ sidecar_rest_ok=False，
         不得只憑狀態列 200 誤判為 sidecar 健康。"""
@@ -276,16 +349,6 @@ class TestParseProbe(unittest.TestCase):
                "===END===\n")
         f = mzscan.parse_probe_output(raw)
         self.assertIs(f["sidecar_rest_ok"], False)
-    def test_rest8090_200_json_array_true(self):
-        """body 首行以 [ 開頭（JSON array）亦視為有效 JSON → True"""
-        raw = ("===REST8090===\n"
-               "HTTP/1.1 200 OK\n"
-               "Content-Type: application/json\n"
-               "\n"
-               "[1, 2, 3]\n"
-               "===END===\n")
-        f = mzscan.parse_probe_output(raw)
-        self.assertIs(f["sidecar_rest_ok"], True)
     def test_rest8090_no_body_separator_is_false(self):
         """狀態列 200 但無 header/body 空白分界（截斷/畸形回應）→ False"""
         f = mzscan.parse_probe_output("===REST8090===\nHTTP/1.1 200 OK\n===END===\n")
@@ -366,9 +429,18 @@ class TestInventory(unittest.TestCase):
         inv = mzscan.build_inventory([row("1.1.1.1")], {"missing": [], "unexpected": [],
                                      "mac_mismatch": []}, {"file": "f.txt", "count": 1},
                                      "2026-07-23T10:00:00", "2026-07-23T10:05:00")
-        for k in ("schema_version", "scan_id", "valid_until", "producer", "summary"):
+        for k in ("schema_version", "scan_id", "producer", "started_at", "finished_at",
+                  "valid_until", "expect_file", "reconciliation", "summary", "devices"):
             self.assertIn(k, inv)
         self.assertTrue(inv["valid_until"].startswith("2026-07-24T10:05:00"))
+
+    def test_expect_file_key_name(self):
+        """阻斷性修正 3：spec §六明文欄名為 expect_file（非 expect），值維持 {file, count}。"""
+        inv = mzscan.build_inventory([row("1.1.1.1")], {"missing": [], "unexpected": [],
+                                     "mac_mismatch": []}, {"file": "f.txt", "count": 1},
+                                     "2026-07-23T10:00:00", "2026-07-23T10:05:00")
+        self.assertNotIn("expect", inv)
+        self.assertEqual(inv["expect_file"], {"file": "f.txt", "count": 1})
     def test_no_expect_no_action(self):
         inv = mzscan.build_inventory([row("1.1.1.1")], None, None,
                                      "2026-07-23T10:00:00", "2026-07-23T10:05:00")
@@ -423,6 +495,54 @@ class TestCliExpectOnly(unittest.TestCase):
         self.assertEqual(cm.exception.code, 2)
 
 
+class TestProbeDeviceUnknownReasonLogging(unittest.TestCase):
+    """非阻斷性修正 7：fw_ver/web_type 判為 unknown 時，errors[] 需記錄原因。"""
+
+    def test_fw_ver_unknown_logs_reason(self):
+        bad = PROBE_OUT.replace(mzscan.TERMAPP_MD5_V211, "deadbeefdeadbeefdeadbeefdeadbeef")
+        with mock.patch.object(mzscan, "hostkey_fp", return_value="SHA256:abc"), \
+             mock.patch.object(mzscan, "ssh_probe", return_value=(bad, None)), \
+             mock.patch.object(mzscan, "http_probe",
+                               return_value={"http80": None, "https": None}):
+            row = mzscan.probe_device("1.1.1.1", None, "pw")
+        self.assertEqual(row["fw_ver"], "unknown")
+        self.assertTrue(any("fw_ver unknown" in e for e in row["errors"]))
+
+    def test_web_type_unknown_logs_reason(self):
+        with mock.patch.object(mzscan, "hostkey_fp", return_value="SHA256:abc"), \
+             mock.patch.object(mzscan, "ssh_probe", return_value=(PROBE_OUT, None)), \
+             mock.patch.object(mzscan, "http_probe",
+                               return_value={"http80": None, "https": None}):
+            row = mzscan.probe_device("1.1.1.1", None, "pw")
+        self.assertEqual(row["web_type"], "unknown")
+        self.assertTrue(any("web_type unknown" in e for e in row["errors"]))
+
+
+class TestGetpassInteractivePassword(unittest.TestCase):
+    """非阻斷性修正 6：MZSCAN_SSH_PW 未設 + stdin 是 tty → getpass.getpass() 互動輸入；
+    非 tty（如 CI/管道）維持 exit 2（fail-closed，不阻塞自動化）。"""
+
+    def setUp(self):
+        os.environ.pop("MZSCAN_SSH_PW", None)
+
+    def test_tty_prompts_via_getpass(self):
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(mzscan.sys.stdin, "isatty", return_value=True), \
+                 mock.patch.object(mzscan.getpass, "getpass", return_value="typed-pw") as gp, \
+                 mock.patch.object(mzscan, "dbp_sweep", return_value=[]):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    rc = mzscan.main(["--out", d])
+            gp.assert_called_once()
+            self.assertEqual(rc, 0)
+
+    def test_non_tty_still_exits_2(self):
+        with mock.patch.object(mzscan.sys.stdin, "isatty", return_value=False):
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                rc = mzscan.main([])
+            self.assertEqual(rc, 2)
+            self.assertIn("MZSCAN_SSH_PW not set", err.getvalue())
+
+
 class TestEmptyFleetFailClosed(unittest.TestCase):
     def test_empty_expect_file_exit2(self):
         """--expect 檔解析出 0 筆有效項目 → fail-closed exit 2（同重複IP哲學）。"""
@@ -444,6 +564,62 @@ class TestProbeDeviceCrashGuard(unittest.TestCase):
             row = mzscan.probe_device("1.1.1.1", None, "pw")
         self.assertEqual(row["ip"], "1.1.1.1")
         self.assertTrue(any("probe_device crashed" in e for e in row["errors"]))
+
+
+class TestRemaining(unittest.TestCase):
+    def test_remaining_before_deadline(self):
+        with mock.patch.object(mzscan.time, "time", return_value=100.0):
+            self.assertAlmostEqual(mzscan._remaining(110.0), 10.0)
+
+    def test_remaining_floors_at_one_when_past_deadline(self):
+        with mock.patch.object(mzscan.time, "time", return_value=200.0):
+            self.assertEqual(mzscan._remaining(110.0), 1)
+
+
+class TestProbeDeviceDeadlineBudget(unittest.TestCase):
+    """非阻斷性修正 5：單台總預算 deadline——各步驟傳入剩餘時間，非各自獨立 timeout 串行疊加。"""
+
+    def test_step_timeouts_shrink_toward_deadline(self):
+        calls = []
+
+        def fake_hostkey_fp(ip, timeout=8):
+            calls.append(("hostkey_fp", timeout))
+            return "SHA256:abc"
+
+        def fake_ssh_probe(ip, pw, timeout=15.0):
+            calls.append(("ssh_probe", timeout))
+            return PROBE_OUT, None
+
+        def fake_http_probe(ip, timeout=5):
+            calls.append(("http_probe", timeout))
+            return {"http80": None, "https": None}
+
+        # time.time() 呼叫序列：1) deadline 起算 2) hostkey_fp 前 3) ssh_probe 前 4) http_probe 前
+        time_seq = [1000.0, 1000.0, 1003.0, 1006.0]
+        with mock.patch.object(mzscan.time, "time", side_effect=time_seq), \
+             mock.patch.object(mzscan, "hostkey_fp", side_effect=fake_hostkey_fp), \
+             mock.patch.object(mzscan, "ssh_probe", side_effect=fake_ssh_probe), \
+             mock.patch.object(mzscan, "http_probe", side_effect=fake_http_probe):
+            mzscan.probe_device("1.1.1.1", None, "pw", timeout=15.0)
+
+        self.assertEqual([n for n, _ in calls], ["hostkey_fp", "ssh_probe", "http_probe"])
+        timeouts = [t for _, t in calls]
+        self.assertLess(timeouts[1], timeouts[0])
+        self.assertLess(timeouts[2], timeouts[1])
+
+
+class TestProbeDeviceHostkeyFpNone(unittest.TestCase):
+    def test_hostkey_fp_none_recorded_in_errors(self):
+        """阻斷性修正 1：keyscan 失敗（hostkey_fp 回 None）→ row 記錄 errors[]，
+        且 ssh_hostkey_fp 保持 None（classify 端會擋 done，TOFU pin 安全控制）。"""
+        with mock.patch.object(mzscan, "hostkey_fp", return_value=None), \
+             mock.patch.object(mzscan, "ssh_probe", return_value=(PROBE_OUT, None)), \
+             mock.patch.object(mzscan, "http_probe",
+                               return_value={"http80": None, "https": None}):
+            row = mzscan.probe_device("1.1.1.1", None, "pw")
+        self.assertIsNone(row["ssh_hostkey_fp"])
+        self.assertTrue(any("hostkey" in e.lower() for e in row["errors"]),
+                        "應在 errors[] 記錄 hostkey fingerprint 缺失原因")
 
 
 class TestNoMzwebMd5Warning(unittest.TestCase):
@@ -529,6 +705,56 @@ class TestMainOrderingInvariant(unittest.TestCase):
         self.assertEqual(actions["10.9.0.2"], "blocked:probe-incomplete")
         # 第三台 fingerprint 唯一、其餘全綠 → done
         self.assertEqual(actions["10.9.0.3"], "done")
+
+
+def _partial_sidecar_probe_device(ip, dbp_rec, pw, timeout=15.0):
+    r = _all_green_row(ip, _MAIN_ORDER_FP_MAP[ip])
+    r["sidecar_rest_ok"] = False  # 四項部分綠 → needs-sidecar + sidecar_partial=True
+    return r
+
+
+class TestMainSidecarPartialFlag(unittest.TestCase):
+    """非阻斷性修正 4：main() 對 needs-sidecar 半套設備標 sidecar_partial=true。"""
+
+    def test_partial_sidecar_flag_set_on_needs_sidecar_row(self):
+        os.environ["MZSCAN_SSH_PW"] = "pw"
+        with tempfile.TemporaryDirectory() as d:
+            fleet_path = os.path.join(d, "fleet.txt")
+            with open(fleet_path, "w") as fh:
+                fh.write("10.9.0.3\n")
+            with mock.patch.object(mzscan, "dbp_sweep",
+                                   return_value=[_MAIN_ORDER_DBP_RECORDS[2]]), \
+                 mock.patch.object(mzscan, "probe_device",
+                                   side_effect=_partial_sidecar_probe_device):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    rc = mzscan.main(["--expect", fleet_path, "--out", d])
+            self.assertEqual(rc, 0)
+            inv_files = [f for f in os.listdir(d) if f.startswith("inventory-")]
+            with open(os.path.join(d, inv_files[0])) as fh:
+                inv = json.load(fh)
+        dev = inv["devices"][0]
+        self.assertEqual(dev["action"], "needs-sidecar")
+        self.assertTrue(dev["sidecar_partial"])
+
+    def test_full_green_row_has_no_sidecar_partial_true(self):
+        os.environ["MZSCAN_SSH_PW"] = "pw"
+        with tempfile.TemporaryDirectory() as d:
+            fleet_path = os.path.join(d, "fleet.txt")
+            with open(fleet_path, "w") as fh:
+                fh.write("10.9.0.3\n")
+            with mock.patch.object(mzscan, "dbp_sweep",
+                                   return_value=[_MAIN_ORDER_DBP_RECORDS[2]]), \
+                 mock.patch.object(mzscan, "probe_device",
+                                   side_effect=_main_order_probe_device):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    rc = mzscan.main(["--expect", fleet_path, "--out", d])
+            self.assertEqual(rc, 0)
+            inv_files = [f for f in os.listdir(d) if f.startswith("inventory-")]
+            with open(os.path.join(d, inv_files[0])) as fh:
+                inv = json.load(fh)
+        dev = inv["devices"][0]
+        self.assertEqual(dev["action"], "done")
+        self.assertFalse(dev.get("sidecar_partial", False))
 
 
 if __name__ == "__main__":
