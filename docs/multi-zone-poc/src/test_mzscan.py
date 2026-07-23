@@ -155,10 +155,22 @@ class TestClassify(unittest.TestCase):
         self.assertEqual(mzscan.classify(facts(sidecar_rest_ok=False)), "needs-sidecar")
     def test_needs_sidecar_wrong_web(self):
         self.assertEqual(mzscan.classify(facts(web_type="lgw")), "needs-sidecar")
+    def test_opt_free_kb_none_blocks(self):
+        # Critical 修正：opt_free_kb=None（未探測）→ blocked:probe-incomplete
+        self.assertEqual(mzscan.classify(facts(opt_free_kb=None)), "blocked:probe-incomplete")
+    def test_ssh_ok_none_blocks(self):
+        # Important 修正：ssh_ok=None（未探測）→ blocked:probe-incomplete
+        self.assertEqual(mzscan.classify(facts(ssh_ok=None)), "blocked:probe-incomplete")
+    def test_reachable_dbp_none_ssh_false_is_no_ssh(self):
+        # Important 修正：reachable_dbp=None + ssh_ok=False → blocked:no-ssh（rule2 優先於 rule1）
+        self.assertEqual(mzscan.classify(facts(reachable_dbp=None, ssh_ok=False)), "blocked:no-ssh")
+    def test_conflict_combo_blocks(self):
+        # Minor 1：多條件衝突（dbp_conflict=True + fw_ver="2.1.0"）→ blocked:probe-incomplete（rule4 優先）
+        self.assertEqual(mzscan.classify(facts(dbp_conflict=True, fw_ver="2.1.0")), "blocked:probe-incomplete")
     def test_unknown_never_done(self):
         # 不變式：任何關鍵欄 unknown → 必為 blocked:probe-incomplete，永不 done
-        for k in ("fw_ver", "web_type", "opt_writable", "sidecar_relay_bin",
-                  "sidecar_relay_running", "sidecar_init", "sidecar_rest_ok"):
+        for k in ("fw_ver", "web_type", "opt_writable", "opt_free_kb", "ssh_ok",
+                  "sidecar_relay_bin", "sidecar_relay_running", "sidecar_init", "sidecar_rest_ok"):
             v = "unknown" if k in ("fw_ver", "web_type") else None
             self.assertEqual(mzscan.classify(facts(**{k: v})), "blocked:probe-incomplete", k)
 

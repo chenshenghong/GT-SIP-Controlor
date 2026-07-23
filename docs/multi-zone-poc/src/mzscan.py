@@ -101,31 +101,39 @@ _SIDECAR_KEYS = ("sidecar_relay_bin", "sidecar_relay_running", "sidecar_init", "
 
 def classify(f):
     """spec §四 分類矩陣，優先序由上而下。不變式：unknown 永不 done。"""
-    if not f.get("reachable_dbp") and not f.get("ssh_ok"):
+    # rule1: unreachable = DBP 確認不通「且」SSH 確認失敗（reachable_dbp=None 不算，應歸入 probe-incomplete）
+    if f.get("reachable_dbp") is False and f.get("ssh_ok") is False:
         return "blocked:unreachable"
+    # rule2: no-ssh = SSH 確認失敗
     if f.get("ssh_ok") is False:
         return "blocked:no-ssh"
+    # rule3: /opt 不可用
     if f.get("opt_writable") is False or (
             f.get("opt_free_kb") is not None and f["opt_free_kb"] < OPT_MIN_FREE_KB):
         return "blocked:opt"
+    # rule4: probe-incomplete = 資訊不足（任何關鍵欄 unknown/None）或衝突
     unknown = (f.get("fw_ver") == "unknown" or f.get("web_type") == "unknown"
-               or f.get("opt_writable") is None
+               or f.get("opt_writable") is None or f.get("opt_free_kb") is None
+               or f.get("ssh_ok") is None
                or any(f.get(k) is None for k in _SIDECAR_KEYS))
     if unknown or f.get("dbp_conflict") or f.get("hostkey_dup"):
         return "blocked:probe-incomplete"
+    # rule5: 韌體需升級
     if f["fw_ver"] == "2.1.0":
         return "needs-fw-upgrade"
+    # rule6: sidecar 不完整或非多區 Web
     if not all(f[k] for k in _SIDECAR_KEYS) or f["web_type"] != "mzweb":
         return "needs-sidecar"
+    # rule7: 完成
     return "done"
 
 def find_hostkey_dups(rows):
-    seen, dups = {}, set()
+    seen, dups = set(), set()
     for r in rows:
         fp = r.get("ssh_hostkey_fp")
         if fp is None:
             continue
         if fp in seen:
             dups.add(fp)
-        seen[fp] = r
+        seen.add(fp)
     return dups
