@@ -189,6 +189,11 @@ class TestFleet(unittest.TestCase):
     def test_bad_ip_raises(self):
         with self.assertRaises(ValueError):
             mzscan.parse_fleet("not-an-ip\n")
+    def test_duplicate_ip_raises(self):
+        """重複 IP 行 → ValueError fail-closed（52 台名單重複必是人為錯誤）"""
+        with self.assertRaises(ValueError) as ctx:
+            mzscan.parse_fleet("192.168.1.140\n192.168.1.140,AA:BB:CC:DD:EE:FF\n")
+        self.assertIn("duplicate", str(ctx.exception).lower())
 
 class TestReconcile(unittest.TestCase):
     EXP = [{"ip": "1.1.1.1", "mac": "00-11-22-33-44-55"}, {"ip": "1.1.1.2", "mac": None}]
@@ -202,6 +207,15 @@ class TestReconcile(unittest.TestCase):
         self.assertEqual(r["mac_mismatch"], [])
         r2 = mzscan.reconcile(self.EXP, {"1.1.1.1": {"mac": "AA:BB:CC:DD:EE:FF"}})
         self.assertEqual(r2["mac_mismatch"][0]["ip"], "1.1.1.1")
+    def test_discovered_mac_none_no_mismatch(self):
+        """discovered 未觀測到 MAC（mac=None）→ 不報 mismatch，即使 expected 有 mac"""
+        r = mzscan.reconcile(self.EXP, {"1.1.1.1": {"mac": None}})
+        self.assertEqual(r["mac_mismatch"], [])
+    def test_expected_mac_none_ignores_discovered(self):
+        """expected 無 MAC（mac=None）→ 不報 mismatch，即使 discovered 有任意 mac"""
+        exp = [{"ip": "1.1.1.1", "mac": None}]
+        r = mzscan.reconcile(exp, {"1.1.1.1": {"mac": "AA:BB:CC:DD:EE:FF"}})
+        self.assertEqual(r["mac_mismatch"], [])
 
 
 if __name__ == "__main__":

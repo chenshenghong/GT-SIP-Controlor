@@ -147,10 +147,11 @@ def _norm_mac(m):
 def parse_fleet(text):
     """Parse fleet.txt: each line is 'IP[,MAC]', skip comments and blanks.
 
-    Raises ValueError with line number if IP format is invalid.
+    Raises ValueError with line number if IP format is invalid or IP is duplicated.
     Returns list of {ip, mac} dicts (mac=None if not specified).
     """
     rows = []
+    seen_ips = set()
     for ln, line in enumerate(text.splitlines(), 1):
         line = line.strip()
         if not line or line.startswith("#"):
@@ -160,6 +161,9 @@ def parse_fleet(text):
             ipaddress.ip_address(parts[0])
         except ValueError:
             raise ValueError("fleet.txt line %d: bad IP %r" % (ln, parts[0]))
+        if parts[0] in seen_ips:
+            raise ValueError("fleet.txt line %d: duplicate IP %r" % (ln, parts[0]))
+        seen_ips.add(parts[0])
         rows.append({"ip": parts[0], "mac": parts[1] if len(parts) > 1 and parts[1] else None})
     return rows
 
@@ -185,7 +189,9 @@ def reconcile(expected, discovered):
     }
     for e in expected:
         d = discovered.get(e["ip"])
-        if d and e["mac"] and _norm_mac(e["mac"]) != _norm_mac(d.get("mac")):
+        # MAC 比對：expected 有 MAC「且」discovered 有 MAC「且」兩者正規化後不同 → mismatch
+        # discovered 未觀測到 MAC（mac=None）不算 mismatch（三態：已知/不同/未知）
+        if d and e["mac"] and d.get("mac") and _norm_mac(e["mac"]) != _norm_mac(d.get("mac")):
             out["mac_mismatch"].append({
                 "ip": e["ip"],
                 "expected_mac": e["mac"],
