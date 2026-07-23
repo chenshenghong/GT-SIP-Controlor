@@ -375,10 +375,21 @@ class TestInventory(unittest.TestCase):
         self.assertNotIn("action", inv["devices"][0])
         self.assertNotIn("reconciliation", inv)
     def test_no_password_leak(self):
+        """端到端：probe_device crash 分支（ssh_probe 拋例外）＋build_inventory，
+        密碼不落 inventory JSON、亦不落 stderr（守 errors[]/%r repr 洩密面）。"""
         os.environ["MZSCAN_SSH_PW"] = "sekret"
-        inv = mzscan.build_inventory([row("1.1.1.1")], None, None,
-                                     "2026-07-23T10:00:00", "2026-07-23T10:05:00")
+        with mock.patch.object(mzscan, "hostkey_fp", return_value="SHA256:abc"), \
+             mock.patch.object(mzscan, "ssh_probe", side_effect=RuntimeError("boom")), \
+             mock.patch.object(mzscan, "http_probe",
+                               return_value={"http80": None, "https": None}):
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                probed = mzscan.probe_device("1.1.1.1", None,
+                                             os.environ["MZSCAN_SSH_PW"])
+                inv = mzscan.build_inventory([probed], None, None,
+                                             "2026-07-23T10:00:00", "2026-07-23T10:05:00")
+        self.assertTrue(any("probe_device crashed" in e for e in probed["errors"]))
         self.assertNotIn("sekret", json.dumps(inv))
+        self.assertNotIn("sekret", err.getvalue())
     def test_write_atomic(self):
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "inv.json")
@@ -436,6 +447,15 @@ class TestProbeDeviceCrashGuard(unittest.TestCase):
 
 
 class TestNoMzwebMd5Warning(unittest.TestCase):
+    def setUp(self):
+        # MZWEB_KNOWN_MD5S 是模組級全域常數，測試中 .clear() 會影響其他測試的執行順序
+        # （order-dependent 陷阱）；用 setUp/tearDown 保存並還原，避免污染全域狀態。
+        self._saved_md5s = set(mzscan.MZWEB_KNOWN_MD5S)
+
+    def tearDown(self):
+        mzscan.MZWEB_KNOWN_MD5S.clear()
+        mzscan.MZWEB_KNOWN_MD5S.update(self._saved_md5s)
+
     def test_warns_when_md5_table_empty(self):
         """MZWEB_KNOWN_MD5S 為空且未給 --mzweb-bin → stderr 印 WARNING（Task 8 定稿前已知留白）。"""
         os.environ["MZSCAN_SSH_PW"] = "pw"
@@ -447,6 +467,68 @@ class TestNoMzwebMd5Warning(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertIn("WARNING", err.getvalue())
             self.assertIn("mzweb", err.getvalue().lower())
+
+
+def _all_green_row(ip, hostkey_fp_val):
+    """probe_device 產出的「全綠」row：所有分類欄位皆通過，唯一差異是 ssh_hostkey_fp。"""
+    return {
+        "ip": ip, "mac": None, "fw_ver_dbp": "2.1.1", "reachable_dbp": True,
+        "dbp_conflict": False, "errors": [],
+        "ssh_hostkey_fp": hostkey_fp_val, "ssh_ok": True,
+        "termapp_md5": mzscan.TERMAPP_MD5_V211,
+        "sipweb_md5": next(iter(mzscan.MZWEB_KNOWN_MD5S)),
+        "sidecar_relay_bin": True, "sidecar_relay_running": True, "sidecar_init": True,
+        "opt_writable": True, "opt_free_kb": 99999,
+        "loopback80_403": None, "termapp_multicast_addr": None, "sidecar_rest_ok": True,
+        "fw_ver": "2.1.1", "web_type": "mzweb",
+    }
+
+
+_MAIN_ORDER_DBP_RECORDS = [
+    {"ip": "10.9.0.1", "mac": "00:11:22:33:44:01", "fw_ver_dbp": "2.1.1"},
+    {"ip": "10.9.0.2", "mac": "00:11:22:33:44:02", "fw_ver_dbp": "2.1.1"},
+    {"ip": "10.9.0.3", "mac": "00:11:22:33:44:03", "fw_ver_dbp": "2.1.1"},
+]
+
+_MAIN_ORDER_FP_MAP = {
+    "10.9.0.1": "SHA256:dupdupdupdupdupdupdupdupdupdupdupdupdup=",
+    "10.9.0.2": "SHA256:dupdupdupdupdupdupdupdupdupdupdupdupdup=",  # 與 10.9.0.1 相同 → hostkey_dup
+    "10.9.0.3": "SHA256:uniqueuniqueuniqueuniqueuniqueuniqueuniq=",
+}
+
+
+def _main_order_probe_device(ip, dbp_rec, pw, timeout=15.0):
+    return _all_green_row(ip, _MAIN_ORDER_FP_MAP[ip])
+
+
+class TestMainOrderingInvariant(unittest.TestCase):
+    """main() 編排順序不變式：必須先算 find_hostkey_dups 並標 hostkey_dup，才能對每台 classify
+    （spec：classify() 讀 hostkey_dup 欄，順序不可顛倒；mzscan.py:584-590）。"""
+
+    def test_hostkey_dup_marked_before_classify(self):
+        os.environ["MZSCAN_SSH_PW"] = "pw"
+        with tempfile.TemporaryDirectory() as d:
+            fleet_path = os.path.join(d, "fleet.txt")
+            with open(fleet_path, "w") as fh:
+                fh.write("10.9.0.1\n10.9.0.2\n10.9.0.3\n")
+            with mock.patch.object(mzscan, "dbp_sweep",
+                                   return_value=list(_MAIN_ORDER_DBP_RECORDS)), \
+                 mock.patch.object(mzscan, "probe_device",
+                                   side_effect=_main_order_probe_device):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    rc = mzscan.main(["--expect", fleet_path, "--out", d])
+            self.assertEqual(rc, 0)
+            inv_files = [f for f in os.listdir(d) if f.startswith("inventory-")]
+            self.assertEqual(len(inv_files), 1, "應且只應產出一份 inventory 檔案")
+            with open(os.path.join(d, inv_files[0])) as fh:
+                inv = json.load(fh)
+
+        actions = {dev["ip"]: dev["action"] for dev in inv["devices"]}
+        # 兩台 host-key 相同 → 必須被標為 probe-incomplete（MITM 疑慮，不可放行）
+        self.assertEqual(actions["10.9.0.1"], "blocked:probe-incomplete")
+        self.assertEqual(actions["10.9.0.2"], "blocked:probe-incomplete")
+        # 第三台 fingerprint 唯一、其餘全綠 → done
+        self.assertEqual(actions["10.9.0.3"], "done")
 
 
 if __name__ == "__main__":
