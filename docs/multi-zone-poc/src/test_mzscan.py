@@ -125,5 +125,49 @@ class TestWebType(unittest.TestCase):
         self.assertEqual(mzscan.decide_web_type(None, self.MZ, None, None, None), "unknown")
 
 
+def facts(**kw):
+    base = dict(reachable_dbp=True, ssh_ok=True, opt_writable=True, opt_free_kb=5000,
+                fw_ver="2.1.1", web_type="mzweb", dbp_conflict=False, hostkey_dup=False,
+                sidecar_relay_bin=True, sidecar_relay_running=True,
+                sidecar_init=True, sidecar_rest_ok=True)
+    base.update(kw)
+    return base
+
+class TestClassify(unittest.TestCase):
+    def test_done(self):
+        self.assertEqual(mzscan.classify(facts()), "done")
+    def test_unreachable(self):
+        f = facts(reachable_dbp=False, ssh_ok=False)
+        self.assertEqual(mzscan.classify(f), "blocked:unreachable")
+    def test_no_ssh(self):
+        self.assertEqual(mzscan.classify(facts(ssh_ok=False)), "blocked:no-ssh")
+    def test_opt_not_writable(self):
+        self.assertEqual(mzscan.classify(facts(opt_writable=False)), "blocked:opt")
+    def test_opt_low_space(self):
+        self.assertEqual(mzscan.classify(facts(opt_free_kb=1000)), "blocked:opt")
+    def test_dbp_conflict_blocks(self):
+        self.assertEqual(mzscan.classify(facts(dbp_conflict=True)), "blocked:probe-incomplete")
+    def test_hostkey_dup_blocks(self):
+        self.assertEqual(mzscan.classify(facts(hostkey_dup=True)), "blocked:probe-incomplete")
+    def test_needs_fw_upgrade(self):
+        self.assertEqual(mzscan.classify(facts(fw_ver="2.1.0")), "needs-fw-upgrade")
+    def test_needs_sidecar_partial(self):
+        self.assertEqual(mzscan.classify(facts(sidecar_rest_ok=False)), "needs-sidecar")
+    def test_needs_sidecar_wrong_web(self):
+        self.assertEqual(mzscan.classify(facts(web_type="lgw")), "needs-sidecar")
+    def test_unknown_never_done(self):
+        # 不變式：任何關鍵欄 unknown → 必為 blocked:probe-incomplete，永不 done
+        for k in ("fw_ver", "web_type", "opt_writable", "sidecar_relay_bin",
+                  "sidecar_relay_running", "sidecar_init", "sidecar_rest_ok"):
+            v = "unknown" if k in ("fw_ver", "web_type") else None
+            self.assertEqual(mzscan.classify(facts(**{k: v})), "blocked:probe-incomplete", k)
+
+class TestHostkeyDup(unittest.TestCase):
+    def test_dup_found(self):
+        rows = [{"ip": "1", "ssh_hostkey_fp": "A"}, {"ip": "2", "ssh_hostkey_fp": "A"},
+                {"ip": "3", "ssh_hostkey_fp": "B"}, {"ip": "4", "ssh_hostkey_fp": None}]
+        self.assertEqual(mzscan.find_hostkey_dups(rows), {"A"})
+
+
 if __name__ == "__main__":
     unittest.main()

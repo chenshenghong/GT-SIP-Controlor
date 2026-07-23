@@ -93,3 +93,39 @@ def decide_web_type(sipweb_md5, mzweb_known_md5s, https_probe, http80_probe, loo
         if http80_probe.get("status") == 403 and loopback80_403 is True:
             return "hbi"
     return "unknown"
+
+
+OPT_MIN_FREE_KB = 1478  # = 2*(mzrelay3 81KB + mzweb 402KB) + 512KB margin（spec §四）
+
+_SIDECAR_KEYS = ("sidecar_relay_bin", "sidecar_relay_running", "sidecar_init", "sidecar_rest_ok")
+
+def classify(f):
+    """spec §四 分類矩陣，優先序由上而下。不變式：unknown 永不 done。"""
+    if not f.get("reachable_dbp") and not f.get("ssh_ok"):
+        return "blocked:unreachable"
+    if f.get("ssh_ok") is False:
+        return "blocked:no-ssh"
+    if f.get("opt_writable") is False or (
+            f.get("opt_free_kb") is not None and f["opt_free_kb"] < OPT_MIN_FREE_KB):
+        return "blocked:opt"
+    unknown = (f.get("fw_ver") == "unknown" or f.get("web_type") == "unknown"
+               or f.get("opt_writable") is None
+               or any(f.get(k) is None for k in _SIDECAR_KEYS))
+    if unknown or f.get("dbp_conflict") or f.get("hostkey_dup"):
+        return "blocked:probe-incomplete"
+    if f["fw_ver"] == "2.1.0":
+        return "needs-fw-upgrade"
+    if not all(f[k] for k in _SIDECAR_KEYS) or f["web_type"] != "mzweb":
+        return "needs-sidecar"
+    return "done"
+
+def find_hostkey_dups(rows):
+    seen, dups = {}, set()
+    for r in rows:
+        fp = r.get("ssh_hostkey_fp")
+        if fp is None:
+            continue
+        if fp in seen:
+            dups.add(fp)
+        seen[fp] = r
+    return dups
