@@ -219,6 +219,21 @@ static void set_tx_enabled(int on)
     const char* cur;
     const char* want = on ? "true" : "false";
     if (kv == NULL) { fprintf(stderr, "mzio: cannot read ifcfg\n"); return; }
+    if (on)
+    {
+        /* MTX-06 迴授防護：啟用發送前，TX 目標若與 RX 群組（位址+埠）完全相同，
+         * 拒絕啟動——避免 PTT 按下後自我迴授。只擋啟用，停止（on==0）不受影響。 */
+        const char* rx_a = find_key_value(kv, "MULTICAST_ADDRESS");
+        const char* rx_p = find_key_value(kv, "MULTICAST_PORT");
+        const char* tx_a = find_key_value(kv, "MULTICAST_TX_ADDRESS");
+        const char* tx_p = find_key_value(kv, "MULTICAST_TX_PORT");
+        if (mzio_tx_equals_rx(rx_a, rx_p, tx_a, tx_p))
+        {
+            fprintf(stderr, "mzio: TX target equals RX group, refusing to start (MTX-06)\n");
+            free_keyvalue_file(kv);
+            return;
+        }
+    }
     cur = find_key_value(kv, "MULTICAST_TX_ENABLED");
     if (cur == NULL) add_key_value(kv, "MULTICAST_TX_ENABLED", want);
     else if (strcmp(cur, want) == 0) { free_keyvalue_file(kv); return; } /* 已是目標值：不寫不通知 */

@@ -18,7 +18,7 @@
   1. 無 token POST /set/multicast/tx → HTTP 401、body 含 "A003"
   2. 無 token GET  /get/io/config    → HTTP 401、body 含 "A003"
   3. 無 token POST /set/io/config    → HTTP 401、body 含 "A003"
-  4. 帶有效 token POST /set/multicast/tx（任意 body）→ HTTP 200、body 含 "success"（stub）
+  4. 帶有效 token POST /set/multicast/tx（任意 body）→ HTTP 200、body 含 "success"
   5. 不存在路由 GET /no/such → 404（dispatch 未破壞既有 fallthrough）
   6. 既有路由仍活：帶 token GET /get/sip/config → 200（迴歸）
 """

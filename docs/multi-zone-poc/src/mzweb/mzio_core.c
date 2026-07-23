@@ -1,4 +1,5 @@
 #include "mzio_core.h"
+#include <string.h>
 
 void mzio_sm_init(struct mzio_sm* sm, int debounce_ms, int tail_ms, int invert)
 {
@@ -75,4 +76,12 @@ long long mzio_sm_next_deadline(const struct mzio_sm* sm)
         if (dl < 0 || c < dl) dl = c;
     }
     return dl;
+}
+
+int mzio_tx_equals_rx(const char* rx_addr, const char* rx_port, const char* tx_addr, const char* tx_port)
+{
+    if (rx_addr == NULL || rx_port == NULL || tx_addr == NULL || tx_port == NULL) return 0;
+    if (strcmp(rx_addr, tx_addr) != 0) return 0;
+    if (strcmp(rx_port, tx_port) != 0) return 0;
+    return 1;
 }

@@ -34,6 +34,16 @@ int main(void) {
         assert(found_comment);
     }
     free_keyvalue_file(kv);
+    /* I-2：write_keyvalue_file 原子寫（tmp+rename）——寫後無 .tmp 殘留，且目的檔內容正確 */
+    {
+        FILE* tf = fopen("/tmp/kv_test2.tmp", "r");
+        assert(tf == NULL);  /* rename 後 tmp 不應殘留 */
+        struct key_value_file* kv2 = read_keyvalue_file("/tmp/kv_test2");
+        assert(kv2);
+        assert(strcmp(find_key_value(kv2, "WEB_PORT"), "8081") == 0);
+        assert(strcmp(find_key_value(kv2, "NEW_KEY"), "x") == 0);
+        free_keyvalue_file(kv2);
+    }
     assert(read_keyvalue_file("/tmp/kv_nonexist_zzz") == NULL);
     /* 全新設備 crash-loop 防禦：檔案不存在回 NULL 後，呼叫端漏檢查直接 find 不可崩潰 */
     {

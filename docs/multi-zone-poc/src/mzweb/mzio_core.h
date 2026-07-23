@@ -27,4 +27,8 @@ enum mzio_act mzio_sm_sample(struct mzio_sm* sm, int raw, long long now_ms);
 enum mzio_act mzio_sm_tick(struct mzio_sm* sm, long long now_ms);
 /* 下一個需要喚醒的 deadline（ms 絕對時間；-1=無，可無限等） */
 long long mzio_sm_next_deadline(const struct mzio_sm* sm);
+
+/* 迴授防護（MTX-06）：RX（接收群組）與 TX（發送目標）位址/埠是否相同。
+ * 任一參數為 NULL 視為「無法判定相同」→ 回 0（不擋，交由呼叫端決定 fail-closed 策略）。 */
+int mzio_tx_equals_rx(const char* rx_addr, const char* rx_port, const char* tx_addr, const char* tx_port);
 #endif

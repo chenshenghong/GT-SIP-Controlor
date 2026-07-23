@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include "keyvaluefile.h"
 
 #define KV_MAX_LINES 256
@@ -52,12 +53,21 @@ void add_key_value(struct key_value_file* kv, const char* key, const char* val) 
     snprintf(l->val, sizeof(l->val), "%s", val);
 }
 void write_keyvalue_file(const char* path, struct key_value_file* kv) {
-    FILE* f = fopen(path, "w");
+    /* 原子寫：tmp+fflush+fsync+fclose+rename，避免掉電窗截斷/毀損整份設定檔
+     * （PTT 熱路徑每按放各寫本檔 2 次；同範式見 mzweb_txio.c 寫 mzio.json）。 */
+    char tmp_path[1024];
+    FILE* f;
+    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
+    f = fopen(tmp_path, "w");
     if (!f) return;
     for (int i = 0; i < kv->n; i++) {
         if (kv->lines[i].is_kv) fprintf(f, "%s=%s\n", kv->lines[i].key, kv->lines[i].val);
         else fprintf(f, "%s\n", kv->lines[i].raw);
     }
+    fflush(f);
+    fsync(fileno(f));
     fclose(f);
+    if (rename(tmp_path, path) != 0)
+        fprintf(stderr, "keyvaluefile: rename %s -> %s failed\n", tmp_path, path);
 }
 void free_keyvalue_file(struct key_value_file* kv) { free(kv); }
