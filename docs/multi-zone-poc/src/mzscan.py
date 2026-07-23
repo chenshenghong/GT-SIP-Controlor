@@ -33,7 +33,11 @@ def parse_dbp_reply(raw):
     return out if out.get("mac") else None
 
 def merge_discovery(replies):
-    """list[dict] -> {ip: record}; 同 ip 內容不一致 → dbp_conflict=True + dbp_variants。"""
+    """list[dict] -> {ip: record}; 同 ip 內容不一致 → dbp_conflict=True + dbp_variants。
+
+    衝突定義：雙方都有的資料欄位值不同（只比較 key 交集，不含 meta 欄）。
+    一方缺的欄位不算衝突；新欄位 merge 進 cur，記錄越掃越完整。
+    """
     by_ip = {}
     for r in replies:
         ip = r.get("ip")
@@ -43,11 +47,24 @@ def merge_discovery(replies):
             by_ip[ip] = dict(r)
             continue
         cur = by_ip[ip]
-        base = {k: cur.get(k) for k in r if k not in ("dbp_conflict", "dbp_variants")}
-        if base != {k: r.get(k) for k in r}:
-            variants = cur.get("dbp_variants", [{k: cur[k] for k in cur
-                                                if k not in ("dbp_conflict", "dbp_variants")}])
-            variants.append(dict(r))
+        # 計算兩筆記錄的 key 交集（排除 meta 欄 dbp_conflict/dbp_variants）
+        cur_keys = {k for k in cur if k not in ("dbp_conflict", "dbp_variants")}
+        r_keys = {k for k in r if k not in ("dbp_conflict", "dbp_variants")}
+        intersection = cur_keys & r_keys
+
+        # 衝突 = 交集中有任何欄位值不同
+        has_conflict = any(cur[k] != r[k] for k in intersection)
+
+        if has_conflict:
+            # 首次衝突時，保存 cur 的原始狀態（不含 meta）
+            if "dbp_variants" not in cur:
+                cur["dbp_variants"] = [{k: cur[k] for k in cur_keys}]
+            cur["dbp_variants"].append({k: r[k] for k in r_keys})
             cur["dbp_conflict"] = True
-            cur["dbp_variants"] = variants
+        else:
+            # 無衝突：merge 新欄位（cur 更新為更完整的記錄）
+            for k in r_keys:
+                if k not in cur or cur[k] is None:
+                    cur[k] = r[k]
+
     return by_ip
