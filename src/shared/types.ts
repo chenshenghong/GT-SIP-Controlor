@@ -197,6 +197,20 @@ export interface MulticastConfig {
   audio_codec: string
 }
 
+export interface MulticastZone {
+  zone_id: number
+  multicast_address: string
+  multicast_port: number
+  priority: number
+  enabled: boolean
+  audio_codec: string
+}
+
+export type ZonesProbe =
+  | { status: 'zones'; zones: MulticastZone[] }
+  | { status: 'unsupported' }
+  | { status: 'error' }
+
 export interface SipParameters {
   local_port: number
   rtp_start_port: number
