@@ -255,3 +255,137 @@ def parse_probe_output(out):
         if body:  # 確保有非空白內容
             f["loopback80_403"] = "403" in body.splitlines()[0]
     return f
+
+
+# Task 6: I/O 層 — DBP 收發、pty-SSH、host-key 指紋、HTTP/REST 探測
+import socket, time, os, pty, select, signal, hashlib, subprocess, ssl, urllib.request, urllib.error
+
+
+SSH_PORT = 9521
+SSH_USER = "root"
+_SSH_OPTS = ["-p", str(SSH_PORT), "-oHostKeyAlgorithms=+ssh-rsa",
+             "-oPubkeyAcceptedAlgorithms=+ssh-rsa",
+             "-oKexAlgorithms=+diffie-hellman-group-exchange-sha256,"
+             "diffie-hellman-group14-sha1,diffie-hellman-group1-sha1",
+             "-oStrictHostKeyChecking=no", "-oUserKnownHostsFile=/dev/null",
+             "-oConnectTimeout=8", "-oNumberOfPasswordPrompts=1", "-oLogLevel=ERROR"]
+
+REST_TOKEN = os.environ.get("MZSCAN_REST_TOKEN", "mzpoc-token")
+
+
+def dbp_sweep(broadcast, targets, timeout=4.0, retries=3):
+    """broadcast=True 對 255.255.255.255 廣播；否則對 targets 逐台 unicast。回原始回應 dict 列表。"""
+    req = build_dbp_request()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    sock.bind(("", 0))
+    sock.settimeout(0.5)
+    dests = ["255.255.255.255"] if broadcast else targets
+    replies, deadline, next_send, sent = [], time.time() + timeout, 0.0, 0
+    while time.time() < deadline:
+        if sent < retries and time.time() >= next_send:
+            for d in dests:
+                try:
+                    sock.sendto(req, (d, DBP_PORT))
+                except OSError:
+                    pass
+            sent += 1
+            next_send = time.time() + 0.6
+        try:
+            data, _addr = sock.recvfrom(4096)
+            r = parse_dbp_reply(data)
+            if r:
+                replies.append(r)
+        except socket.timeout:
+            pass
+    sock.close()
+    return replies
+
+
+def ssh_probe(ip, pw, timeout=15.0):
+    """單次 SSH 跑 PROBE_CMD。回 (輸出, None) 或 (None, 錯誤字串)。保證回收子程序。
+
+    重要約束：必須保持 pty.fork + os.execvp(argv list) 形式，絕不改成 shell=True 或本地 shell 拼接。
+    這保證 PROBE_CMD 內的 $$ 在遠端 busybox sh 展開（每連線唯一 PID），避免本地展開造成的測檔名撞名。
+    """
+    argv = ["ssh", *_SSH_OPTS, "%s@%s" % (SSH_USER, ip), PROBE_CMD]
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.execvp(argv[0], argv)
+        os._exit(127)
+    buf, sent, deadline = b"", False, time.time() + timeout
+    try:
+        while time.time() < deadline:
+            r, _, _ = select.select([fd], [], [], 0.5)
+            if fd not in r:
+                continue
+            try:
+                d = os.read(fd, 4096)
+            except OSError:
+                break
+            if not d:
+                break
+            buf += d
+            if not sent and b"assword" in buf:
+                os.write(fd, (pw + "\n").encode())
+                sent = True
+            if b"===END===" in buf:
+                break
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.kill(pid, signal.SIGKILL)   # timeout/異常時殺殘留 ssh
+        except OSError:
+            pass
+        try:
+            os.waitpid(pid, 0)
+        except OSError:
+            pass
+    out = buf.decode("utf-8", "replace")
+    if "===END===" not in out:
+        return None, "ssh timeout/incomplete (%d bytes)" % len(buf)
+    return out, None
+
+
+def hostkey_fp(ip, timeout=8):
+    """ssh-keyscan -t rsa → SHA256 指紋（base64 key 部分）。失敗回 None。"""
+    try:
+        out = subprocess.run(["ssh-keyscan", "-p", str(SSH_PORT), "-T", str(timeout),
+                              "-t", "rsa", ip],
+                             capture_output=True, text=True, timeout=timeout + 4).stdout
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and not line.startswith("#"):
+            digest = hashlib.sha256(base64.b64decode(parts[2])).digest()
+            return "SHA256:" + base64.b64encode(digest).decode().rstrip("=")
+    return None
+
+
+def _http_get(url, headers=None, timeout=5, insecure=False):
+    ctx = ssl._create_unverified_context() if insecure else None
+    req = urllib.request.Request(url, headers=headers or {})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+            body = resp.read(512)
+            isjson = body.lstrip()[:1] in (b"{", b"[")
+            return {"ok": True, "status": resp.status, "json": isjson}
+    except urllib.error.HTTPError as e:
+        return {"ok": True, "status": e.code, "json": False}
+    except (urllib.error.URLError, OSError, ssl.SSLError):
+        return None
+
+
+def http_probe(ip):
+    """跳板機側 web/REST 行為探測（不持設備 web token、不登入）。"""
+    http80 = _http_get("http://%s/auth/login" % ip)
+    https = _http_get("https://%s/get/device/status" % ip, insecure=True)
+    rest = _http_get("http://%s:8090/get/sip/multicast/zones" % ip,
+                     headers={"Authorization": "Bearer " + REST_TOKEN})
+    rest_ok = bool(rest and rest["status"] == 200 and rest["json"]) if rest is not None else None
+    return {"http80": http80, "https": https, "rest8090_ok": rest_ok}
