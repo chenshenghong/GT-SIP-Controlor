@@ -238,6 +238,9 @@ MULTICAST_ADDRESS=239.192.1.1:2000
 HTTP/1.1 403 Forbidden
 ===REST8090===
 HTTP/1.1 200 OK
+Content-Type: application/json
+
+{"zones": []}
 ===END===
 """
 
@@ -262,6 +265,39 @@ class TestParseProbe(unittest.TestCase):
         """REST8090 段空白（nc 連線被拒/無輸出）→ sidecar_rest_ok=None（unknown）"""
         f = mzscan.parse_probe_output("===REST8090===\n\n===END===\n")
         self.assertIsNone(f["sidecar_rest_ok"])
+    def test_rest8090_200_but_not_json_is_false(self):
+        """:8090 被其他服務占用、回 200 但 body 非 JSON（如 HTML）→ sidecar_rest_ok=False，
+        不得只憑狀態列 200 誤判為 sidecar 健康。"""
+        raw = ("===REST8090===\n"
+               "HTTP/1.1 200 OK\n"
+               "Content-Type: text/html\n"
+               "\n"
+               "<html><body>hello world</body></html>\n"
+               "===END===\n")
+        f = mzscan.parse_probe_output(raw)
+        self.assertIs(f["sidecar_rest_ok"], False)
+    def test_rest8090_200_json_array_true(self):
+        """body 首行以 [ 開頭（JSON array）亦視為有效 JSON → True"""
+        raw = ("===REST8090===\n"
+               "HTTP/1.1 200 OK\n"
+               "Content-Type: application/json\n"
+               "\n"
+               "[1, 2, 3]\n"
+               "===END===\n")
+        f = mzscan.parse_probe_output(raw)
+        self.assertIs(f["sidecar_rest_ok"], True)
+    def test_rest8090_no_body_separator_is_false(self):
+        """狀態列 200 但無 header/body 空白分界（截斷/畸形回應）→ False"""
+        f = mzscan.parse_probe_output("===REST8090===\nHTTP/1.1 200 OK\n===END===\n")
+        self.assertIs(f["sidecar_rest_ok"], False)
+    def test_loopback80_403_exact_token_not_substring(self):
+        """狀態列精確 token 比對：'1403'/'2403' 這類含 403 子字串不得誤判為 403"""
+        f = mzscan.parse_probe_output("===LOOPBACK80===\nHTTP/1.1 1403 Weird\n===END===\n")
+        self.assertIs(f["loopback80_403"], False)
+    def test_rest8090_status_token_not_substring(self):
+        """狀態列精確 token 比對：'1200' 這類含 200 子字串不得誤判為 200"""
+        f = mzscan.parse_probe_output("===REST8090===\nHTTP/1.1 1200 Weird\n\n{}\n===END===\n")
+        self.assertIs(f["sidecar_rest_ok"], False)
     def test_missing_sections_are_none(self):
         f = mzscan.parse_probe_output("===MD5TERMAPP===\ngarbage no md5\n===END===\n")
         self.assertIsNone(f["termapp_md5"])

@@ -213,6 +213,8 @@ def reconcile(expected, discovered):
 # 這是側車既有安全設計（loopback-only），非可調的部署缺陷。改為與 LOOPBACK80 同手法、經 SSH
 # 在設備本機以 nc 對 127.0.0.1:8090 探測（busybox 無 curl/wget，已用 which 確認）；不需
 # Authorization header（loopback 免驗證，已實測驗證）。
+# 審查修訂：只驗狀態列 200 不夠——:8090 若被其他服務占用、回 200 但非 zones JSON 會誤判
+# sidecar_rest_ok=True，故多抓 body（head -c 512）供 parse 端同時驗狀態列與 JSON 起始。
 PROBE_CMD = (
     'echo "===MD5TERMAPP==="; md5sum /opt/termapp 2>&1;'
     'echo "===MD5SIPWEB==="; md5sum /etc/sipweb/sipweb 2>&1;'
@@ -226,11 +228,36 @@ PROBE_CMD = (
     'echo "===LOOPBACK80==="; printf "GET /auth/login HTTP/1.1\\r\\nHost:127.0.0.1\\r\\n'
     'Connection: close\\r\\n\\r\\n" | nc 127.0.0.1 80 2>/dev/null | head -1;'
     'echo "===REST8090==="; printf "GET /get/sip/multicast/zones HTTP/1.1\\r\\n'
-    'Host:127.0.0.1\\r\\nConnection: close\\r\\n\\r\\n" | nc 127.0.0.1 8090 2>/dev/null | head -1;'
+    'Host:127.0.0.1\\r\\nConnection: close\\r\\n\\r\\n" | nc 127.0.0.1 8090 2>/dev/null | head -c 512;'
     'echo "===END==="'
 )
 
 _MD5_RE = re.compile(r"^([0-9a-f]{32})\s", re.M)
+
+def _status_token(line, code):
+    """HTTP 狀態列第 2 欄精確 token 比對（避免 '200' in '...1200...' 這類子字串誤中）。"""
+    parts = line.split()
+    return len(parts) >= 2 and parts[1] == code
+
+def _rest8090_ok(raw):
+    """REST8090 段判定：狀態列須精確 200，且 body 首個非空行以 {/[ 開頭或含 "zones" 字樣，
+    避免 :8090 被其他服務占用、回 200 但非 zones JSON 時被誤判為 sidecar 健康。"""
+    if not raw:
+        return None
+    lines = raw.splitlines()
+    if not lines:
+        return None
+    if not _status_token(lines[0], "200"):
+        return False
+    try:
+        blank = lines.index("")
+    except ValueError:
+        return False  # 無 header/body 分界 → 無可驗證 body
+    body_lines = [l for l in lines[blank + 1:] if l.strip()]
+    if not body_lines:
+        return False
+    first = body_lines[0].strip()
+    return first[:1] in ("{", "[") or any("zones" in l for l in body_lines)
 
 def _sections(out):
     # TAG 錨定整行（^...$，flags=re.M）防止 body 內偶現 ===XXX=== 樣式（如 TERMCFG grep 結果）錯位切段
@@ -267,11 +294,11 @@ def parse_probe_output(out):
     if "LOOPBACK80" in s:
         body = s["LOOPBACK80"].strip()
         if body:  # 確保有非空白內容
-            f["loopback80_403"] = "403" in body.splitlines()[0]
+            f["loopback80_403"] = _status_token(body.splitlines()[0], "403")
     if "REST8090" in s:
         body = s["REST8090"].strip()
         if body:  # 確保有非空白內容（REST 未啟動/連線被拒時 nc 無輸出，保持 None=unknown）
-            f["sidecar_rest_ok"] = "200" in body.splitlines()[0]
+            f["sidecar_rest_ok"] = _rest8090_ok(body)
     return f
 
 
@@ -529,9 +556,12 @@ def main(argv=None):
     if args.mzweb_bin:
         MZWEB_KNOWN_MD5S.add(hashlib.md5(open(args.mzweb_bin, "rb").read()).hexdigest())
     if not MZWEB_KNOWN_MD5S:
-        print("WARNING: MZWEB_KNOWN_MD5S is empty (no --mzweb-bin given); "
-              "web_type will never classify as mzweb until Task 8 finalizes the md5 table",
-              file=sys.stderr)
+        # 正常執行下 MZWEB_KNOWN_MD5S 恆非空（Task 8 已內嵌定稿常數）；此分支只在該常數被
+        # 上游意外清空/覆寫成空集合時才會觸發，保留作防禦性檢查——非空時 web_type 永不可能
+        # 判為 mzweb，等同該次掃描 mzweb 偵測整批失效，值得警示。
+        print("WARNING: MZWEB_KNOWN_MD5S is empty; web_type will never classify as mzweb "
+              "this run (use --mzweb-bin to add a local build md5, or check the constant "
+              "wasn't cleared)", file=sys.stderr)
     started = datetime.datetime.now().isoformat(timespec="seconds")
 
     expected = None
