@@ -352,5 +352,55 @@ class TestSummary(unittest.TestCase):
         self.assertIn("missing", t)
 
 
+import contextlib, io
+from unittest import mock
+
+class TestCliExpectOnly(unittest.TestCase):
+    def test_no_positional_fleet_arg(self):
+        """spec §五唯一介面：位置參數 fleet 已移除，只留 --expect；未知位置參數 → argparse error (SystemExit 2)."""
+        os.environ["MZSCAN_SSH_PW"] = "pw"
+        with self.assertRaises(SystemExit) as cm:
+            with contextlib.redirect_stderr(io.StringIO()):
+                mzscan.main(["some-positional.txt"])
+        self.assertEqual(cm.exception.code, 2)
+
+
+class TestEmptyFleetFailClosed(unittest.TestCase):
+    def test_empty_expect_file_exit2(self):
+        """--expect 檔解析出 0 筆有效項目 → fail-closed exit 2（同重複IP哲學）。"""
+        os.environ["MZSCAN_SSH_PW"] = "pw"
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "empty.txt")
+            with open(p, "w") as fh:
+                fh.write("# nothing here\n\n")
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                rc = mzscan.main(["--expect", p])
+            self.assertEqual(rc, 2)
+            self.assertIn("no valid entries", err.getvalue())
+
+
+class TestProbeDeviceCrashGuard(unittest.TestCase):
+    def test_unexpected_exception_returns_crashed_row(self):
+        """probe_device 內部任何未預期例外 → row 保底回傳(errors 含 crashed)，不炸整批 ex.map。"""
+        with mock.patch.object(mzscan, "hostkey_fp", side_effect=RuntimeError("boom")):
+            row = mzscan.probe_device("1.1.1.1", None, "pw")
+        self.assertEqual(row["ip"], "1.1.1.1")
+        self.assertTrue(any("probe_device crashed" in e for e in row["errors"]))
+
+
+class TestNoMzwebMd5Warning(unittest.TestCase):
+    def test_warns_when_md5_table_empty(self):
+        """MZWEB_KNOWN_MD5S 為空且未給 --mzweb-bin → stderr 印 WARNING（Task 8 定稿前已知留白）。"""
+        os.environ["MZSCAN_SSH_PW"] = "pw"
+        mzscan.MZWEB_KNOWN_MD5S.clear()
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(mzscan, "dbp_sweep", return_value=[]):
+                with contextlib.redirect_stderr(io.StringIO()) as err:
+                    rc = mzscan.main(["--out", d])
+            self.assertEqual(rc, 0)
+            self.assertIn("WARNING", err.getvalue())
+            self.assertIn("mzweb", err.getvalue().lower())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -430,7 +430,7 @@ def build_inventory(rows, recon, expect_meta, started, finished):
     return inv
 
 def write_atomic(path, obj):
-    tmp = path + ".tmp"
+    tmp = path + (".tmp.%d" % os.getpid())
     with open(tmp, "w") as fh:
         json.dump(obj, fh, ensure_ascii=False, indent=1)
     os.replace(tmp, path)
@@ -451,60 +451,79 @@ def summary_table(inv):
 
 MZWEB_KNOWN_MD5S = set()   # main() 啟動時以 --mzweb-bin 或內嵌常數初始化（Task 8 定稿常數）
 
+_PROBE_UNKNOWN_CHECK_KEYS = ("termapp_md5", "sipweb_md5", "opt_writable", "loopback80_403",
+                             "sidecar_relay_bin", "sidecar_relay_running", "sidecar_init",
+                             "opt_free_kb")
+
 def probe_device(ip, dbp_rec, pw, timeout=15.0):
-    row = {"ip": ip, "mac": (dbp_rec or {}).get("mac"),
-           "fw_ver_dbp": (dbp_rec or {}).get("fw_ver_dbp"),
-           "reachable_dbp": dbp_rec is not None,
-           "dbp_conflict": bool((dbp_rec or {}).get("dbp_conflict")), "errors": []}
-    if row["dbp_conflict"]:
-        row["dbp_variants"] = dbp_rec["dbp_variants"]
-    row["ssh_hostkey_fp"] = hostkey_fp(ip)
-    out, err = ssh_probe(ip, pw, timeout)
-    row["ssh_ok"] = out is not None
-    if err:
-        row["errors"].append(err)
-    facts = parse_probe_output(out) if out else dict.fromkeys(
-        ("termapp_md5", "sipweb_md5", "sidecar_relay_bin", "sidecar_relay_running",
-         "sidecar_init", "opt_writable", "opt_free_kb", "loopback80_403",
-         "termapp_multicast_addr"))
-    row.update(facts)
-    hp = http_probe(ip)
-    row["sidecar_rest_ok"] = hp["rest8090_ok"]
-    row["fw_ver"] = decide_fw_ver(facts["termapp_md5"], row["fw_ver_dbp"])
-    row["web_type"] = decide_web_type(facts["sipweb_md5"], MZWEB_KNOWN_MD5S,
-                                      hp["https"], hp["http80"], facts["loopback80_403"])
-    for k in ("termapp_md5", "sipweb_md5", "opt_writable", "loopback80_403"):
-        if facts.get(k) is None:
-            row["errors"].append("probe %s unknown" % k)
-    return row
+    """單台完整深探組 row。任何未預期例外皆保底回傳含 crashed 錯誤的 row，絕不讓 ex.map 整批中斷。"""
+    try:
+        row = {"ip": ip, "mac": (dbp_rec or {}).get("mac"),
+               "fw_ver_dbp": (dbp_rec or {}).get("fw_ver_dbp"),
+               "reachable_dbp": dbp_rec is not None,
+               "dbp_conflict": bool((dbp_rec or {}).get("dbp_conflict")), "errors": []}
+        if row["dbp_conflict"]:
+            row["dbp_variants"] = dbp_rec["dbp_variants"]
+        row["ssh_hostkey_fp"] = hostkey_fp(ip)
+        out, err = ssh_probe(ip, pw, timeout)
+        row["ssh_ok"] = out is not None
+        if err:
+            row["errors"].append(err)
+        facts = parse_probe_output(out) if out else dict.fromkeys(
+            ("termapp_md5", "sipweb_md5", "sidecar_relay_bin", "sidecar_relay_running",
+             "sidecar_init", "opt_writable", "opt_free_kb", "loopback80_403",
+             "termapp_multicast_addr"))
+        row.update(facts)
+        hp = http_probe(ip)
+        row["sidecar_rest_ok"] = hp["rest8090_ok"]
+        row["fw_ver"] = decide_fw_ver(facts["termapp_md5"], row["fw_ver_dbp"])
+        row["web_type"] = decide_web_type(facts["sipweb_md5"], MZWEB_KNOWN_MD5S,
+                                          hp["https"], hp["http80"], facts["loopback80_403"])
+        for k in _PROBE_UNKNOWN_CHECK_KEYS:
+            if facts.get(k) is None:
+                row["errors"].append("probe %s unknown" % k)
+        return row
+    except Exception as e:  # 保底：任何未預期例外都不能讓整批 ex.map 中斷
+        return {"ip": ip, "mac": None, "fw_ver_dbp": None, "reachable_dbp": None,
+                "dbp_conflict": False, "ssh_hostkey_fp": None, "ssh_ok": None,
+                "termapp_md5": None, "sipweb_md5": None, "sidecar_relay_bin": None,
+                "sidecar_relay_running": None, "sidecar_init": None, "opt_writable": None,
+                "opt_free_kb": None, "loopback80_403": None, "termapp_multicast_addr": None,
+                "sidecar_rest_ok": None, "fw_ver": "unknown", "web_type": "unknown",
+                "errors": ["probe_device crashed: %r" % (e,)]}
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="gt-sip-gw fleet pre-flight scanner")
-    ap.add_argument("fleet", nargs="?", help="fleet.txt: IP[,MAC] per line (positional alias for --expect)")
     ap.add_argument("--expect", help="fleet.txt: IP[,MAC] per line")
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--timeout", type=float, default=15.0)
     ap.add_argument("--mzweb-bin", help="local mzweb-arm build to trust as mzweb md5")
     ap.add_argument("--out", default=".", help="output dir")
     args = ap.parse_args(argv)
-    expect_path = args.expect or args.fleet
     pw = os.environ.get("MZSCAN_SSH_PW")
-    if not pw:
+    if pw is None:
         print("MZSCAN_SSH_PW not set", file=sys.stderr)
         return 2
     if args.mzweb_bin:
         MZWEB_KNOWN_MD5S.add(hashlib.md5(open(args.mzweb_bin, "rb").read()).hexdigest())
+    if not MZWEB_KNOWN_MD5S:
+        print("WARNING: MZWEB_KNOWN_MD5S is empty (no --mzweb-bin given); "
+              "web_type will never classify as mzweb until Task 8 finalizes the md5 table",
+              file=sys.stderr)
     started = datetime.datetime.now().isoformat(timespec="seconds")
 
     expected = None
-    if expect_path:
-        expected = parse_fleet(open(expect_path).read())
+    if args.expect is not None:
+        expected = parse_fleet(open(args.expect).read())
+        if not expected:
+            print("--expect file has no valid entries: %s" % args.expect, file=sys.stderr)
+            return 2
     discovered = merge_discovery(dbp_sweep(broadcast=True, targets=[]))
-    if expected:                       # missing 台 unicast 補掃（spec §七）
+    if expected is not None:           # missing 台 unicast 補掃（spec §七）
         missing = [e["ip"] for e in expected if e["ip"] not in discovered]
         if missing:
             discovered.update(merge_discovery(dbp_sweep(broadcast=False, targets=missing)))
-    targets = sorted(set(discovered) | ({e["ip"] for e in expected} if expected else set()))
+    targets = sorted(set(discovered) | ({e["ip"] for e in expected} if expected is not None else set()))
     print("discovered %d, probing %d ..." % (len(discovered), len(targets)))
 
     with ThreadPoolExecutor(max_workers=args.workers) as ex:
@@ -521,8 +540,8 @@ def main(argv=None):
         print("!! duplicate host-key fingerprints (possible MITM): %s" % dups, file=sys.stderr)
 
     finished = datetime.datetime.now().isoformat(timespec="seconds")
-    recon = reconcile(expected, discovered) if expected else None
-    meta = {"file": expect_path, "count": len(expected)} if expected else None
+    recon = reconcile(expected, discovered) if expected is not None else None
+    meta = {"file": args.expect, "count": len(expected)} if expected is not None else None
     inv = build_inventory(rows, recon, meta, started, finished)
     out_path = os.path.join(args.out, "inventory-%s.json"
                             % datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
