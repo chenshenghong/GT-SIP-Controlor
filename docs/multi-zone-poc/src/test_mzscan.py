@@ -236,6 +236,8 @@ WRITE_OK
 MULTICAST_ADDRESS=239.192.1.1:2000
 ===LOOPBACK80===
 HTTP/1.1 403 Forbidden
+===REST8090===
+HTTP/1.1 200 OK
 ===END===
 """
 
@@ -251,6 +253,15 @@ class TestParseProbe(unittest.TestCase):
         self.assertEqual(f["opt_free_kb"], 5120)
         self.assertTrue(f["loopback80_403"])
         self.assertEqual(f["termapp_multicast_addr"], "239.192.1.1:2000")
+        self.assertTrue(f["sidecar_rest_ok"])
+    def test_rest8090_non_200_is_false(self):
+        """REST8090 段回非 200（如側車未起）→ sidecar_rest_ok=False"""
+        f = mzscan.parse_probe_output("===REST8090===\nHTTP/1.1 500 Internal Server Error\n===END===\n")
+        self.assertIs(f["sidecar_rest_ok"], False)
+    def test_rest8090_empty_body_is_none(self):
+        """REST8090 段空白（nc 連線被拒/無輸出）→ sidecar_rest_ok=None（unknown）"""
+        f = mzscan.parse_probe_output("===REST8090===\n\n===END===\n")
+        self.assertIsNone(f["sidecar_rest_ok"])
     def test_missing_sections_are_none(self):
         f = mzscan.parse_probe_output("===MD5TERMAPP===\ngarbage no md5\n===END===\n")
         self.assertIsNone(f["termapp_md5"])

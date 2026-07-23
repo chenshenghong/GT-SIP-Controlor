@@ -200,8 +200,19 @@ def reconcile(expected, discovered):
     return out
 
 
-# 單次 SSH 往返收齊全部設備側事實（busybox sh 相容）。TERMCFG 命令暫定策略：
-# 先用 grep 掃 /opt 常見 config；待 Task 8 真機實查後定稿——若得出確切檔案路徑則改為直讀該檔。
+# 單次 SSH 往返收齊全部設備側事實（busybox sh 相容）。TERMCFG 段實查結論（Task 8，.70 真機）：
+# 單槽 termapp 並無獨立 key=value config 檔——grep -rl MULTICAST_ADDRESS /opt 只命中 /opt/termapp
+# 本身（該字串是編譯進二進位的 bare key 名稱，非 "KEY=value" 賦值；/etc、/opt/cfg、/var、/tmp、/mnt
+# 皆無命中；/proc/<termapp_pid>/environ 亦無此變數）。busybox grep 對二進位逐行輸出不含 NUL 汙染
+# （已驗證 od -c 輸出為單行 "MULTICAST_ADDRESS\n"），故現有 grep 對 §四 TERMCFG 段落解析安全、
+# 無需改讀特定檔案。維持 grep 版本，termapp_multicast_addr 在此類設備上恆為 unknown（spec 明定
+# 不擋分類，僅供 E 參考）。
+#
+# REST8090 段（Task 8 smoke 發現的真機事實，非原設計）：mzrelay3 啟動參數把 REST bind 在
+# 127.0.0.1:8090（`netstat -tlnp` 實測，非 0.0.0.0），故從跳板機遠端 HTTP GET 必連線被拒——
+# 這是側車既有安全設計（loopback-only），非可調的部署缺陷。改為與 LOOPBACK80 同手法、經 SSH
+# 在設備本機以 nc 對 127.0.0.1:8090 探測（busybox 無 curl/wget，已用 which 確認）；不需
+# Authorization header（loopback 免驗證，已實測驗證）。
 PROBE_CMD = (
     'echo "===MD5TERMAPP==="; md5sum /opt/termapp 2>&1;'
     'echo "===MD5SIPWEB==="; md5sum /etc/sipweb/sipweb 2>&1;'
@@ -214,6 +225,8 @@ PROBE_CMD = (
     'echo "===TERMCFG==="; grep -rh "MULTICAST_ADDRESS" /opt 2>/dev/null | head -3;'
     'echo "===LOOPBACK80==="; printf "GET /auth/login HTTP/1.1\\r\\nHost:127.0.0.1\\r\\n'
     'Connection: close\\r\\n\\r\\n" | nc 127.0.0.1 80 2>/dev/null | head -1;'
+    'echo "===REST8090==="; printf "GET /get/sip/multicast/zones HTTP/1.1\\r\\n'
+    'Host:127.0.0.1\\r\\nConnection: close\\r\\n\\r\\n" | nc 127.0.0.1 8090 2>/dev/null | head -1;'
     'echo "===END==="'
 )
 
@@ -229,7 +242,8 @@ def parse_probe_output(out):
     s = _sections(out)
     f = dict.fromkeys(("termapp_md5", "sipweb_md5", "sidecar_relay_bin",
                        "sidecar_relay_running", "sidecar_init", "opt_writable",
-                       "opt_free_kb", "loopback80_403", "termapp_multicast_addr"))
+                       "opt_free_kb", "loopback80_403", "termapp_multicast_addr",
+                       "sidecar_rest_ok"))
     for tag, key in (("MD5TERMAPP", "termapp_md5"), ("MD5SIPWEB", "sipweb_md5")):
         m = _MD5_RE.search(s.get(tag, ""))
         f[key] = m.group(1) if m else None
@@ -254,6 +268,10 @@ def parse_probe_output(out):
         body = s["LOOPBACK80"].strip()
         if body:  # 確保有非空白內容
             f["loopback80_403"] = "403" in body.splitlines()[0]
+    if "REST8090" in s:
+        body = s["REST8090"].strip()
+        if body:  # 確保有非空白內容（REST 未啟動/連線被拒時 nc 無輸出，保持 None=unknown）
+            f["sidecar_rest_ok"] = "200" in body.splitlines()[0]
     return f
 
 
@@ -399,14 +417,15 @@ def _http_get(url, headers=None, timeout=5, insecure=False):
 
 
 def http_probe(ip):
-    """跳板機側 web/REST 行為探測（不持設備 web token、不登入）。"""
-    token = os.environ.get("MZSCAN_REST_TOKEN", "mzpoc-token")
+    """跳板機側 web 行為探測（不持設備 web token、不登入）。
+
+    Task 8 真機實查：REST :8090 為 mzrelay3 啟動參數固定 bind 在 127.0.0.1（loopback-only 安全設計），
+    跳板機遠端連線必被拒——sidecar_rest_ok 改經 SSH 在設備本機以 nc 探測（見 PROBE_CMD 的 REST8090 段/
+    parse_probe_output），不再由本函式負責。
+    """
     http80 = _http_get("http://%s/auth/login" % ip)
     https = _http_get("https://%s/get/device/status" % ip, insecure=True)
-    rest = _http_get("http://%s:8090/get/sip/multicast/zones" % ip,
-                     headers={"Authorization": "Bearer " + token})
-    rest_ok = bool(rest and rest["status"] == 200 and rest["json"]) if rest is not None else None
-    return {"http80": http80, "https": https, "rest8090_ok": rest_ok}
+    return {"http80": http80, "https": https}
 
 
 # Task 7: inventory 組裝、原子輸出、摘要表、probe_device、CLI main
@@ -449,11 +468,15 @@ def summary_table(inv):
     return "\n".join(lines)
 
 
-MZWEB_KNOWN_MD5S = set()   # main() 啟動時以 --mzweb-bin 或內嵌常數初始化（Task 8 定稿常數）
+# Task 8 定稿：mzweb-arm build md5（2026-07-23 build，401888 bytes；
+# 來源：`md5sum docs/multi-zone-poc/src/mzweb/build/mzweb-arm`）。
+# 真機 .70 交叉驗證：/etc/sipweb/sipweb md5 與本地 build 相同，無需額外收錄舊值。
+MZWEB_KNOWN_MD5S = {"170631635316f2b2ca7aa20e91a81e47"}
+# main() 若帶 --mzweb-bin 會再 add() 本地覆蓋值（見 main()），供現場帶不同 build 時使用。
 
 _PROBE_UNKNOWN_CHECK_KEYS = ("termapp_md5", "sipweb_md5", "opt_writable", "loopback80_403",
                              "sidecar_relay_bin", "sidecar_relay_running", "sidecar_init",
-                             "opt_free_kb")
+                             "opt_free_kb", "sidecar_rest_ok")
 
 def probe_device(ip, dbp_rec, pw, timeout=15.0):
     """單台完整深探組 row。任何未預期例外皆保底回傳含 crashed 錯誤的 row，絕不讓 ex.map 整批中斷。"""
@@ -472,10 +495,9 @@ def probe_device(ip, dbp_rec, pw, timeout=15.0):
         facts = parse_probe_output(out) if out else dict.fromkeys(
             ("termapp_md5", "sipweb_md5", "sidecar_relay_bin", "sidecar_relay_running",
              "sidecar_init", "opt_writable", "opt_free_kb", "loopback80_403",
-             "termapp_multicast_addr"))
+             "termapp_multicast_addr", "sidecar_rest_ok"))
         row.update(facts)
         hp = http_probe(ip)
-        row["sidecar_rest_ok"] = hp["rest8090_ok"]
         row["fw_ver"] = decide_fw_ver(facts["termapp_md5"], row["fw_ver_dbp"])
         row["web_type"] = decide_web_type(facts["sipweb_md5"], MZWEB_KNOWN_MD5S,
                                           hp["https"], hp["http80"], facts["loopback80_403"])

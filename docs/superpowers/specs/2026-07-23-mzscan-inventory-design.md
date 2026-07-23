@@ -43,7 +43,7 @@
 | `opt_writable` | `test ! -e /opt/.mzscan.<pid> && touch … && rm …`（唯一檔名、先驗不存在） |
 | `opt_free_kb` | `df /opt` |
 | `termapp_multicast_addr` | 讀 termapp 單槽 config（**確切路徑實作時上 .70 實查**；unknown 不擋分類，僅供 E 參考） |
-| `sidecar_relay_bin` / `sidecar_relay_running` / `sidecar_init` / `sidecar_rest_ok` | `/opt/mzrelay3` 存在、ps 有程序、`/etc/init.d/S21mzrelay` 在位、REST `:8090 /get/sip/multicast/zones` 可達（四項分別記錄，可偵測半套） |
+| `sidecar_relay_bin` / `sidecar_relay_running` / `sidecar_init` / `sidecar_rest_ok` | `/opt/mzrelay3` 存在、ps 有程序、`/etc/init.d/S21mzrelay` 在位、REST `:8090 /get/sip/multicast/zones` 可達（四項分別記錄，可偵測半套）。**`sidecar_rest_ok` 實查更正（Task 8）**：mzrelay3 REST 固定 bind `127.0.0.1`（loopback-only），改經 SSH 在設備本機以 `nc` 探測，非跳板機遠端 HTTP |
 
 **三態原則（審查修訂核心）**：每個欄位＝「值」或 `unknown`＋`errors[]` 內的原因；探測失敗**只污染該欄**，不中斷該台其餘探測、不中斷全掃。
 
@@ -110,7 +110,17 @@
 
 ## 九、風險與開放事項
 
-- termapp 單槽 config 路徑未實查（實作首步上 `.70` 確認；該欄 unknown 不擋分類）。
+- ~~termapp 單槽 config 路徑未實查~~ **已實查定稿（Task 8，.70 真機）**：單槽 termapp 並無獨立
+  `key=value` config 檔——`grep -rl MULTICAST_ADDRESS /opt` 只命中 `/opt/termapp` 本身（該字串是
+  編譯進二進位的 bare key 名稱，非賦值；`/etc`、`/opt/cfg`、`/var`、`/tmp`、`/mnt` 及執行中程序
+  `/proc/<pid>/environ` 皆無命中）。busybox grep 對二進位逐行輸出不含 NUL 汙染（已用 `od -c`
+  驗證單行輸出），故 `PROBE_CMD` 維持現有 grep 版本即可安全解析，無需另讀特定檔案；
+  `termapp_multicast_addr` 在此類設備上恆為 `unknown`（不擋分類，僅供 E 參考，符合原設計）。
+- **Task 8 smoke 追加發現並已修復**：`sidecar_rest_ok` 原設計為跳板機遠端 HTTP GET `:8090`，
+  但真機 `netstat` 實測 mzrelay3 REST 固定 bind `127.0.0.1:8090`（側車既有 loopback-only 安全設計，
+  非部署缺陷），遠端探測必連線被拒。已改為與 `loopback80_403` 同手法、經 SSH 在設備本機以
+  busybox `nc` 探測 loopback（`.70` 已驗證免 Authorization header 即回 200）；`http_probe()` 對應
+  移除失效的遠端 REST 探測與未用的 `MZSCAN_REST_TOKEN`。§三表格「探測方法」一欄以此為準。
 - 8 workers 並發對設備側 sshd（OpenSSH 5.5）壓力未實測；有異常先降 4。
 - host-key 信任模型＝TOFU＋跨台重複指紋偵測（§三）；殘餘風險＝針對單一 IP 的定向 MITM 首連冒充，接受理由：root 密碼為出廠常數已非秘密、且冒充者須同時通過 DBP MAC 對帳與 termapp md5 交叉才可能被誤判——此風險等級專案層級接受。
 - 分類矩陣 unittest 須含：dbp_conflict、跨台重複指紋、valid_until 逾期拒收等身分/時效分支。
