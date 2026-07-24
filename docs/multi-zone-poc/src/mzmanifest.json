@@ -16,11 +16,11 @@
   },
   "S21mzrelay": {
    "path": "/etc/init.d/S21mzrelay",
-   "md5": "2cb49fdb86279aacd2f357a0ee75593f"
+   "md5": "0f42300af3b8abfe2cd8eb862d26176f"
   },
   "S21mzio": {
    "path": "/etc/init.d/S21mzio",
-   "md5": "cc4849c340acf89c0556df1bfe710f6f"
+   "md5": "2336e501f0df8b909db3cd24e06c5cfc"
   }
  },
  "termapp": {

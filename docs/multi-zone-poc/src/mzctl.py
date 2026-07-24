@@ -25,6 +25,10 @@ def _pty(argv, feed=None, done=b"===DONE===", timeout=60):
         if done and done in buf: break
     try:os.close(fd)
     except OSError:pass
+    # .101 rollout 實證：逾時後 ssh 子程序可能仍活（遠端背景程序抓住 session pipe），
+    # 無 kill 直接 waitpid 會永久阻塞——先 SIGKILL 再收屍（同 mzscan.ssh_run 慣例）
+    try:os.kill(pid,9)
+    except OSError:pass
     try:os.waitpid(pid,0)
     except OSError:pass
     return buf.decode("utf-8","replace")
