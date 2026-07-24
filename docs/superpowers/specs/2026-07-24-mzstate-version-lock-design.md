@@ -90,7 +90,8 @@
 }
 ```
 
-- **寫入方式**：設備端 tmp（檔名帶 PID）＋`mv` 原子替換＋`sync`。更新期間以 `mkdir /opt/.mzstate.lock` 原子鎖保護 read-modify-write（防禦縱深；主保證是 §十一 B 契約「每台同時只有單一 worker」。lock 目錄存在超過 120s 視為 stale、可打破）。
+- **寫入方式**：設備端 tmp（檔名帶 PID）＋`mv` 原子替換＋`sync`。更新期間以 `mkdir /opt/.mzstate.lock` 原子鎖保護 read-modify-write（防禦縱深；主保證是 §十一 B 契約「每台同時只有單一 worker」）。lock 目錄內寫 `owner` 檔（跳板機 hostname＋pid＋timestamp）；lock 存在超過 120s **且** owner 記錄的行程已不存在（或無法查證但操作員明示 break-glass）才可打破——不得僅憑逾時打破仍存活的慢 writer。
+- **`--delete` 僅接受五件元件名**；`cert` 條目為 only-update（隨每次 mark 更新觀測值），不可刪。
 - **`mark` 語意**（防洗白＋all-or-nothing）：
   1. probe 目標機取實際 md5。
   2. 指定的每個元件都必須 `actual == manifest` 才寫；**任一不符 → 一個條目都不寫**、退出碼 1（all-or-nothing）。
@@ -124,14 +125,21 @@
 |---|---|---|---|
 | 20 | `UNREACHABLE` | SSH 探測失敗 | 重試佇列 |
 | 21 | `PROBE_INCOMPLETE` | 任一判定必需事實為 `unknown`（md5 讀取失敗、cert 檢查工具缺失等） | 重試 probe；連續失敗進人工佇列。**禁止 F/deploy/mark** |
-| 14 | `UNKNOWN_FW` | termapp md5 可讀但無法歸類：不在 `known_versions` 且 DBP 無 `2.1.0` 交叉證據（沿 mzscan `decide_fw_ver()` 語意） | 人工佇列（不明韌體不得自動覆蓋——可能非同產品線/毀損） |
-| 11 | `NEEDS_FW_UPGRADE` | fw_ver == "2.1.0"（md5 非已知新版**且** DBP 交叉證實 2.1.0） | 走 F（升韌體＋reboot），完成後重判 |
+| 14 | `UNKNOWN_FW` | termapp md5 可讀、**∉ `known_versions`**、且 DBP 無 `2.1.0` 交叉證據 | 人工佇列（不明韌體不得自動覆蓋——可能非同產品線/毀損） |
+| 11 | `NEEDS_FW_UPGRADE` | **md5 優先層級**：(a) termapp md5 ∈ `known_versions` 且對應版本 ≠ `desired_version`（md5 是檔案本體直接證據，**不需** DBP；DBP 缺失/矛盾只記 warning）；或 (b) md5 ∉ `known_versions` 且 DBP 交叉證實 `2.1.0`（雙源推斷，沿 mzscan `decide_fw_ver()` 語意） | 走 F（升韌體＋reboot），完成後重判 |
 | 12 | `DRIFT` | 任一 side-car 元件態 = `drift` | 人工佇列（不自動覆蓋） |
 | 10 | `NEEDS_DEPLOY` | 任一 side-car 元件態 = `missing`/`outdated` | 走 deploy／mzweb-install／mzio-install，完成後重判 |
 | 13 | `NOT_READY_CONFIG` | 元件全 `ok` 但 §六條件 3-7 任一不成立 | config 修復（重啟服務／重簽憑證／改單槽），完成後重判 |
 | 15 | `NEEDS_MARK` | §六條件 1-7 全成立，唯 marker 缺／不可解析／條目與 actual 不符（stale） | 執行 `mark`（自帶驗證，安全冪等），完成後重判 |
 | 0 | `READY` | §六全部成立 | skip（冪等重跑安全） |
-| 2 | usage error | 參數／輸入檔錯誤（含 inventory schema/時效拒收） | 修正呼叫 |
+
+上表為**每台裁決碼**（單台 `--probe` 模式的行程退出碼即該台裁決碼）。另有**呼叫層錯誤碼**（不屬任何一台的裁決，批次/單台皆可能發生，B 須分別處理，見 §十一）：
+
+| 退出碼 | 意義 | B 的動作 |
+|---|---|---|
+| 2 | usage error（參數錯、檔不存在、JSON 壞檔） | 修正呼叫（bug，不重試） |
+| 22 | `SCHEMA_MISMATCH`（inventory 非 schema "2"） | 中止此批次，以新版 mzscan 重掃後重試 |
+| 23 | `STALE_INVENTORY`（inventory 逾 `valid_until` 且未給 `--allow-stale`） | 重掃後重試（或人為決策後帶 `--allow-stale`） |
 
 - 優先序理由：探測不完整先於一切裁決（部分事實不得驅動動作）；韌體先於 side-car（F 排 B 部署前）；**DRIFT 先於 NEEDS_DEPLOY**——同機有 drift 元件時整機狀態不可信，不得自動部署其他元件；NEEDS_MARK 墊底＝「其他全對只差標」。
 - 憑證 `crt_md5` ≠ marker 記錄值 → `warnings[]`，不影響裁決（D4）。
@@ -146,7 +154,8 @@ mzstate.py mark   --probe <ip> [--manifest mzmanifest.json] [--components a,b] [
 mzstate.py gen-manifest [--release <tag>]
 ```
 
-- **inventory 信任前置**：`--inventory` 必驗 `schema_version=="2"`（其他一律退出碼 2，錯誤訊息指示重掃；D8）＋`valid_until` 未過期（過期拒收；`--allow-stale` 顯式豁免、報告加 warning）。報告帶入 `scan_id`、manifest `release`＋digest。
+- **inventory 信任前置**：`--inventory` 必驗 `schema_version=="2"`（否則退出碼 **22**，錯誤訊息指示重掃；D8）＋`valid_until` 未過期（過期退出碼 **23**；`--allow-stale` 顯式豁免、報告加 warning）。報告帶入 `scan_id`、manifest `release`＋digest。
+- **部署前置**：mzstate.py 與 mzscan.py 同目錄（`docs/multi-zone-poc/src/`），跳板機以 repo checkout/rsync 取得——與 mzscan 既有執行模型相同，rollout runbook 需列此前置。`gen-manifest` 的退出碼 2（缺 build 產物）與 decide 的 2（usage error）分屬不同子命令 context，不衝突。
 - `--probe` 複用 `mzscan.py` probe（import；同 `MZSCAN_SSH_PW` 慣例、同跳板機執行模型）。
 - 批次模式 `--json` 必填且**原子產出完整報告**（任何單台失敗都不缺條目）；批次整體退出碼：全 READY=0，否則 1。單台 `--probe` 模式退出碼＝該台裁決碼；無 `--json` 時 stdout 印一行人讀摘要（`192.168.0.70 READY(0)` / `192.168.0.71 DRIFT(12) mzrelay3: md5 mismatch`），有 `--json` 時完整報告寫檔。
 - **JSON 報告 schema**：
@@ -174,8 +183,25 @@ mzstate.py gen-manifest [--release <tag>]
 }
 ```
 
-- **`required_actions[]`（機器可讀，B 的動作依據；B 不得解析 `reasons[]`）**，enum：`fw_upgrade`｜`deploy_mzrelay3`｜`install_mzweb`｜`install_mzio`｜`mark`｜`fix_singleslot`｜`regen_cert`｜`restart_services`｜`manual_review`｜`retry_probe`。由元件態＋checks 決定性導出。
-- **checks 值規範**：boolean 型欄位失敗＝`false`；觀測值型欄位（`termapp_fw`、`singleslot_mc`）記**實際觀測值**（判定結論由 verdict/required_actions 表達，不用 "ok"/"mismatch" 魔法字串）；無法取得＝`null`（並使整機落 21）。
+- **`required_actions[]`（機器可讀，B 的動作依據；B 不得解析 `reasons[]`）**：**有序**陣列，B 依序執行。enum：`fw_upgrade`｜`deploy_mzrelay3`（含 S21mzrelay）｜`install_mzweb`｜`install_mzio`（含 S21mzio）｜`mark`｜`restart_services`｜`regen_cert`｜`fix_singleslot`｜`manual_review`｜`retry_probe`。**推導對照表（決定性，實作照抄）**：
+
+| 觸發 | 加入 action |
+|---|---|
+| verdict 20 | `retry_probe` |
+| verdict 21 | `retry_probe`（連續失敗由 B 轉 `manual_review`） |
+| verdict 14 或 12 | `manual_review`（唯一元素，不與其他並列） |
+| verdict 11（可與下列並存但排最前） | `fw_upgrade` |
+| mzrelay3/S21mzrelay 態 ∈ {missing, outdated} | `deploy_mzrelay3` |
+| mzweb 態 ∈ {missing, outdated} | `install_mzweb` |
+| mzio/S21mzio 態 ∈ {missing, outdated} | `install_mzio` |
+| checks.relay_running/rest_ok/mzweb_https_ok/mzio_running 任一 false（且該元件態=ok） | `restart_services` |
+| checks.cert_san_ok 或 cert_expiry_ok false | `regen_cert` |
+| checks.singleslot_mc≠desired 或 singleslot_enabled false | `fix_singleslot` |
+| verdict 15 | `mark` |
+
+  順序＝上表由上而下（fw → deploy → services → cert → 單槽 → mark）；同列多元件依 mzrelay3→mzweb→mzio。12/14 為 terminal：`required_actions=["manual_review"]`，不附其他動作（防 B 誤自動化）。
+- **checks 值規範**：boolean 型欄位失敗＝`false`；觀測值型欄位（`termapp_fw`、`singleslot_mc`）記**實際觀測值**（判定結論由 verdict/required_actions 表達，不用 "ok"/"mismatch" 魔法字串）；無法取得＝`null`。
+- **判定必需事實清單（null → 該機落 21）**：`termapp_md5`、五件 side-car md5、`mzstate_marker`（讀取動作失敗才算 null；檔不在＝合法的「缺」非 null）、`singleslot_mc_addr/port/enabled`、`cert_crt_exists/key_exists/key_perm`、SAN/效期檢查結果、`sidecar_rest_ok`、relay/mzweb/mzio running 三欄。**非必需（null 不觸發 21）**：`fw_ver_dbp`（DBP 缺失走 §5.2 的 md5 優先層級）、`cert_crt_md5`（僅 warning 用）、`web_type` 等資訊性欄位。
 - **warnings/reasons 邊界**：`warnings[]`＝不影響本次裁決的非阻塞事項（任何裁決等級皆可有，如 cert md5 漂移、--allow-stale）；`reasons[]`＝導致非 READY 的直接原因（人讀，與 warnings 不重疊）。
 - **UNREACHABLE 條目形狀**：`components`/`checks` 為空物件、`required_actions=["retry_probe"]`、`reasons` 帶 ssh 錯誤描述——B 解析不會 KeyError。
 
@@ -192,7 +218,7 @@ mzstate.py gen-manifest [--release <tag>]
 7. 單槽：`/etc/ifcfg-sip` 的 `MULTICAST_ADDRESS==mc_out_group` 且 `MULTICAST_PORT==mc_out_port` 且 `MULTICAST_ENABLED=true`（Q1 已實查定案，硬條件）。
 8. 標記檔存在、可解析、五件條目 md5 與 actual 一致。
 
-**憑證 SAN/效期驗證機制（具體化）**：B 端 TLS 握手 `getpeercert(binary_form=True)` 取 DER（CERT_NONE 下 `getpeercert()` 回空 dict、不可用），DER 餵跳板機 `openssl x509 -inform DER -noout -checkend 0 -text` 解析 SAN 與效期。**openssl 為跳板機前置需求**：mzstate 啟動時 preflight 檢查，缺 openssl → cert 檢查記 `null` → 該機落 21（fail-closed），不靜默跳過。
+**憑證 SAN/效期驗證機制（具體化）**：B 端 TLS 握手 `getpeercert(binary_form=True)` 取 DER（CERT_NONE 下 `getpeercert()` 回空 dict、不可用），DER 餵跳板機 `openssl x509 -inform DER -noout -checkend 0 -text` 解析。**SAN 比對規則**：解析 `X509v3 Subject Alternative Name` 區塊內的 `IP Address:<ip>` token，與目標 IP 做**完整字串精確相等**（禁止子字串比對——`192.168.1.1` 不得放行 `192.168.1.10`）。**openssl 為跳板機前置需求**：每次 `decide`/`mark` CLI 進入點 preflight 檢查一次（`openssl version` 可執行），缺 → cert 檢查記 `null` → 該機落 21（fail-closed），不靜默跳過。
 
 **漂移偵測**＝同一套比對的另一面：任何時點重跑 `decide`，元件 `drift`／config 劣化即被抓出。B 部署後 verify、日後例行巡檢，同一 CLI 同一契約。
 
@@ -233,7 +259,9 @@ PROBE_CMD 新增段落（沿 `===TAG===` 分段慣例）：
 - **單元（TDD，unittest，同 mzscan 風格）**：
   - §5.1 六列矩陣全組合（含 `unknown`、無 marker 不判 drift、marker 篡改→outdated）。
   - §5.2 優先序 first-match（多元件混合態；11 遮蔽 12 後動作重判揭露 12；21 壓過一切）。
-  - fw 判定：known md5→版本；未知 md5＋DBP 2.1.0→11；未知 md5 無交叉→14；md5 None→21。
+  - fw 判定（md5 優先層級全組合）：known-desired→條件 1 過；**known-old＋DBP 缺失→11**；**known-old＋DBP 矛盾→11＋warning**；未知 md5＋DBP 2.1.0→11；未知 md5 無交叉→14；md5 None→21。
+  - 呼叫層錯誤碼：schema "1"→22、過期→23、--allow-stale 豁免、參數錯→2，三者不混淆。
+  - required_actions：推導對照表全規則、順序穩定性、12/14 terminal 唯一元素。
   - mark：all-or-nothing（任一不符全不寫）、防洗白、`--delete`、lock 競爭。
   - 報告 schema：UNREACHABLE 形狀、required_actions 導出、checks 值規範、warnings/reasons 邊界。
   - inventory 閘門：schema "1" 拒收、過期拒收、--allow-stale。
@@ -245,7 +273,7 @@ PROBE_CMD 新增段落（沿 `===TAG===` 分段慣例）：
 
 ## 十一、與 B 的介面總結（B 子專案的輸入契約）
 
-1. **每台流程**：`mzscan`（schema "2"、未過期）→ `mzstate decide` → 按 `exit_code`＋`required_actions[]` 分派：0 skip／15 mark／11 F／10 部署／13 config 修復／14、12 人工佇列／20、21 重試佇列 → **每個動作完成後 `decide --probe` 重判、依新裁決重新分派（禁止鏈式跳過）** → READY 才計成功。
+1. **每台流程**：`mzscan`（schema "2"、未過期）→ `mzstate decide` → 按 `exit_code`＋`required_actions[]`（有序，依序執行）分派：0 skip／15 mark／11 F／10 部署／13 config 修復／14、12 人工佇列／20、21 重試佇列 → **每個動作完成後 `decide --probe` 重判、依新裁決重新分派（禁止鏈式跳過）** → READY 才計成功。呼叫層錯誤另行處理：2＝修呼叫（bug）；22＝重掃（schema 不符）；23＝重掃或人為 `--allow-stale`。
 2. **B 必須遵守的呼叫契約**：每台同時只有單一 worker（marker RMW 的主保證）；不解析 `reasons[]`（人讀）；不得在 12/14/21 上自動執行部署類動作。
 3. **冪等保證**：decide 無副作用；deploy 動作原子（既有 mzdeploy 機制）；mark 驗證後才寫、all-or-nothing；重跑任意次收斂到 READY 或穩定的非 READY 裁決。
 4. **機器介面**：退出碼表（§5.2）＋JSON 報告（§5.3，批次必產、含 scan_id/manifest digest 溯源）。
@@ -254,3 +282,6 @@ PROBE_CMD 新增段落（沿 `===TAG===` 分段慣例）：
 
 **採納（v2 已修）**：矩陣補 `unknown`→21 fail-closed（Codex C1）；fw 升級需雙源交叉、未知韌體→14（C2）；marker 缺失語意統一為獨立 15 `NEEDS_MARK`（C3＋hermes F1，取代「READY+warning」）；no-marker-no-drift 規則解工廠機整批誤判 drift（hermes F2 所指之洞，其表述經修正）；rollback 先刪標後動作、失敗中止（C4＋F3/F8）；動作後強制重判防 11 遮蔽 12（F4）；mark all-or-nothing（F6）；寫標唯一路徑＝mark、刪 heredoc（C17/F7）；`required_actions[]` 機器契約（C7）；inventory 時效/信任閘門＋報告溯源（C8）；批次 `--json` 必填（C9）；mzdeploy 遠端 curl :8090 既有 bug 入 scope 修復（C11，已對碼證實）；C `action` 欄降級＋manifest 餵 md5（C12）；SAN 驗證機制具體化 openssl（C13，已證 stdlib 不可行）；marker 讀回 8KB 上限＋嚴格解析（C15）；mzio 無自動回退明文化（C6）；單 worker 契約＋mkdir 鎖（C5）；Q1/Q2 定案入 spec（C18；Q1 以 2026-07-24 真機實查推翻「不可靠」疑慮）；報告細節補全（hermes F9-F12）；Q1 條件耦合明確化（F13）。
 **拒絕（附理由）**：marker 簽章（C14→D7：偽造只能導向安全收斂，威脅模型不合比例）；schema "1" 相容（F5→D8：資訊不足的裁決比拒收更危險）；mark 綁 host-key/MAC 身分（C16：mark 寫前必驗 actual==manifest，錯機寫標僅在該機恰好全符 manifest 時發生、此時寫標無害；B 部署動作的 host-key pinning 屬 C/B spec 既有要求，不在 mark 重複）。
+
+**二輪審查（v2→v2.1，兩邊均 PASS-WITH-FIXES、一輪發現全數確認 resolved、三項拒絕均獲認可）**：
+採納——fw 判定改 md5 優先層級，堵 known-old md5＋DBP 缺失/矛盾漏接（Codex 二輪 Critical）；`required_actions[]` 改有序＋推導對照表（Codex Major＋hermes 建議 2）；exit 2 解耦：22 `SCHEMA_MISMATCH`／23 `STALE_INVENTORY` 呼叫層錯誤碼（hermes 二輪必修）；判定必需事實清單列舉（hermes 建議 3＋Codex 一輪遺意）；SAN 精確 token 比對（Codex Minor）；lock owner 記錄、禁逾時打破存活 writer（Codex Minor）；preflight 時機＝CLI 進入點（hermes 建議 4）；cert 條目不可 `--delete`、mzstate.py 部署前置、gen-manifest exit 2 語意備註（hermes nice-to-have 5-7）。
