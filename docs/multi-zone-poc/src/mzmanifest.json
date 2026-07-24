@@ -26,7 +26,8 @@
  "termapp": {
   "path": "/opt/termapp",
   "known_versions": {
-   "b0eed3b30bd4fa4f1599a9475296fb6d": "2.1.1"
+   "b0eed3b30bd4fa4f1599a9475296fb6d": "2.1.1",
+   "44f3101d1b1c9630f11211240443e8b1": "2.1.0"
   },
   "desired_version": "2.1.1"
  },

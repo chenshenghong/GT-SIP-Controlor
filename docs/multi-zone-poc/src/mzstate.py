@@ -66,7 +66,9 @@ _DEVICE_PATHS = {"mzrelay3": "/opt/mzrelay3", "mzweb": "/etc/sipweb/sipweb",
                  "mzio": "/opt/mzio", "S21mzrelay": "/etc/init.d/S21mzrelay",
                  "S21mzio": "/etc/init.d/S21mzio"}
 _DEFAULT_TERMAPP = {"path": "/opt/termapp",
-                    "known_versions": {"b0eed3b30bd4fa4f1599a9475296fb6d": "2.1.1"},
+                    "known_versions": {"b0eed3b30bd4fa4f1599a9475296fb6d": "2.1.1",
+                                       # Q3 收案：站內 .104 實機取得（2026-07-24）
+                                       "44f3101d1b1c9630f11211240443e8b1": "2.1.0"},
                     "desired_version": "2.1.1"}
 _DEFAULT_CONFIG = {"mc_out_group": "239.192.1.1", "mc_out_port": 2000}
 
