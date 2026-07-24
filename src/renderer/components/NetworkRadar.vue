@@ -113,20 +113,20 @@ const barSegments = computed(() =>
       <!-- Data Grid -->
       <div class="grid grid-cols-2 md:grid-cols-4 gap-px bg-outline-variant/20 border border-outline-variant/20 mt-8">
         <div class="bg-surface-container-low p-4 space-y-1">
-          <span class="text-[9px] uppercase tracking-widest text-on-surface-variant">活動連接埠</span>
-          <p class="text-secondary font-bold text-lg">1,244</p>
+          <span class="text-[9px] uppercase tracking-widest text-on-surface-variant">已發現設備</span>
+          <p class="text-secondary font-bold text-lg">{{ found }}</p>
         </div>
         <div class="bg-surface-container-low p-4 space-y-1">
-          <span class="text-[9px] uppercase tracking-widest text-on-surface-variant">延遲</span>
-          <p class="text-primary font-bold text-lg">{{ Math.floor(Math.random() * 10 + 8) }}ms</p>
+          <span class="text-[9px] uppercase tracking-widest text-on-surface-variant">已耗時</span>
+          <p class="text-primary font-bold text-lg">{{ scanTime }}</p>
         </div>
         <div class="bg-surface-container-low p-4 space-y-1">
-          <span class="text-[9px] uppercase tracking-widest text-on-surface-variant">威脅等級</span>
-          <p class="text-error font-bold text-lg">低</p>
+          <span class="text-[9px] uppercase tracking-widest text-on-surface-variant">狀態</span>
+          <p class="text-error font-bold text-lg">{{ isScanning ? '掃描中' : '待機' }}</p>
         </div>
         <div class="bg-surface-container-low p-4 space-y-1">
-          <span class="text-[9px] uppercase tracking-widest text-on-surface-variant">加密協議</span>
-          <p class="text-on-surface font-bold text-lg uppercase">AES-256</p>
+          <span class="text-[9px] uppercase tracking-widest text-on-surface-variant">探測協定</span>
+          <p class="text-on-surface font-bold text-lg uppercase">DBP/1.0</p>
         </div>
       </div>
     </div>

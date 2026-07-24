@@ -47,16 +47,23 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import type { DeviceNode, RestScanProgress } from '@shared/types'
 
-defineProps<{ visible: boolean }>()
+const props = defineProps<{ visible: boolean }>()
 const emit = defineEmits<{
   close: []
   found: [devices: DeviceNode[]]
 }>()
 
 const subnetBase = ref('192.168.0')
+
+// 開啟時預填本機 /24 網段（成功才覆蓋，失敗保留現值）
+watch(() => props.visible, async (v) => {
+  if (!v) return
+  const s = await window.electronAPI.getLocalSubnet()
+  if (s) subnetBase.value = s
+})
 const isScanning = ref(false)
 const progress = ref<RestScanProgress | null>(null)
 const resultMsg = ref('')
@@ -80,7 +87,7 @@ async function handleScan() {
       emit('found', result.devices)
       resultOk.value = true
       resultMsg.value = `✅ 找到 ${result.devices.length} 台，已加入設備清單`
-      setTimeout(() => emit('close'), 1200)
+      setTimeout(() => emit('close'), 3000)
     } else {
       resultOk.value = false
       resultMsg.value = '⚠️ 此網段未找到 REST SIP 終端'

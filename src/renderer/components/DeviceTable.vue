@@ -28,10 +28,18 @@
         <thead>
           <tr>
             <th class="col-status">狀態</th>
-            <th class="col-name">名稱</th>
-            <th class="col-ext">分機</th>
-            <th class="col-ip">IP 位址</th>
-            <th class="col-reg">註冊狀態</th>
+            <th class="col-name sortable" :class="{ sorted: sortKey === 'name' }" @click="toggleSort('name')">
+              名稱<span class="sort-arrow">{{ sortArrow('name') }}</span>
+            </th>
+            <th class="col-ext sortable" :class="{ sorted: sortKey === 'ext' }" @click="toggleSort('ext')">
+              分機<span class="sort-arrow">{{ sortArrow('ext') }}</span>
+            </th>
+            <th class="col-ip sortable" :class="{ sorted: sortKey === 'ip' }" @click="toggleSort('ip')">
+              IP 位址<span class="sort-arrow">{{ sortArrow('ip') }}</span>
+            </th>
+            <th class="col-reg sortable" :class="{ sorted: sortKey === 'reg' }" @click="toggleSort('reg')">
+              註冊狀態<span class="sort-arrow">{{ sortArrow('reg') }}</span>
+            </th>
             <th class="col-sip">SIP 伺服器</th>
             <th class="col-version">韌體</th>
             <th class="col-vol">音量 出/入</th>
@@ -40,9 +48,15 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="device in devices" :key="device.mac || device.ip"
+          <tr v-if="devices.length === 0" class="empty-row">
+            <td colspan="10">尚無設備，請點擊上方「📡 掃描」開始探測</td>
+          </tr>
+          <tr v-for="device in sortedDevices" :key="device.mac || device.ip"
             :class="{ 'duplicate-row': getIpCount(device.ip) > 1 }"
-            @click="$emit('select', device)">
+            tabindex="0"
+            @click="$emit('select', device)"
+            @keydown.enter="$emit('select', device)"
+            @keydown.space.prevent="$emit('select', device)">
             <td>
               <span :class="['status-dot', device.status.toLowerCase()]"></span>
             </td>
@@ -98,7 +112,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import type { DeviceNode } from '@shared/types'
 import { getDeviceCapabilities } from '@shared/deviceCapabilities'
 
@@ -122,6 +136,51 @@ function regClass(s?: string): string {
   return isRegistered(s) ? 'reg-ok' : 'reg-fail'
 }
 const registeredCount = computed(() => props.devices.filter(d => isRegistered(d.sipRegStatus)).length)
+
+// Header sorting — click cycles asc → desc → off (back to discovery order)
+type SortKey = 'name' | 'ext' | 'ip' | 'reg'
+const sortKey = ref<SortKey | null>(null)
+const sortAsc = ref(true)
+
+function toggleSort(key: SortKey) {
+  if (sortKey.value !== key) { sortKey.value = key; sortAsc.value = true }
+  else if (sortAsc.value) sortAsc.value = false
+  else sortKey.value = null
+}
+
+function sortArrow(key: SortKey): string {
+  if (sortKey.value !== key) return ''
+  return sortAsc.value ? ' ▲' : ' ▼'
+}
+
+// IP compares numerically per octet, not as a string ("192.168.0.9" < "192.168.0.70")
+function ipValue(ip: string): number {
+  const p = ip.split('.').map(Number)
+  return p.length === 4 && p.every(n => !isNaN(n))
+    ? ((p[0] * 256 + p[1]) * 256 + p[2]) * 256 + p[3]
+    : Number.MAX_SAFE_INTEGER
+}
+
+// Reg status groups: registered → failed → pending(querying), then by text
+function regRank(s?: string): number {
+  if (!s) return 2
+  return isRegistered(s) ? 0 : 1
+}
+
+const sortedDevices = computed(() => {
+  const key = sortKey.value
+  if (!key) return props.devices
+  const dir = sortAsc.value ? 1 : -1
+  return [...props.devices].sort((a, b) => {
+    let cmp = 0
+    if (key === 'ip') cmp = ipValue(a.ip) - ipValue(b.ip)
+    else if (key === 'name') cmp = (a.name || a.hostName || '').localeCompare(b.name || b.hostName || '', 'zh-Hant')
+    else if (key === 'ext') cmp = (a.regUser || '').localeCompare(b.regUser || '', undefined, { numeric: true })
+    else cmp = regRank(a.sipRegStatus) - regRank(b.sipRegStatus)
+        || (a.sipRegStatus || '').localeCompare(b.sipRegStatus || '')
+    return cmp * dir || ipValue(a.ip) - ipValue(b.ip) // stable tiebreak by IP
+  })
+})
 
 // IP conflict detection
 const ipCountMap = computed(() => {
@@ -158,11 +217,18 @@ function getIpCount(ip: string): number {
 table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
 thead { background: rgba(0,0,0,0.3); }
 th { padding: 10px 12px; text-align: left; color: #8b9dc3; font-weight: 500; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; white-space: nowrap; }
+th.sortable { cursor: pointer; user-select: none; transition: color 0.15s; }
+th.sortable:hover { color: #4edea3; }
+th.sorted { color: #4edea3; }
+.sort-arrow { font-size: 0.65rem; }
 td { padding: 10px 12px; color: #e0f2e9; border-top: 1px solid rgba(78,222,163,0.05); }
 tr { cursor: pointer; transition: background 0.15s; }
 tr:hover { background: rgba(78,222,163,0.05); }
 tr.duplicate-row { background: rgba(255,82,82,0.05); }
 tr.duplicate-row:hover { background: rgba(255,82,82,0.1); }
+tr.empty-row { cursor: default; }
+tr.empty-row:hover { background: none; }
+tr.empty-row td { text-align: center; color: #8b9dc3; padding: 2rem; }
 
 .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
 .status-dot.online { background: #4edea3; box-shadow: 0 0 6px rgba(78,222,163,0.5); }

@@ -34,7 +34,8 @@
             </div>
             <div class="form-group">
               <label>密碼</label>
-              <input type="password" v-model="form.password" :placeholder="form.kind === 'dayu-ot300' ? 'admin' : '123456'" />
+              <input type="password" v-model="form.password" placeholder="請輸入密碼" />
+              <span class="hint-text">出廠預設：{{ form.kind === 'dayu-ot300' ? 'admin' : '123456' }}</span>
             </div>
           </div>
         </div>
@@ -166,7 +167,7 @@ async function handleSubmit() {
     if (form.kind === 'dayu-ot300') await submitDayu(node, ip)
     else await submitGt(node, ip)
     emit('added', node)
-    setTimeout(() => emit('close'), 900)
+    setTimeout(() => emit('close'), 3000)
   } catch (err) {
     resultOk.value = false
     resultMsg.value = `❌ 加入失敗：${err}`
@@ -192,6 +193,7 @@ async function handleSubmit() {
 .form-group label { color: #8b9dc3; font-size: 0.8rem; }
 .form-group input, .form-group select { background: rgba(0,0,0,0.3); border: 1px solid rgba(78,222,163,0.2); color: #e0f2e9; padding: 8px 12px; border-radius: 6px; font-size: 0.9rem; }
 .form-group input:focus, .form-group select:focus { outline: none; border-color: #4edea3; }
+.hint-text { color: #8b9dc3; font-size: 0.7rem; }
 
 .warning-box { margin: 0 1.5rem; padding: 10px 14px; background: rgba(255,152,0,0.1); border: 1px solid rgba(255,152,0,0.3); border-radius: 8px; color: #ffcc80; font-size: 0.82rem; }
 

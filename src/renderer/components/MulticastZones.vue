@@ -5,6 +5,9 @@ import {
 } from '@shared/multicastZones'
 import { setSipMulticastZones } from '@/composables/deviceApi'
 import type { MulticastZone } from '@shared/types'
+import { useToast } from '@/composables/useToast'
+
+const toast = useToast()
 
 const props = defineProps<{ ip: string; initialZones: MulticastZone[] | null }>()
 
@@ -25,13 +28,14 @@ const dupPriorities = computed<Set<number>>(() => {
 
 async function save(): Promise<void> {
   const errs = validateZones(rows)
-  if (errs.length) { window.alert('❌ ' + errs.map((e) => e.message).join('\n')); return }
+  if (errs.length) { toast.show(errs.map((e) => e.message).join('\n'), 'err'); return }
   saving.value = true
   const res = await setSipMulticastZones(props.ip, serializeZones(rows))
   saving.value = false
-  window.alert(
-    res.ok ? '✅ 組播監聽區已儲存（即時生效）'
-      : `❌ 儲存失敗${res.errorZoneId ? `（Zone ${res.errorZoneId}）` : ''}：${res.message ?? ''}`
+  toast.show(
+    res.ok ? '組播監聽區已儲存（即時生效）'
+      : `儲存失敗${res.errorZoneId ? `（Zone ${res.errorZoneId}）` : ''}：${res.message ?? ''}`,
+    res.ok ? 'ok' : 'err'
   )
 }
 </script>

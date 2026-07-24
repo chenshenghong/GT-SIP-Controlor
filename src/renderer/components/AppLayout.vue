@@ -1,6 +1,10 @@
 <script setup lang="ts">
+import { useToast } from '@/composables/useToast'
+
 defineProps<{ currentView: string }>()
 defineEmits<{ navigate: [view: string] }>()
+
+const { toasts } = useToast()
 
 const navItems = [
   { id: 'radar', label: '設備探測', icon: 'sensors' },
@@ -32,10 +36,6 @@ const navItems = [
           {{ navItems.find(n => n.id === currentView)?.label || '設備管理' }}
         </span>
       </div>
-      <div class="flex items-center gap-6">
-        <span class="material-symbols-outlined text-on-surface-variant hover:text-primary transition-colors cursor-pointer">settings</span>
-        <span class="material-symbols-outlined text-on-surface-variant hover:text-primary transition-colors cursor-pointer">terminal</span>
-      </div>
     </header>
 
     <!-- Side Navigation -->
@@ -43,9 +43,9 @@ const navItems = [
       <div class="px-6 mb-8">
         <div class="flex items-center gap-3 mb-2">
           <div class="w-2 h-2 rounded-full bg-primary animate-pulse"></div>
-          <span class="text-[13px] uppercase tracking-wider text-primary">系統管理員</span>
+          <span class="text-[13px] uppercase tracking-wider text-primary">SIP COMMANDER</span>
         </div>
-        <span class="text-[10px] text-on-surface-variant uppercase tracking-[0.2em]">4 級存取權限</span>
+        <span class="text-[10px] text-on-surface-variant uppercase tracking-[0.2em]">SIP 設備管理</span>
       </div>
 
       <nav class="flex flex-col gap-1">
@@ -67,13 +67,9 @@ const navItems = [
 
       <div class="mt-auto p-6 space-y-4">
         <div class="flex flex-col gap-2 pt-4 border-t border-outline-variant/20">
-          <div class="flex items-center gap-3 text-on-surface-variant text-[11px] tracking-widest uppercase cursor-pointer hover:text-primary transition-colors">
+          <div class="flex items-center gap-3 text-on-surface-variant text-[11px] tracking-widest uppercase">
             <span class="material-symbols-outlined text-sm">sensors</span>
             <span>系統狀態</span>
-          </div>
-          <div class="flex items-center gap-3 text-on-surface-variant text-[11px] tracking-widest uppercase cursor-pointer hover:text-error transition-colors">
-            <span class="material-symbols-outlined text-sm">logout</span>
-            <span>登出</span>
           </div>
         </div>
       </div>
@@ -83,5 +79,21 @@ const navItems = [
     <main class="relative z-20 h-screen overflow-y-auto flex flex-col pt-16 md:pl-64">
       <slot />
     </main>
+
+    <!-- Toast Container -->
+    <div class="fixed bottom-4 right-4 z-[300] flex flex-col gap-2 pointer-events-none">
+      <div
+        v-for="t in toasts"
+        :key="t.id"
+        class="pointer-events-auto min-w-[240px] max-w-sm px-4 py-3 bg-surface-container-high text-on-surface text-sm shadow-lg border-l-4"
+        :class="{
+          'border-primary': t.type === 'ok',
+          'border-error': t.type === 'err',
+          'border-[#ffab40]': t.type === 'warn',
+        }"
+      >
+        {{ t.msg }}
+      </div>
+    </div>
   </div>
 </template>

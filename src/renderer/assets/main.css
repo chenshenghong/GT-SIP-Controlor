@@ -39,6 +39,11 @@ body {
   background: #10b981;
 }
 
+button:focus-visible, [tabindex]:focus-visible, a:focus-visible {
+  outline: 2px solid #4edea3;
+  outline-offset: 2px;
+}
+
 /* Input slider thumb */
 input[type='range']::-webkit-slider-thumb {
   -webkit-appearance: none;

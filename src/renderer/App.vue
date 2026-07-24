@@ -60,8 +60,9 @@
     <!-- Reconnect Overlay -->
     <ReconnectOverlay
       v-if="reconnectIp"
+      :show="reconnectIp !== null"
       :target-ip="reconnectIp"
-      @connected="handleReconnected"
+      @reconnected="handleReconnected"
       @timeout="handleReconnectTimeout"
     />
 
@@ -112,8 +113,10 @@ import AddDeviceModal from '@/components/AddDeviceModal.vue'
 import RestScanModal from '@/components/RestScanModal.vue'
 import DayuScanModal from '@/components/DayuScanModal.vue'
 import AutoProvisionView from '@/components/AutoProvisionView.vue'
+import { useToast } from '@/composables/useToast'
 
 const deviceStore = useDeviceStore()
+const toast = useToast()
 
 // After discovery, fetch each device's live SIP registration status via REST
 // (only reachable / same-subnet devices return it). Runs in the background.
@@ -270,7 +273,7 @@ function handleReconnected() {
 
 function handleReconnectTimeout() {
   reconnectIp.value = null
-  alert('⚠️ 設備重連超時，請手動檢查設備狀態。')
+  toast.show('設備重連超時，請手動檢查設備狀態。', 'warn')
 }
 
 // Batch Sync
