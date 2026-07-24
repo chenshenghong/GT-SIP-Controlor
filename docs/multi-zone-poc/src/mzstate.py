@@ -296,8 +296,127 @@ def check_cert(ip, port=443, timeout=8):
     return {"tls_ok": True, "san_ok": san_ok, "expiry_ok": expiry_ok}
 
 
+# --- mark：all-or-nothing 寫標/刪條目/lock（spec §四）---
+
+def merge_marker(existing, actuals, components, delete, release, now_iso, crt_md5):
+    for x in delete:
+        if x not in COMPONENTS:
+            raise ValueError("--delete only accepts component names (not %r); "
+                             "cert entry is only-update" % x)
+    m = {"schema_version": "1", "release": release, "written_at": now_iso,
+         "components": dict(((existing or {}).get("components") or {})),
+         "cert": dict(((existing or {}).get("cert") or {"crt_md5": None}))}
+    for name in components:
+        m["components"][name] = {"md5": actuals[name], "deployed_at": now_iso}
+    for name in delete:
+        m["components"].pop(name, None)
+    if crt_md5 is not None:
+        m["cert"]["crt_md5"] = crt_md5
+    return m
+
+
+MARK_PROBE_CMD = (
+    'echo "===MD5SIDECAR==="; md5sum /opt/mzrelay3 /etc/sipweb/sipweb /opt/mzio'
+    ' /etc/init.d/S21mzrelay /etc/init.d/S21mzio 2>&1;'
+    'echo "===MZSTATE==="; head -c 8192 /opt/mzstate.json 2>&1; echo;'
+    'echo "===CRT==="; md5sum /etc/sipweb/mz.crt 2>/dev/null;'
+    'echo "===END==="')
+
+
+def _mark_probe(ip, pw):
+    import mzscan
+    out, err = mzscan.ssh_run(ip, pw, MARK_PROBE_CMD)
+    if out is None:
+        return None, None, err
+    s = mzscan._sections(out)
+    actuals = {n: mzscan._md5_tristate(s.get("MD5SIDECAR", ""), p)
+               for n, p in mzscan._SIDECAR_PATHS.items()}
+    body = s.get("MZSTATE", "").strip()
+    raw = None if ("No such file" in body or not body) else body
+    mm = re.search(r"^([0-9a-f]{32})\s", s.get("CRT", ""), re.M)
+    return actuals, raw, (mm.group(1) if mm else None)
+
+
+def _mark_put(ip, pw, marker_obj):
+    """lock（owner 檔）→ 上傳 tmp → md5 複驗 → mv+sync → unlock。失敗 raise RuntimeError。
+
+    注意：上傳走 mzctl.py put（其密碼為 fleet 統一 root 密碼常數）；ssh_run 用 MZSCAN_SSH_PW。
+    fleet 密碼若日後分裂，兩者須一起改。"""
+    import mzscan, tempfile
+    src_dir = os.path.dirname(os.path.abspath(__file__))
+    hostname = socket.gethostname()
+    lock_cmd = ('mkdir /opt/.mzstate.lock 2>/dev/null'
+                ' && echo "%s $$ $(date)" > /opt/.mzstate.lock/owner'
+                ' && echo LOCK_OK || echo LOCK_FAIL; echo "===END==="' % hostname)
+    out, err = mzscan.ssh_run(ip, pw, lock_cmd)
+    if not out or "LOCK_OK" not in out:
+        raise RuntimeError("marker lock busy/failed on %s (%s) — "
+                           "inspect /opt/.mzstate.lock/owner; break-glass: "
+                           "rm -rf /opt/.mzstate.lock" % (ip, err))
+    try:
+        fd, local = tempfile.mkstemp(suffix=".json"); os.close(fd)
+        with open(local, "w") as fh:
+            json.dump(marker_obj, fh, ensure_ascii=False, indent=1)
+        remote_tmp = "/opt/.mzstate.upload"
+        subprocess.run(["python3", os.path.join(src_dir, "mzctl.py"),
+                        "put", local, remote_tmp],
+                       env=dict(os.environ, MZHOST=ip),
+                       capture_output=True, text=True, timeout=90)
+        chk, _ = mzscan.ssh_run(ip, pw,
+            'md5sum %s 2>&1; echo "===END==="' % remote_tmp)
+        want = hashlib.md5(open(local, "rb").read()).hexdigest()
+        if not chk or want not in chk:
+            raise RuntimeError("marker upload verify failed on %s" % ip)
+        out2, _ = mzscan.ssh_run(ip, pw,
+            'mv %s /opt/mzstate.json && sync && echo MV_OK; echo "===END==="'
+            % remote_tmp)
+        if not out2 or "MV_OK" not in out2:
+            raise RuntimeError("marker mv/sync failed on %s" % ip)
+    finally:
+        mzscan.ssh_run(ip, pw, 'rm -rf /opt/.mzstate.lock; echo "===END==="')
+
+
+def run_mark(args, manifest, pw, probe_fn, put_fn):
+    if args.components is None:
+        comps = list(COMPONENTS)
+    elif args.components == "":
+        comps = []                       # 只刪不驗（mzdeploy rollback 用）
+    else:
+        comps = [c.strip() for c in args.components.split(",")]
+    dele = [c.strip() for c in args.delete.split(",")] if args.delete else []
+    bad = [c for c in comps + dele if c not in COMPONENTS]
+    if bad:
+        print("mark: unknown component(s): %s" % bad, file=sys.stderr); return EXIT_USAGE
+    res = probe_fn(args.probe, pw)
+    if res[0] is None:
+        print("mark: probe failed: %s" % (res[2],), file=sys.stderr); return 1
+    actuals, marker_raw, crt_md5 = res
+    mism = [n for n in comps
+            if actuals[n]["state"] != "present"
+            or actuals[n]["md5"] != manifest["components"][n]["md5"]]
+    if mism:                                       # all-or-nothing＋防洗白
+        for n in mism:
+            print("mark: %s actual %r != manifest %s — refusing to mark"
+                  % (n, actuals[n], manifest["components"][n]["md5"]), file=sys.stderr)
+        return 1
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    new = merge_marker(parse_marker(marker_raw),
+                       {n: actuals[n]["md5"] for n in comps}, comps, dele,
+                       manifest["release"], now, crt_md5)
+    try:
+        put_fn(args.probe, new)
+    except RuntimeError as e:
+        print("mark: %s" % e, file=sys.stderr); return 1
+    print("marked %s: components=%s delete=%s" % (args.probe, comps, dele))
+    return 0
+
+
 def cmd_mark(args, manifest):
-    raise NotImplementedError          # Task 7
+    pw = os.environ.get("MZSCAN_SSH_PW")
+    if not pw:
+        print("MZSCAN_SSH_PW not set", file=sys.stderr); return EXIT_USAGE
+    return run_mark(args, manifest, pw, _mark_probe,
+                    lambda ip, obj: _mark_put(ip, pw, obj))
 
 
 def validate_inventory(inv, allow_stale, now_iso):

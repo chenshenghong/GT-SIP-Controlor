@@ -408,5 +408,66 @@ class TestCliExitCodes(unittest.TestCase):
                                        "--json", "/tmp/x.json"]), 2)
 
 
+class TestMergeMarker(unittest.TestCase):
+    A = {n: n[0]*32 for n in mzstate.COMPONENTS}   # actual md5s
+
+    def test_fresh_write_all(self):
+        m = mzstate.merge_marker(None, self.A, list(mzstate.COMPONENTS), [],
+                                 "r1", "t1", crt_md5="9"*32)
+        self.assertEqual(set(m["components"]), set(mzstate.COMPONENTS))
+        self.assertEqual(m["components"]["mzweb"]["md5"], "m"*32)
+        self.assertEqual(m["cert"]["crt_md5"], "9"*32)
+        self.assertEqual(m["schema_version"], "1")
+
+    def test_partial_update_preserves_others(self):
+        old = mzstate.merge_marker(None, self.A, list(mzstate.COMPONENTS), [],
+                                   "r1", "t1", None)
+        m = mzstate.merge_marker(old, {"mzweb": "z"*32}, ["mzweb"], [], "r2", "t2", None)
+        self.assertEqual(m["components"]["mzweb"]["md5"], "z"*32)
+        self.assertEqual(m["components"]["mzrelay3"]["md5"], "m"*32)   # 保留
+        self.assertEqual(m["components"]["mzweb"]["deployed_at"], "t2")
+        self.assertEqual(m["components"]["mzrelay3"]["deployed_at"], "t1")
+
+    def test_delete_entry(self):
+        old = mzstate.merge_marker(None, self.A, list(mzstate.COMPONENTS), [],
+                                   "r1", "t1", None)
+        m = mzstate.merge_marker(old, {}, [], ["mzweb"], "r1", "t2", None)
+        self.assertNotIn("mzweb", m["components"])
+        self.assertIn("mzrelay3", m["components"])
+
+    def test_delete_cert_rejected(self):
+        with self.assertRaises(ValueError):
+            mzstate.merge_marker(None, {}, [], ["cert"], "r", "t", None)
+
+
+class TestMarkAllOrNothing(unittest.TestCase):
+    def test_one_mismatch_writes_nothing(self):
+        calls = []
+        def fake_probe(ip, pw):
+            a = {n: {"state": "present",
+                     "md5": VALID_MANIFEST["components"][n]["md5"]}
+                 for n in mzstate.COMPONENTS}
+            a["mzio"]["md5"] = "bad0"*8            # mzio 不符 manifest
+            return a, None, None                   # (actuals, marker_raw, crt_md5)
+        def fake_put(ip, marker_obj):
+            calls.append(marker_obj)
+        class A: probe="1.2.3.4"; components=None; delete=None
+        rc = mzstate.run_mark(A(), VALID_MANIFEST, "pw", fake_probe, fake_put)
+        self.assertEqual(rc, 1)
+        self.assertEqual(calls, [])                # 一個條目都沒寫
+
+    def test_delete_only_skips_verification(self):
+        calls = []
+        def fake_probe(ip, pw):
+            a = {n: {"state": "present", "md5": "bad0"*8}   # 全部不符也無妨
+                 for n in mzstate.COMPONENTS}
+            return a, None, None
+        class A: probe="1.2.3.4"; components=""; delete="mzweb"
+        rc = mzstate.run_mark(A(), VALID_MANIFEST, "pw", fake_probe,
+                              lambda ip, obj: calls.append(obj))
+        self.assertEqual(rc, 0)
+        self.assertNotIn("mzweb", calls[0]["components"])   # 只刪、有寫檔
+
+
 if __name__ == "__main__":
     unittest.main()
