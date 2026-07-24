@@ -401,10 +401,13 @@ def parse_probe_v2(out):
     f["cert_crt_md5"] = m.group(1) if m else None
     has_io = "MZIO" in s
     io = s.get("MZIO", "")
-    f["mzio_bin"] = ("/opt/mzio" in io) if has_io else None
-    f["mzio_init"] = ("/etc/init.d/S21mzio" in io) if has_io else None
-    f["mzio_running"] = bool(re.search(r"\bmzio\b(?!\.)", "\n".join(
-        l for l in io.splitlines() if "/" not in l))) if has_io else None
+    io_lines = io.splitlines()
+    # MZIO 段混雜 ls 輸出（整行=路徑）與 ps 輸出（開頭=PID）。真機 .70 實測：busybox ps
+    # 命令欄是全路徑 /opt/mzio，不能用「行含 /」區分——改以 PID 開頭辨識 ps 行。
+    ps_lines = [l for l in io_lines if re.match(r"\s*\d+\s", l)]
+    f["mzio_bin"] = any(l.strip() == "/opt/mzio" for l in io_lines) if has_io else None
+    f["mzio_init"] = any(l.strip() == "/etc/init.d/S21mzio" for l in io_lines) if has_io else None
+    f["mzio_running"] = any("mzio" in l for l in ps_lines) if has_io else None
     return f
 
 

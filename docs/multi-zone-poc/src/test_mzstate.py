@@ -154,6 +154,14 @@ class TestScanV2Parse(unittest.TestCase):
             "===MZIO===\n/opt/mzio\n  512 root      0:00 mzio")
         self.assertIs(mzscan.parse_probe_v2(out)["mzio_running"], True)
 
+    def test_mzio_running_busybox_fullpath_ps(self):
+        # 真機 .70 實測（2026-07-24）：busybox ps 命令欄是全路徑 /opt/mzio——
+        # 舊版用「行含 / 視為 ls 輸出」的 guard 會把 ps 行濾掉造成 running 誤判 False。
+        out = SCAN2_PROBE_SAMPLE.replace(
+            "===MZIO===\n/opt/mzio",
+            "===MZIO===\n/opt/mzio\n29138 root       0:00 /opt/mzio")
+        self.assertIs(mzscan.parse_probe_v2(out)["mzio_running"], True)
+
     def test_v2_none_facts_fresh_copies(self):
         a, b = mzscan.v2_none_facts(), mzscan.v2_none_facts()
         a["sidecar_md5s"]["mzio"]["state"] = "mutated"
