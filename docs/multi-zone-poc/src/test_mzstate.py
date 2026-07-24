@@ -1,5 +1,5 @@
 # test_mzstate.py
-import json, os, tempfile, unittest
+import json, os, subprocess, tempfile, unittest
 import mzscan
 import mzstate
 
@@ -318,6 +318,39 @@ class TestDecideDevice(unittest.TestCase):
         r = self.d(mk_row(cert_crt_md5="8"*32))   # ≠ marker 記錄的 9*32
         self.assertEqual(r["exit_code"], 0)
         self.assertTrue(any("crt_md5" in w for w in r["warnings"]))
+
+
+OPENSSL_TEXT_SAMPLE = """\
+        X509v3 extensions:
+            X509v3 Subject Alternative Name:
+                IP Address:192.168.1.1
+"""
+
+
+class TestCertParse(unittest.TestCase):
+    def test_san_exact_match(self):
+        self.assertTrue(mzstate.san_matches(OPENSSL_TEXT_SAMPLE, "192.168.1.1"))
+    def test_san_no_substring_false_positive(self):      # Codex 二輪 Minor
+        self.assertFalse(mzstate.san_matches(OPENSSL_TEXT_SAMPLE, "192.168.1.10"))
+        self.assertFalse(mzstate.san_matches(
+            OPENSSL_TEXT_SAMPLE.replace("192.168.1.1", "192.168.1.10"), "192.168.1.1"))
+
+
+@unittest.skipUnless(mzstate.have_openssl(), "openssl not on jumpbox")
+class TestCertRoundtrip(unittest.TestCase):
+    def test_selfsigned_der_parses(self):
+        with tempfile.TemporaryDirectory() as d:
+            crt, key = os.path.join(d, "c.pem"), os.path.join(d, "k.pem")
+            subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048",
+                            "-keyout", key, "-out", crt, "-days", "5", "-nodes",
+                            "-subj", "/CN=test",
+                            "-addext", "subjectAltName=IP:192.168.0.70"],
+                           check=True, capture_output=True)
+            der = subprocess.run(["openssl", "x509", "-in", crt, "-outform", "DER"],
+                                 check=True, capture_output=True).stdout
+            san_ok, expiry_ok = mzstate.inspect_der(der, "192.168.0.70")
+            self.assertTrue(san_ok); self.assertTrue(expiry_ok)
+            self.assertFalse(mzstate.inspect_der(der, "192.168.0.7")[0])
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # mzstate.py — side-car 版本標記/冪等判定＋完整性鎖定（子專案 D+E）
 # Spec: docs/superpowers/specs/2026-07-24-mzstate-version-lock-design.md (v2.1)
-import argparse, hashlib, json, os, re, sys
+import argparse, hashlib, json, os, re, sys, subprocess, socket, ssl
 
 COMPONENTS = ("mzrelay3", "mzweb", "mzio", "S21mzrelay", "S21mzio")
 
@@ -248,3 +248,41 @@ def decide_device(row, manifest, cert):
     if mk_crt and row.get("cert_crt_md5") and mk_crt != row["cert_crt_md5"]:
         out["warnings"].append("cert crt_md5 drifted since deploy (legit re-keygen?)")
     return fin(EXIT_READY, [])
+
+
+def have_openssl():
+    try:
+        return subprocess.run(["openssl", "version"], capture_output=True,
+                              timeout=10).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def san_matches(text, ip):
+    """SAN 比對：IP Address:<ip> token 精確相等（禁止子字串誤放行，spec §六）。"""
+    return bool(re.search(r"IP Address:%s(?=[,\s]|$)" % re.escape(ip), text))
+
+
+def inspect_der(der, ip):
+    """DER 餵跳板機 openssl；回 (san_ok, expiry_ok)。"""
+    p = subprocess.run(["openssl", "x509", "-inform", "DER", "-noout",
+                        "-checkend", "0", "-text"],
+                       input=der, capture_output=True, timeout=15)
+    expiry_ok = p.returncode == 0            # -checkend 0：過期→rc 1
+    return san_matches(p.stdout.decode("utf-8", "replace"), ip), expiry_ok
+
+
+def check_cert(ip, port=443, timeout=8):
+    """B 端 TLS 握手取 DER→openssl 驗 SAN/效期（spec §六）。
+    openssl 缺→三欄全 None（→21）；TLS 連線失敗→tls_ok=False（→13 restart 路徑）。"""
+    if not have_openssl():
+        return {"tls_ok": None, "san_ok": None, "expiry_ok": None}
+    ctx = ssl._create_unverified_context()
+    try:
+        with socket.create_connection((ip, port), timeout=timeout) as s:
+            with ctx.wrap_socket(s, server_hostname=ip) as tls:
+                der = tls.getpeercert(binary_form=True)
+    except (OSError, ssl.SSLError):
+        return {"tls_ok": False, "san_ok": None, "expiry_ok": None}
+    san_ok, expiry_ok = inspect_der(der, ip)
+    return {"tls_ok": True, "san_ok": san_ok, "expiry_ok": expiry_ok}
