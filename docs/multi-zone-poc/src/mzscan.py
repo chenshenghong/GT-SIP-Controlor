@@ -100,7 +100,9 @@ OPT_MIN_FREE_KB = 1478  # = 2*(mzrelay3 81KB + mzweb 402KB) + 512KB margin（spe
 _SIDECAR_KEYS = ("sidecar_relay_bin", "sidecar_relay_running", "sidecar_init", "sidecar_rest_ok")
 
 def classify(f):
-    """spec §四 分類矩陣，優先序由上而下。不變式：unknown 永不 done。"""
+    """spec §四 分類矩陣，優先序由上而下。不變式：unknown 永不 done。
+
+    schema 2 起 action 僅供人讀統計；B 路由以 mzstate verdict 為準（spec D+E §七）。"""
     # rule1: unreachable = DBP 確認不通「且」SSH 確認失敗（reachable_dbp=None 不算，應歸入 probe-incomplete）
     if f.get("reachable_dbp") is False and f.get("ssh_ok") is False:
         return "blocked:unreachable"
@@ -243,9 +245,19 @@ PROBE_CMD = (
     'echo "===REST8090==="; printf "GET /get/sip/multicast/zones HTTP/1.1\\r\\n'
     'Host:127.0.0.1\\r\\nConnection: close\\r\\n\\r\\n" | nc 127.0.0.1 8090 2>/dev/null | head -c 8192;'
     # head -c 截斷不保證輸出以換行結尾——若 body 剛好無尾端換行，緊接著的
-    # echo "===END===" 會與 JSON 最後一個位元組黏在同一行，讓嚴格 json.loads 誤判失敗
-    # （真機 .70 smoke 實測發現）。這裡補一個空 echo 強制換行，確保 END tag 落在獨立行。
-    'echo; echo "===END==="'
+    # echo "===MD5SIDECAR===" 會與 JSON 最後一個位元組黏在同一行（真機 .70 smoke 實測
+    # 教訓，原發生在 END tag）。這裡補一個空 echo 強制換行，確保後續 tag 落在獨立行。
+    'echo;'
+    # ---- schema 2 新段落（spec D+E §七）----
+    'echo "===MD5SIDECAR==="; md5sum /opt/mzrelay3 /etc/sipweb/sipweb /opt/mzio'
+    ' /etc/init.d/S21mzrelay /etc/init.d/S21mzio 2>&1;'
+    'echo "===MZSTATE==="; head -c 8192 /opt/mzstate.json 2>&1; echo;'
+    'echo "===IFCFGSIP==="; grep -E "^MULTICAST_(ADDRESS|PORT|ENABLED)=" /etc/ifcfg-sip 2>&1;'
+    'echo "===CERT==="; ls -l /etc/sipweb/mz.crt /etc/sipweb/mz.key 2>&1;'
+    ' md5sum /etc/sipweb/mz.crt 2>/dev/null;'
+    'echo "===MZIO==="; ls /opt/mzio /etc/init.d/S21mzio 2>/dev/null;'
+    ' ps | grep mzio | grep -v grep;'
+    'echo "===END==="'
 )
 
 _MD5_RE = re.compile(r"^([0-9a-f]{32})\s", re.M)
@@ -328,6 +340,88 @@ def parse_probe_output(out):
     return f
 
 
+# ---- schema 2 事實欄（spec D+E §七）----
+_SIDECAR_PATHS = {"mzrelay3": "/opt/mzrelay3", "mzweb": "/etc/sipweb/sipweb",
+                  "mzio": "/opt/mzio", "S21mzrelay": "/etc/init.d/S21mzrelay",
+                  "S21mzio": "/etc/init.d/S21mzio"}
+
+
+def _md5_tristate(section, path):
+    for line in section.splitlines():
+        if path not in line:
+            continue
+        m = re.match(r"^([0-9a-f]{32})\s", line)
+        if m:
+            return {"state": "present", "md5": m.group(1)}
+        if "No such file" in line:
+            return {"state": "absent", "md5": None}
+        return {"state": "error", "md5": None}
+    return {"state": "error", "md5": None}   # 段落沒提到該路徑＝探測異常
+
+
+def _ls_exists(section, path):
+    for line in section.splitlines():
+        if path in line and not re.match(r"^[0-9a-f]{32}\s", line):
+            return "No such file" not in line
+    return None
+
+
+def _key_perm_ok(section):
+    for line in section.splitlines():
+        if "/etc/sipweb/mz.key" in line and line.startswith("-"):
+            return line[:10] == "-rw-------"
+    return None
+
+
+def parse_probe_v2(out):
+    s = _sections(out)
+    f = {}
+    sec = s.get("MD5SIDECAR", "")
+    f["sidecar_md5s"] = {name: _md5_tristate(sec, p)
+                         for name, p in _SIDECAR_PATHS.items()}
+    body = s.get("MZSTATE", "").strip()
+    if "No such file" in body:
+        f["mzstate_marker"] = {"state": "absent", "raw": None}
+    elif body:
+        f["mzstate_marker"] = {"state": "present", "raw": body}
+    else:
+        f["mzstate_marker"] = {"state": "error", "raw": None}
+    ifc = s.get("IFCFGSIP", "")
+    m = re.search(r"^MULTICAST_ADDRESS=(\S+)", ifc, re.M)
+    f["singleslot_mc_addr"] = m.group(1) if m else None
+    m = re.search(r"^MULTICAST_PORT=(\d+)", ifc, re.M)
+    f["singleslot_mc_port"] = int(m.group(1)) if m else None
+    m = re.search(r"^MULTICAST_ENABLED=(\S+)", ifc, re.M)
+    f["singleslot_enabled"] = (m.group(1) == "true") if m else None
+    cert = s.get("CERT", "")
+    f["cert_crt_exists"] = _ls_exists(cert, "/etc/sipweb/mz.crt")
+    f["cert_key_exists"] = _ls_exists(cert, "/etc/sipweb/mz.key")
+    f["cert_key_perm_ok"] = _key_perm_ok(cert)
+    m = _MD5_RE.search(cert)
+    f["cert_crt_md5"] = m.group(1) if m else None
+    has_io = "MZIO" in s
+    io = s.get("MZIO", "")
+    f["mzio_bin"] = ("/opt/mzio" in io) if has_io else None
+    f["mzio_init"] = ("/etc/init.d/S21mzio" in io) if has_io else None
+    f["mzio_running"] = bool(re.search(r"\bmzio\b(?!\.)", "\n".join(
+        l for l in io.splitlines() if "/" not in l))) if has_io else None
+    return f
+
+
+def v2_none_facts():
+    """v2 欄位全-unknown 骨架。函式而非模組常數：每 row 取新副本，避免跨 row 共享巢狀 dict。"""
+    return {
+        "sidecar_md5s": {name: {"state": "error", "md5": None}
+                         for name in _SIDECAR_PATHS},
+        "mzstate_marker": {"state": "error", "raw": None},
+        "singleslot_mc_addr": None, "singleslot_mc_port": None,
+        "singleslot_enabled": None,
+        "cert_crt_exists": None, "cert_key_exists": None,
+        "cert_key_perm_ok": None, "cert_crt_md5": None,
+        "mzio_bin": None, "mzio_running": None, "mzio_init": None,
+    }
+
+
 # Task 6: I/O 層 — DBP 收發、pty-SSH、host-key 指紋、HTTP/REST 探測
 import socket, time, os, pty, select, signal, hashlib, subprocess, ssl, urllib.request, urllib.error
 import getpass
@@ -376,13 +470,13 @@ def dbp_sweep(broadcast, targets, timeout=4.0, retries=3):
     return replies
 
 
-def ssh_probe(ip, pw, timeout=15.0):
-    """單次 SSH 跑 PROBE_CMD。回 (輸出, None) 或 (None, 錯誤字串)。保證回收子程序。
+def ssh_run(ip, pw, cmd, timeout=15.0, done=b"===END==="):
+    """泛化版單次 SSH（原 ssh_probe 本體；mzstate mark 等重用）。回 (輸出, None) 或 (None, 錯誤字串)。
 
     重要約束：必須保持 pty.fork + os.execvp(argv list) 形式，絕不改成 shell=True 或本地 shell 拼接。
-    這保證 PROBE_CMD 內的 $$ 在遠端 busybox sh 展開（每連線唯一 PID），避免本地展開造成的測檔名撞名。
+    這保證 cmd 內的 $$ 在遠端 busybox sh 展開（每連線唯一 PID），避免本地展開造成的測檔名撞名。
     """
-    argv = ["ssh", *_SSH_OPTS, "%s@%s" % (SSH_USER, ip), PROBE_CMD]
+    argv = ["ssh", *_SSH_OPTS, "%s@%s" % (SSH_USER, ip), cmd]
     pid, fd = pty.fork()
     if pid == 0:
         try:
@@ -406,7 +500,7 @@ def ssh_probe(ip, pw, timeout=15.0):
             if not sent and b"assword" in buf:
                 os.write(fd, (pw + "\n").encode())
                 sent = True
-            if b"===END===" in buf:
+            if done in buf:
                 break
     finally:
         try:
@@ -422,9 +516,14 @@ def ssh_probe(ip, pw, timeout=15.0):
         except OSError:
             pass
     out = buf.decode("utf-8", "replace")
-    if "===END===" not in out:
+    if done.decode() not in out:
         return None, "ssh timeout/incomplete (%d bytes)" % len(buf)
     return out, None
+
+
+def ssh_probe(ip, pw, timeout=15.0):
+    """單次 SSH 跑 PROBE_CMD（相容包裝）。"""
+    return ssh_run(ip, pw, PROBE_CMD, timeout)
 
 
 def _parse_keyscan_line(line):
@@ -489,8 +588,8 @@ def http_probe(ip, timeout=5):
 
 
 # Task 7: inventory 組裝、原子輸出、摘要表、probe_device、CLI main
-SCHEMA_VERSION = "1"
-PRODUCER = "mzscan/1.0"
+SCHEMA_VERSION = "2"
+PRODUCER = "mzscan/2.0"
 
 def build_inventory(rows, recon, expect_meta, started, finished):
     fin = datetime.datetime.fromisoformat(finished)
@@ -560,6 +659,7 @@ def probe_device(ip, dbp_rec, pw, timeout=15.0):
              "sidecar_init", "opt_writable", "opt_free_kb", "loopback80_403",
              "termapp_multicast_addr", "sidecar_rest_ok"))
         row.update(facts)
+        row.update(parse_probe_v2(out) if out else v2_none_facts())
         hp = http_probe(ip, timeout=_remaining(deadline))
         row["fw_ver"] = decide_fw_ver(facts["termapp_md5"], row["fw_ver_dbp"])
         row["web_type"] = decide_web_type(facts["sipweb_md5"], MZWEB_KNOWN_MD5S,
@@ -583,7 +683,7 @@ def probe_device(ip, dbp_rec, pw, timeout=15.0):
                 "sidecar_relay_running": None, "sidecar_init": None, "opt_writable": None,
                 "opt_free_kb": None, "loopback80_403": None, "termapp_multicast_addr": None,
                 "sidecar_rest_ok": None, "fw_ver": "unknown", "web_type": "unknown",
-                "errors": ["probe_device crashed: %r" % (e,)]}
+                "errors": ["probe_device crashed: %r" % (e,)], **v2_none_facts()}
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="gt-sip-gw fleet pre-flight scanner")
@@ -591,6 +691,7 @@ def main(argv=None):
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--timeout", type=float, default=15.0)
     ap.add_argument("--mzweb-bin", help="local mzweb-arm build to trust as mzweb md5")
+    ap.add_argument("--manifest", help="mzmanifest.json to trust its mzweb md5 (spec D+E §七)")
     ap.add_argument("--out", default=".", help="output dir")
     args = ap.parse_args(argv)
     pw = os.environ.get("MZSCAN_SSH_PW")
@@ -601,6 +702,8 @@ def main(argv=None):
         return 2
     if args.mzweb_bin:
         MZWEB_KNOWN_MD5S.add(hashlib.md5(open(args.mzweb_bin, "rb").read()).hexdigest())
+    if args.manifest:
+        MZWEB_KNOWN_MD5S.add(json.load(open(args.manifest))["components"]["mzweb"]["md5"])
     if not MZWEB_KNOWN_MD5S:
         # 正常執行下 MZWEB_KNOWN_MD5S 恆非空（Task 8 已內嵌定稿常數）；此分支只在該常數被
         # 上游意外清空/覆寫成空集合時才會觸發，保留作防禦性檢查——非空時 web_type 永不可能

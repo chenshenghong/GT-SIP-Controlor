@@ -1,5 +1,6 @@
 # test_mzstate.py
 import json, os, tempfile, unittest
+import mzscan
 import mzstate
 
 VALID_MANIFEST = {
@@ -77,6 +78,89 @@ class TestGenManifest(unittest.TestCase):
             self.assertEqual(m["termapp"], VALID_MANIFEST["termapp"])   # 手寫段保留
             self.assertEqual(m["config"], VALID_MANIFEST["config"])
             self.assertEqual(m["release"], "r1")
+
+
+SCAN2_PROBE_SAMPLE = """===MD5SIDECAR===
+1111111111111111111111111111aaaa  /opt/mzrelay3
+2222222222222222222222222222bbbb  /etc/sipweb/sipweb
+md5sum: /opt/mzio: No such file or directory
+4444444444444444444444444444dddd  /etc/init.d/S21mzrelay
+md5sum: /etc/init.d/S21mzio: No such file or directory
+===MZSTATE===
+head: /opt/mzstate.json: No such file or directory
+===IFCFGSIP===
+MULTICAST_ADDRESS=239.192.1.1
+MULTICAST_PORT=2000
+MULTICAST_ENABLED=true
+===CERT===
+-rw-r--r--    1 root  root  1234 Jan  1 00:00 /etc/sipweb/mz.crt
+-rw-------    1 root  root  1675 Jan  1 00:00 /etc/sipweb/mz.key
+9999999999999999999999999999ffff  /etc/sipweb/mz.crt
+===MZIO===
+/opt/mzio
+===END===
+"""
+
+
+class TestScanV2Parse(unittest.TestCase):
+    def setUp(self):
+        self.f = mzscan.parse_probe_v2(SCAN2_PROBE_SAMPLE)
+
+    def test_sidecar_md5_tristate(self):
+        s = self.f["sidecar_md5s"]
+        self.assertEqual(s["mzrelay3"], {"state": "present", "md5": "1"*28 + "aaaa"})
+        self.assertEqual(s["mzio"], {"state": "absent", "md5": None})
+        self.assertEqual(s["S21mzio"], {"state": "absent", "md5": None})
+
+    def test_marker_absent(self):
+        self.assertEqual(self.f["mzstate_marker"], {"state": "absent", "raw": None})
+
+    def test_marker_present_raw(self):
+        out = SCAN2_PROBE_SAMPLE.replace(
+            "head: /opt/mzstate.json: No such file or directory", '{"x":1}')
+        f = mzscan.parse_probe_v2(out)
+        self.assertEqual(f["mzstate_marker"], {"state": "present", "raw": '{"x":1}'})
+
+    def test_singleslot(self):
+        self.assertEqual(self.f["singleslot_mc_addr"], "239.192.1.1")
+        self.assertEqual(self.f["singleslot_mc_port"], 2000)
+        self.assertIs(self.f["singleslot_enabled"], True)
+
+    def test_cert_facts(self):
+        self.assertIs(self.f["cert_crt_exists"], True)
+        self.assertIs(self.f["cert_key_exists"], True)
+        self.assertIs(self.f["cert_key_perm_ok"], True)   # -rw------- = 0600
+        self.assertEqual(self.f["cert_crt_md5"], "9"*28 + "ffff")
+
+    def test_cert_key_perm_bad(self):
+        out = SCAN2_PROBE_SAMPLE.replace("-rw-------    1 root  root  1675",
+                                         "-rw-r--r--    1 root  root  1675")
+        self.assertIs(mzscan.parse_probe_v2(out)["cert_key_perm_ok"], False)
+
+    def test_cert_absent(self):
+        out = SCAN2_PROBE_SAMPLE.replace(
+            "-rw-r--r--    1 root  root  1234 Jan  1 00:00 /etc/sipweb/mz.crt",
+            "ls: /etc/sipweb/mz.crt: No such file or directory")
+        self.assertIs(mzscan.parse_probe_v2(out)["cert_crt_exists"], False)
+
+    def test_mzio_facts(self):
+        self.assertIs(self.f["mzio_bin"], True)     # ls 有列 /opt/mzio
+        self.assertIs(self.f["mzio_init"], False)   # 未列 S21mzio
+        self.assertIs(self.f["mzio_running"], False)
+
+    def test_mzio_running_from_ps(self):
+        out = SCAN2_PROBE_SAMPLE.replace(
+            "===MZIO===\n/opt/mzio",
+            "===MZIO===\n/opt/mzio\n  512 root      0:00 mzio")
+        self.assertIs(mzscan.parse_probe_v2(out)["mzio_running"], True)
+
+    def test_v2_none_facts_fresh_copies(self):
+        a, b = mzscan.v2_none_facts(), mzscan.v2_none_facts()
+        a["sidecar_md5s"]["mzio"]["state"] = "mutated"
+        self.assertEqual(b["sidecar_md5s"]["mzio"]["state"], "error")
+
+    def test_schema_version_is_2(self):
+        self.assertEqual(mzscan.SCHEMA_VERSION, "2")
 
 
 if __name__ == "__main__":
