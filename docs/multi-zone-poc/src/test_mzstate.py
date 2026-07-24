@@ -163,5 +163,50 @@ class TestScanV2Parse(unittest.TestCase):
         self.assertEqual(mzscan.SCHEMA_VERSION, "2")
 
 
+class TestComponentState(unittest.TestCase):
+    D = "d"*32; M = "m"*32; X = "x"*32
+    def cs(self, marker, state, md5):
+        return mzstate.component_state(self.D, marker, {"state": state, "md5": md5})
+
+    def test_row1_ok_any_marker(self):
+        self.assertEqual(self.cs(self.D, "present", self.D), "ok")
+        self.assertEqual(self.cs(None,   "present", self.D), "ok")      # marker 缺仍 ok
+        self.assertEqual(self.cs(self.M, "present", self.D), "ok")      # marker stale 仍 ok
+    def test_row2_missing_file_absent(self):
+        self.assertEqual(self.cs(self.D, "absent", None), "missing")
+        self.assertEqual(self.cs(None,   "absent", None), "missing")
+    def test_row3_outdated(self):
+        self.assertEqual(self.cs(self.M, "present", self.M), "outdated")
+    def test_row4_drift_needs_marker_baseline(self):
+        self.assertEqual(self.cs(self.M, "present", self.X), "drift")
+    def test_row5_no_marker_no_drift(self):
+        self.assertEqual(self.cs(None, "present", self.X), "missing")   # 工廠機：非 drift
+    def test_row6_unknown_on_probe_error(self):
+        self.assertEqual(self.cs(self.D, "error", None), "unknown")
+
+
+class TestDecideFw(unittest.TestCase):
+    def setUp(self):
+        self.m = json.loads(json.dumps(VALID_MANIFEST))
+        self.m["termapp"]["known_versions"]["0"*32] = "2.1.0"   # 已回填的舊版
+    V211 = "b0eed3b30bd4fa4f1599a9475296fb6d"
+
+    def test_known_desired_ok(self):
+        self.assertEqual(mzstate.decide_fw(self.V211, "2.1.1", self.m)[0], "ok")
+    def test_known_old_dbp_missing_upgrades(self):        # Codex 二輪 Critical
+        st, w = mzstate.decide_fw("0"*32, None, self.m)
+        self.assertEqual(st, "needs_upgrade"); self.assertEqual(w, [])
+    def test_known_old_dbp_conflict_upgrades_with_warning(self):
+        st, w = mzstate.decide_fw("0"*32, "9.9.9", self.m)
+        self.assertEqual(st, "needs_upgrade"); self.assertTrue(w)
+    def test_unknown_md5_dbp_210_upgrades(self):
+        self.assertEqual(mzstate.decide_fw("f"*32, "2.1.0", self.m)[0], "needs_upgrade")
+    def test_unknown_md5_no_cross_is_unknown_fw(self):
+        self.assertEqual(mzstate.decide_fw("f"*32, None, self.m)[0], "unknown_fw")
+        self.assertEqual(mzstate.decide_fw("f"*32, "2.1.1", self.m)[0], "unknown_fw")
+    def test_none_md5_is_probe_error(self):
+        self.assertEqual(mzstate.decide_fw(None, "2.1.0", self.m)[0], "probe_error")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -78,3 +78,36 @@ def gen_manifest(src_dir, release, out_path, prev):
     with open(tmp, "w") as fh:
         json.dump(out, fh, ensure_ascii=False, indent=1)
     os.replace(tmp, out_path)
+
+
+def component_state(desired_md5, marker_md5, actual):
+    """spec §5.1 六列矩陣。drift 需要 marker 基準線（no-marker-no-drift）。"""
+    if actual["state"] == "error":
+        return "unknown"
+    if actual["state"] == "absent":
+        return "missing"
+    if actual["md5"] == desired_md5:
+        return "ok"
+    if marker_md5 is None:
+        return "missing"          # 無基準線：工廠機/rollback 後 → 走重佈收斂
+    if actual["md5"] == marker_md5:
+        return "outdated"
+    return "drift"
+
+
+def decide_fw(termapp_md5, dbp_ver, manifest):
+    """spec §5.2 md5 優先層級：known md5 為直接證據；未知 md5 才需 DBP 交叉。"""
+    if termapp_md5 is None:
+        return "probe_error", []
+    known = manifest["termapp"]["known_versions"]
+    desired = manifest["termapp"]["desired_version"]
+    if termapp_md5 in known:
+        ver = known[termapp_md5]
+        if ver == desired:
+            return "ok", []
+        w = ([] if dbp_ver in (None, ver) else
+             ["termapp md5 says %s but DBP says %r" % (ver, dbp_ver)])
+        return "needs_upgrade", w
+    if dbp_ver == "2.1.0":
+        return "needs_upgrade", []
+    return "unknown_fw", []
