@@ -23,6 +23,9 @@ static void test_valid_mcast_addr(void) {
     assert(mztxio_valid_mcast_addr("223.9.9.9") == 0);
     assert(mztxio_valid_mcast_addr("not-an-ip") == 0);
     assert(mztxio_valid_mcast_addr("") == 0);
+    /* L-1 對抗審查修復：尾隨垃圾字元不應被 sscanf 靜默忽略 */
+    assert(mztxio_valid_mcast_addr("239.1.1.1junk") == 0);
+    assert(mztxio_valid_mcast_addr("239.1.1.1.2") == 0);
 }
 
 static void test_valid_port(void) {
@@ -69,6 +72,17 @@ static void test_validate_io_config(void) {
     cJSON* notarr = parse("{\"x\":1}");
     assert(mztxio_validate_io_config(notarr, &err) == 0);
     cJSON_Delete(notarr);
+    /* M-2 對抗審查修復：multicast_ptt 的 param 範圍驗證 */
+    cJSON* bad_param_huge = parse("[{\"id\":2,\"mode\":\"input\",\"contact\":\"NO\","
+        "\"trigger\":\"level\",\"debounce_ms\":30,"
+        "\"action\":{\"type\":\"multicast_ptt\",\"param\":\"2147483647\"}}]");
+    assert(mztxio_validate_io_config(bad_param_huge, &err) == 0);
+    cJSON_Delete(bad_param_huge);
+    cJSON* ok_param = parse("[{\"id\":2,\"mode\":\"input\",\"contact\":\"NO\","
+        "\"trigger\":\"level\",\"debounce_ms\":30,"
+        "\"action\":{\"type\":\"multicast_ptt\",\"param\":\"300\"}}]");
+    assert(mztxio_validate_io_config(ok_param, &err) == 1);
+    cJSON_Delete(ok_param);
 }
 
 int main(void) {

@@ -44,7 +44,7 @@ TESTDEF_webapi_tls = -DIDLE_MS=10000 -DOUT_TIMEOUT_MS=4000 -DHS_TIMEOUT_MS=10000
 # x86-mzweb/arm-mzweb 仍用 patch 內建 LOCK_MS=300000 預設，不受影響。
 TESTDEF_sec05 = -DLOCK_MS=1500
 
-build/websetsip.c: ../../../firmware-reference/websetsip.c websetsip-p7.patch
+build/websetsip.c: ../../../firmware-reference/websetsip.c websetsip-p7.patch txio_inject.py
 	mkdir -p build
 	cp ../../../firmware-reference/websetsip.c build/websetsip.c
 	cp ../../../firmware-reference/main.c build/main.c
@@ -53,9 +53,11 @@ build/websetsip.c: ../../../firmware-reference/websetsip.c websetsip-p7.patch
 	python3 txio_inject.py build/websetsip.c
 
 arm-mzweb: build/websetsip.c
+	grep -q mzweb_txio build/websetsip.c || (echo "websetsip.c NOT injected"; exit 1)
 	$(CC_ARM) $(CFLAGS) -o build/mzweb-arm $(APPSRC) $(COMPAT)
 
 x86-mzweb: build/websetsip.c
+	grep -q mzweb_txio build/websetsip.c || (echo "websetsip.c NOT injected"; exit 1)
 	$(CC_X86) $(CFLAGS) -o build/mzweb-x86 $(APPSRC) $(COMPAT)
 
 # x86-mzweb-sec05：同 x86-mzweb，但 -DLOCK_MS 覆蓋為短值，供 tests/test_sec05.py 驗證

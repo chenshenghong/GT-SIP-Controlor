@@ -13,7 +13,8 @@ int main(void) {
     assert(find_key_value(kv, "NOPE") == NULL);
     modify_key_value(kv, "WEB_PORT", "8081");
     add_key_value(kv, "NEW_KEY", "x");
-    write_keyvalue_file("/tmp/kv_test2", kv);
+    /* M-1：正常寫入回傳 0（成功） */
+    assert(write_keyvalue_file("/tmp/kv_test2", kv) == 0);
     free_keyvalue_file(kv);
     kv = read_keyvalue_file("/tmp/kv_test2");
     assert(strcmp(find_key_value(kv, "WEB_PORT"), "8081") == 0);

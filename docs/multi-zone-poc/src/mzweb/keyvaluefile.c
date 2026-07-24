@@ -15,6 +15,7 @@ struct key_value_file* read_keyvalue_file(const char* path) {
     if (!f) return NULL;
     struct key_value_file* kv = calloc(1, sizeof(*kv));
     char buf[KV_MAX_LINE];
+    if (!kv) { fclose(f); return NULL; }
     while (kv->n < KV_MAX_LINES && fgets(buf, sizeof(buf), f)) {
         struct kv_line* l = &kv->lines[kv->n++];
         buf[strcspn(buf, "\r\n")] = 0;
@@ -52,22 +53,36 @@ void add_key_value(struct key_value_file* kv, const char* key, const char* val) 
     snprintf(l->key, sizeof(l->key), "%s", key);
     snprintf(l->val, sizeof(l->val), "%s", val);
 }
-void write_keyvalue_file(const char* path, struct key_value_file* kv) {
+int write_keyvalue_file(const char* path, struct key_value_file* kv) {
     /* 原子寫：tmp+fflush+fsync+fclose+rename，避免掉電窗截斷/毀損整份設定檔
-     * （PTT 熱路徑每按放各寫本檔 2 次；同範式見 mzweb_txio.c 寫 mzio.json）。 */
+     * （PTT 熱路徑每按放各寫本檔 2 次；同範式見 mzweb_txio.c 寫 mzio.json）。
+     * M-1 對抗審查修復：fwrite/fflush/fsync/fclose/rename 任一失敗即視為整體失敗——
+     * 關檔、unlink tmp、保留原檔不動、回傳 -1，呼叫端不得誤以為已落盤。 */
     char tmp_path[1024];
     FILE* f;
+    int err = 0;
     snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
     f = fopen(tmp_path, "w");
-    if (!f) return;
+    if (!f) return -1;
     for (int i = 0; i < kv->n; i++) {
-        if (kv->lines[i].is_kv) fprintf(f, "%s=%s\n", kv->lines[i].key, kv->lines[i].val);
-        else fprintf(f, "%s\n", kv->lines[i].raw);
+        int wr;
+        if (kv->lines[i].is_kv) wr = fprintf(f, "%s=%s\n", kv->lines[i].key, kv->lines[i].val);
+        else wr = fprintf(f, "%s\n", kv->lines[i].raw);
+        if (wr < 0) { err = 1; break; }
     }
-    fflush(f);
-    fsync(fileno(f));
-    fclose(f);
-    if (rename(tmp_path, path) != 0)
+    if (!err && fflush(f) != 0) err = 1;
+    if (!err && fsync(fileno(f)) != 0) err = 1;
+    if (fclose(f) != 0) err = 1;
+    if (err) {
+        fprintf(stderr, "keyvaluefile: write %s failed, keeping original\n", tmp_path);
+        unlink(tmp_path);
+        return -1;
+    }
+    if (rename(tmp_path, path) != 0) {
         fprintf(stderr, "keyvaluefile: rename %s -> %s failed\n", tmp_path, path);
+        unlink(tmp_path);
+        return -1;
+    }
+    return 0;
 }
 void free_keyvalue_file(struct key_value_file* kv) { free(kv); }

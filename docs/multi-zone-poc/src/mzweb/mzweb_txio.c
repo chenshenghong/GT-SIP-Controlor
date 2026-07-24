@@ -42,8 +42,11 @@
 int mztxio_valid_mcast_addr(const char* ip)
 {
     int a = -1, b = -1, c = -1, d = -1;
+    char extra;
     if (ip == NULL) return 0;
-    if (sscanf(ip, "%d.%d.%d.%d", &a, &b, &c, &d) != 4) return 0;
+    /* L-1 對抗審查修復：sscanf 只驗前 4 段，尾隨垃圾字元（"239.1.1.1junk"/"239.1.1.1.2"）
+     * 原本會被靜默忽略而視為合法——加第 5 個 %c 樣式，若還有多餘字元可匹配即拒收。 */
+    if (sscanf(ip, "%d.%d.%d.%d%c", &a, &b, &c, &d, &extra) != 4) return 0;
     if (a < 224 || a > 239) return 0;
     if (b < 0 || b > 255 || c < 0 || c > 255 || d < 0 || d > 255) return 0;
     return 1;
@@ -99,6 +102,19 @@ int mztxio_validate_io_config(cJSON* arr, const char** err_msg)
             if (!cJSON_IsString(atype) || !cJSON_IsString(aparam))
                 { *err_msg = MZTXIO_MSG_BADTYPE; return 0; }
             if (!in_list(cJSON_GetStringValue(atype), s_action_vals)) return 0;
+            /* M-2 對抗審查修復：multicast_ptt 的 param 是 tail_ms（毫秒），未驗範圍時
+             * 任意字串/超大數字（如 "2147483647"）都會過關、daemon 端 atoi 後產生失控
+             * 的 tail 去抖窗。整包拒收，逼前端送出合法值。 */
+            if (strcmp(cJSON_GetStringValue(atype), "multicast_ptt") == 0)
+            {
+                const char* pstr = cJSON_GetStringValue(aparam);
+                char* endptr = NULL;
+                long pval;
+                if (pstr == NULL || pstr[0] == 0) return 0;
+                pval = strtol(pstr, &endptr, 10);
+                if (endptr == NULL || *endptr != 0) return 0; /* 非純數字 */
+                if (pval < 0 || pval > 10000) return 0;
+            }
         }
     }
     *err_msg = NULL;
@@ -281,7 +297,10 @@ void mzweb_txio_set_tx(void* client, const char* content, int content_len)
         }
         if (save_flag)
         {
-            write_keyvalue_file(MZTXIO_IFCFG, kv);
+            /* M-1 對抗審查修復：原子寫失敗（fsync/rename 等）不得誤回成功並通知 sip.sdk，
+             * 否則設定檔留在舊值但 termapp 已被通知「已更新」，狀態不一致。 */
+            if (write_keyvalue_file(MZTXIO_IFCFG, kv) != 0)
+                { msg = MZTXIO_MSG_FAIL; code = "E001"; break; }
             mzsdk_send("{\"command\": \"set_sip_multicast_tx\",\"cseq\": 1}\r\n\r\n");
         }
         break;

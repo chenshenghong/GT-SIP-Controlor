@@ -238,7 +238,14 @@ static void set_tx_enabled(int on)
     if (cur == NULL) add_key_value(kv, "MULTICAST_TX_ENABLED", want);
     else if (strcmp(cur, want) == 0) { free_keyvalue_file(kv); return; } /* 已是目標值：不寫不通知 */
     else modify_key_value(kv, "MULTICAST_TX_ENABLED", want);
-    write_keyvalue_file(mzio_ifcfg_path(), kv);
+    /* M-1 對抗審查修復：原子寫失敗（fsync/rename 等）不得繼續通知 sip.sdk——設定檔
+     * 仍是舊值，通知只會讓 termapp 誤以為已切換，狀態不一致。 */
+    if (write_keyvalue_file(mzio_ifcfg_path(), kv) != 0)
+    {
+        fprintf(stderr, "mzio: ERROR write ifcfg failed, not notifying sip.sdk\n");
+        free_keyvalue_file(kv);
+        return;
+    }
     free_keyvalue_file(kv);
     if (mzsdk_send("{\"command\": \"set_sip_multicast_tx\",\"cseq\": 1}\r\n\r\n") != 0)
     {
@@ -365,7 +372,23 @@ static int build_chans(cJSON* arr, struct chan* chans, int max)
             {
                 is_ptt = 1;
                 if (aparamj != NULL && cJSON_GetStringValue(aparamj) != NULL)
-                    tail_ms = atoi(cJSON_GetStringValue(aparamj));
+                {
+                    /* M-2 對抗審查修復：daemon 對「手改 /opt/mzio.json」比 web 端寬容——
+                     * 不拒收，但超界值 clamp 回預設 300ms 並告警，避免 atoi 失控值造成
+                     * 失控去抖窗（web 端走 mztxio_validate_io_config 是嚴格拒收）。 */
+                    const char* pstr = cJSON_GetStringValue(aparamj);
+                    char* endptr = NULL;
+                    long pval = strtol(pstr, &endptr, 10);
+                    if (endptr == NULL || *endptr != 0 || pval < 0 || pval > 10000)
+                    {
+                        fprintf(stderr, "mzio: io%d action.param '%s' out of range, using default 300\n", id, pstr);
+                        tail_ms = 300;
+                    }
+                    else
+                    {
+                        tail_ms = (int)pval;
+                    }
+                }
                 /* I3 對抗審查修復：mzio_sm 只實作 level 語意（去抖後穩定即視為按住）。
                  * long_press/edge 目前會被當 level 處理，行為與宣告不符，需明確告警而非
                  * 靜默退化——v1 仍放行運作（web 端 schema 允許這些 trigger 值）。 */
@@ -465,6 +488,11 @@ int main(int argc, char** argv)
     int n;
     int i;
     cJSON* arr;
+
+    /* H-2 對抗審查修復：mzsdk_send 走 UNIX stream socket，若 sip.sdk 端已關閉讀端，
+     * 寫入會產生 SIGPIPE，預設處置終止行程——daemon 不能因對端狀態被殺死。忽略後
+     * send() 走 MSG_NOSIGNAL 的錯誤回傳路徑即可（見 mzsdk.c）。 */
+    signal(SIGPIPE, SIG_IGN);
 
     if (argc > 1 && strcmp(argv[1], "-t") == 0) return selftest();
 
