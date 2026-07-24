@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # mzstate.py — side-car 版本標記/冪等判定＋完整性鎖定（子專案 D+E）
 # Spec: docs/superpowers/specs/2026-07-24-mzstate-version-lock-design.md (v2.1)
-import argparse, hashlib, json, os, re, sys, subprocess, socket, ssl
+import argparse, datetime, hashlib, json, os, re, sys, subprocess, socket, ssl
 
 COMPONENTS = ("mzrelay3", "mzweb", "mzio", "S21mzrelay", "S21mzio")
 
@@ -22,6 +22,14 @@ _MD5_HEX = re.compile(r"^[0-9a-f]{32}$")
 
 
 class ManifestError(Exception):
+    pass
+
+
+class SchemaMismatch(Exception):
+    pass
+
+
+class StaleInventory(Exception):
     pass
 
 
@@ -286,3 +294,129 @@ def check_cert(ip, port=443, timeout=8):
         return {"tls_ok": False, "san_ok": None, "expiry_ok": None}
     san_ok, expiry_ok = inspect_der(der, ip)
     return {"tls_ok": True, "san_ok": san_ok, "expiry_ok": expiry_ok}
+
+
+def cmd_mark(args, manifest):
+    raise NotImplementedError          # Task 7
+
+
+def validate_inventory(inv, allow_stale, now_iso):
+    if inv.get("schema_version") != "2":
+        raise SchemaMismatch(
+            "inventory schema %r not consumable — re-scan with updated mzscan (schema 2)"
+            % inv.get("schema_version"))
+    vu = inv.get("valid_until")
+    if not allow_stale and (not vu or vu < now_iso):
+        raise StaleInventory("inventory expired at %s — re-scan (or pass --allow-stale)" % vu)
+
+
+def build_report(decisions, manifest_release, manifest_digest, scan_id):
+    return {"schema_version": "1", "manifest_release": manifest_release,
+            "manifest_digest": manifest_digest, "scan_id": scan_id,
+            "devices": decisions}
+
+
+def _human_line(d):
+    extra = "" if d["exit_code"] == 0 else " " + "; ".join(d["reasons"])[:120]
+    return "%s %s(%d)%s" % (d["ip"], d["verdict"], d["exit_code"], extra)
+
+
+def _write_json_atomic(path, obj):
+    tmp = path + ".tmp.%d" % os.getpid()
+    with open(tmp, "w") as fh:
+        json.dump(obj, fh, ensure_ascii=False, indent=1)
+    os.replace(tmp, path)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="mzstate")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    d = sub.add_parser("decide")
+    d.add_argument("--inventory"); d.add_argument("--probe")
+    d.add_argument("--json"); d.add_argument("--allow-stale", action="store_true")
+    d.add_argument("--manifest",
+                   default=os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                        "mzmanifest.json"))
+    g = sub.add_parser("gen-manifest")
+    g.add_argument("--release",
+                   default=datetime.date.today().isoformat())
+    m = sub.add_parser("mark")     # Task 7 填實作；先佔位以固定 CLI 形狀
+    m.add_argument("--probe", required=True)
+    m.add_argument("--components"); m.add_argument("--delete")
+    m.add_argument("--manifest",
+                   default=os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                        "mzmanifest.json"))
+    args = ap.parse_args(argv)
+    src_dir = os.path.dirname(os.path.abspath(__file__))
+
+    if args.cmd == "gen-manifest":
+        out = os.path.join(src_dir, "mzmanifest.json")
+        prev = None
+        if os.path.exists(out):
+            try:
+                prev = json.load(open(out))
+            except ValueError:
+                prev = None
+        try:
+            gen_manifest(src_dir, args.release, out, prev)
+        except ManifestError as e:
+            print("gen-manifest: %s" % e, file=sys.stderr); return EXIT_USAGE
+        print("wrote %s" % out); return 0
+
+    try:
+        manifest = load_manifest(args.manifest)
+    except ManifestError as e:
+        print("mzstate: %s" % e, file=sys.stderr); return EXIT_USAGE
+    mdigest = manifest_digest(args.manifest)
+
+    if args.cmd == "mark":
+        return cmd_mark(args, manifest)          # Task 7
+
+    if not have_openssl():
+        print("WARNING: openssl not found on jumpbox — cert checks will be null "
+              "and devices will verdict PROBE_INCOMPLETE(21)", file=sys.stderr)
+
+    if args.probe:                                # 單台
+        pw = os.environ.get("MZSCAN_SSH_PW")
+        if not pw:
+            print("MZSCAN_SSH_PW not set", file=sys.stderr); return EXIT_USAGE
+        import mzscan
+        row = mzscan.probe_device(args.probe, None, pw)
+        dec = decide_device(row, manifest, check_cert(args.probe))
+        print(_human_line(dec))
+        if args.json:
+            rep = build_report([dec], manifest["release"], mdigest, None)
+            _write_json_atomic(args.json, rep)
+        return dec["exit_code"]
+
+    if not args.inventory or not args.json:      # 批次：--json 必填
+        print("decide batch mode requires --inventory and --json", file=sys.stderr)
+        return EXIT_USAGE
+    try:
+        inv = json.load(open(args.inventory))
+    except (OSError, ValueError) as e:
+        print("mzstate: bad inventory: %s" % e, file=sys.stderr); return EXIT_USAGE
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    try:
+        validate_inventory(inv, args.allow_stale, now)
+    except SchemaMismatch as e:
+        print("mzstate: %s" % e, file=sys.stderr); return EXIT_SCHEMA_MISMATCH
+    except StaleInventory as e:
+        print("mzstate: %s" % e, file=sys.stderr); return EXIT_STALE_INVENTORY
+
+    decisions = []
+    for row in inv.get("devices", []):
+        cert = check_cert(row["ip"]) if row.get("ssh_ok") else \
+               {"tls_ok": None, "san_ok": None, "expiry_ok": None}
+        dec = decide_device(row, manifest, cert)
+        if args.allow_stale:
+            dec["warnings"].append("decided from stale inventory (--allow-stale)")
+        decisions.append(dec)
+        print(_human_line(dec))
+    rep = build_report(decisions, manifest["release"], mdigest, inv.get("scan_id"))
+    _write_json_atomic(args.json, rep)
+    return 0 if all(x["exit_code"] == 0 for x in decisions) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

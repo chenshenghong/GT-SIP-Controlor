@@ -353,5 +353,60 @@ class TestCertRoundtrip(unittest.TestCase):
             self.assertFalse(mzstate.inspect_der(der, "192.168.0.7")[0])
 
 
+class TestInventoryGate(unittest.TestCase):
+    def inv(self, **over):
+        base = {"schema_version": "2", "scan_id": "s-1",
+                "valid_until": "2099-01-01T00:00:00", "devices": []}
+        base.update(over); return base
+
+    def test_ok(self):
+        mzstate.validate_inventory(self.inv(), False, "2026-07-24T12:00:00")
+    def test_schema1_rejected(self):
+        with self.assertRaises(mzstate.SchemaMismatch):
+            mzstate.validate_inventory(self.inv(schema_version="1"), False,
+                                       "2026-07-24T12:00:00")
+    def test_stale_rejected_and_allowed(self):
+        stale = self.inv(valid_until="2020-01-01T00:00:00")
+        with self.assertRaises(mzstate.StaleInventory):
+            mzstate.validate_inventory(stale, False, "2026-07-24T12:00:00")
+        mzstate.validate_inventory(stale, True, "2026-07-24T12:00:00")   # 豁免不 raise
+
+
+class TestReport(unittest.TestCase):
+    def test_shape_and_unreachable_entry(self):
+        d_ok = mzstate.decide_device(mk_row(), VALID_MANIFEST, CERT_OK)
+        d_un = mzstate.decide_device(mk_row(ssh_ok=False), VALID_MANIFEST, CERT_OK)
+        rep = mzstate.build_report([d_ok, d_un], "r1", "f"*32, "s-1")
+        self.assertEqual(rep["schema_version"], "1")
+        self.assertEqual(rep["manifest_release"], "r1")
+        self.assertEqual(rep["scan_id"], "s-1")
+        un = rep["devices"][1]
+        self.assertEqual(un["verdict"], "UNREACHABLE")
+        self.assertEqual(un["components"], {}); self.assertEqual(un["checks"], {})
+
+
+class TestCliExitCodes(unittest.TestCase):
+    def run_decide(self, inv_obj, extra=()):
+        d = tempfile.mkdtemp()
+        invp = os.path.join(d, "inv.json")
+        with open(invp, "w") as fh:
+            json.dump(inv_obj, fh)
+        mp = write_tmp_manifest(VALID_MANIFEST)
+        return mzstate.main(["decide", "--inventory", invp, "--json",
+                             os.path.join(d, "out.json"), "--manifest", mp, *extra])
+
+    def test_schema_mismatch_22(self):
+        self.assertEqual(self.run_decide({"schema_version": "1", "scan_id": "x",
+                                          "valid_until": "2099-01-01T00:00:00",
+                                          "devices": []}), 22)
+    def test_stale_23(self):
+        self.assertEqual(self.run_decide({"schema_version": "2", "scan_id": "x",
+                                          "valid_until": "2020-01-01T00:00:00",
+                                          "devices": []}), 23)
+    def test_usage_2_on_missing_file(self):
+        self.assertEqual(mzstate.main(["decide", "--inventory", "/no/such.json",
+                                       "--json", "/tmp/x.json"]), 2)
+
+
 if __name__ == "__main__":
     unittest.main()
