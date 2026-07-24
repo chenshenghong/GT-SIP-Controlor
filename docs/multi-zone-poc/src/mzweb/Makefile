@@ -13,18 +13,20 @@ MBEDTLS_SRC = $(wildcard mbedtls/library/*.c)
 MBEDTLS_INC = -Imbedtls/include -DMBEDTLS_CONFIG_FILE='"mzweb_mbedtls_config.h"'
 COMPAT  += $(MBEDTLS_SRC)
 CFLAGS  += $(MBEDTLS_INC)
-APPSRC   = build/websetsip.c build/main.c mzweb_zones.c serve_index.c
+APPSRC   = build/websetsip.c build/main.c mzweb_zones.c serve_index.c mzweb_txio.c mzsdk.c
 COMPAT_TEST_keyvaluefile = keyvaluefile.c
 COMPAT_TEST_cjson = cjson_vendor.c
 COMPAT_TEST_event = event.c
 # webapi.c 現在含 :443 TLS 終結（引用 mbedTLS＋mzcert），連 :80-only 測試也須連進這些單元。
 COMPAT_TEST_webapi = event.c webapi.c socketbase.c mzcert.c $(MBEDTLS_SRC)
 COMPAT_TEST_readtemp = readtemp.c
+COMPAT_TEST_txio = mzweb_txio.c mzsdk.c cjson_vendor.c keyvaluefile.c
 COMPAT_TEST_mbedtls_smoke = $(MBEDTLS_SRC)
 COMPAT_TEST_mzcert = mzcert.c $(MBEDTLS_SRC)
 # mzhash 需要 mbedtls_ctr_drbg 產 salt，其熵源 mbedtls_hardware_poll() 由 mzcert.c 提供
 # （精簡 config 開 MBEDTLS_ENTROPY_HARDWARE_ALT，故連 mzhash 單元測試也需連進這顆符號）。
 COMPAT_TEST_mzhash = mzhash.c mzcert.c $(MBEDTLS_SRC)
+COMPAT_TEST_mzio_core = mzio_core.c
 COMPAT_TEST_webapi_tls = event.c webapi.c socketbase.c mzcert.c $(MBEDTLS_SRC)
 # test_webapi 用縮短的 idle timeout/清掃週期，讓 http_test.py 的 slow-loris 斷言免等 30s。
 # 僅作用於此測試二進位；production arm/x86 目標編 webapi.c 不帶此旗標，維持預設 30000ms。
@@ -42,17 +44,20 @@ TESTDEF_webapi_tls = -DIDLE_MS=10000 -DOUT_TIMEOUT_MS=4000 -DHS_TIMEOUT_MS=10000
 # x86-mzweb/arm-mzweb 仍用 patch 內建 LOCK_MS=300000 預設，不受影響。
 TESTDEF_sec05 = -DLOCK_MS=1500
 
-build/websetsip.c: ../../../firmware-reference/websetsip.c websetsip-p7.patch
+build/websetsip.c: ../../../firmware-reference/websetsip.c websetsip-p7.patch txio_inject.py
 	mkdir -p build
 	cp ../../../firmware-reference/websetsip.c build/websetsip.c
 	cp ../../../firmware-reference/main.c build/main.c
 	cp ../../../firmware-reference/websetsip.h build/websetsip.h
 	patch build/websetsip.c < websetsip-p7.patch
+	python3 txio_inject.py build/websetsip.c
 
 arm-mzweb: build/websetsip.c
+	grep -q mzweb_txio build/websetsip.c || (echo "websetsip.c NOT injected"; exit 1)
 	$(CC_ARM) $(CFLAGS) -o build/mzweb-arm $(APPSRC) $(COMPAT)
 
 x86-mzweb: build/websetsip.c
+	grep -q mzweb_txio build/websetsip.c || (echo "websetsip.c NOT injected"; exit 1)
 	$(CC_X86) $(CFLAGS) -o build/mzweb-x86 $(APPSRC) $(COMPAT)
 
 # x86-mzweb-sec05：同 x86-mzweb，但 -DLOCK_MS 覆蓋為短值，供 tests/test_sec05.py 驗證
@@ -60,6 +65,17 @@ x86-mzweb: build/websetsip.c
 # 差異只在編譯時的 LOCK_MS 巨集覆蓋，不影響 production 目標。
 x86-mzweb-sec05: build/websetsip.c
 	$(CC_X86) $(CFLAGS) $(TESTDEF_sec05) -o build/mzweb-x86-sec05 $(APPSRC) $(COMPAT)
+
+# --- mzio side-car daemon（Task 7；獨立編，不需 mbedTLS，不用 $(CFLAGS)/$(COMPAT)） ---
+MZIOSRC = mzio.c mzio_core.c mzsdk.c keyvaluefile.c cjson_vendor.c
+
+arm-mzio:
+	mkdir -p build
+	$(DOCKER) muslcc/x86_64:arm-linux-musleabi -march=armv7-a -static -no-pie -fno-pie -O2 -I. -o build/mzio-arm $(MZIOSRC)
+
+x86-mzio:
+	mkdir -p build
+	$(DOCKER) muslcc/x86_64:x86_64-linux-musl -static -no-pie -fno-pie -O2 -I. -o build/mzio-x86 $(MZIOSRC)
 
 # x86-orig：未修改原廠 websetsip.c（GBK 原始碼，非 patch/zones/serve_index 版）＋相容層。
 # 相容層正確性的整合閘門——只有把 T1–T5 一起連進 3022 行真實原廠碼才知道夠不夠用。

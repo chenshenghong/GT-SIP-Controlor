@@ -1,0 +1,16 @@
+#!/bin/sh
+# S21mzio — IO 動作 side-car autostart。rcS 無參數呼叫 -> start。
+BIN=/opt/mzio
+case "${1:-start}" in
+start)
+	[ -x "$BIN" ] || exit 0
+	# H-2 對抗審查：mzio 已忽略 SIGPIPE（見 mzio.c main），單次崩潰風險已降低；
+	# v1 仍不加 respawn 監控迴圈（無 watchdog），故障需人工/下次開機重啟。
+	"$BIN" 2>>/tmp/mzio.boot.log &
+	echo "mzio: autostart armed"
+	;;
+stop)
+	killall mzio 2>/dev/null
+	;;
+esac
+exit 0

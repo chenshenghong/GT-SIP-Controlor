@@ -6,23 +6,52 @@
 cd "$(dirname "$0")/.." || exit 1
 exec docker run --rm --platform linux/amd64 -v "$PWD":/src -w /src python:3.12-alpine sh -c '
   rc=0
+  ran=0
   for t in build/test_*; do
     [ -x "$t" ] || continue
     case "$t" in build/test_webapi|build/test_webapi_tls) continue;; esac
     echo "== $t"
+    ran=$((ran+1))
     if ! "$t"; then echo "FAIL: $t"; rc=1; fi
   done
   if [ -f tests/http_test.py ]; then
     echo "== tests/http_test.py"
+    ran=$((ran+1))
     if ! python3 tests/http_test.py; then echo "FAIL: tests/http_test.py"; rc=1; fi
+  fi
+  if [ -x build/mzweb-x86 ] && [ -f tests/test_txio_routes.py ]; then
+    echo "== tests/test_txio_routes.py"
+    ran=$((ran+1))
+    if ! python3 tests/test_txio_routes.py; then echo "FAIL: tests/test_txio_routes.py"; rc=1; fi
+  fi
+  if [ -x build/mzweb-x86 ] && [ -f tests/test_txio_settx.py ]; then
+    echo "== tests/test_txio_settx.py"
+    ran=$((ran+1))
+    if ! python3 tests/test_txio_settx.py; then echo "FAIL: tests/test_txio_settx.py"; rc=1; fi
+  fi
+  if [ -x build/mzweb-x86 ] && [ -f tests/test_txio_io.py ]; then
+    echo "== tests/test_txio_io.py"
+    ran=$((ran+1))
+    if ! python3 tests/test_txio_io.py; then echo "FAIL: tests/test_txio_io.py"; rc=1; fi
+  fi
+  if [ -x build/mzio-x86 ] && [ -f tests/test_mzio_selftest.py ]; then
+    echo "== tests/test_mzio_selftest.py"
+    ran=$((ran+1))
+    if ! python3 tests/test_mzio_selftest.py; then echo "FAIL: tests/test_mzio_selftest.py"; rc=1; fi
   fi
   if [ -x build/test_webapi_tls ] && [ -f tests/https_test.py ]; then
     echo "== tests/https_test.py"
+    ran=$((ran+1))
     if ! python3 tests/https_test.py; then echo "FAIL: tests/https_test.py"; rc=1; fi
   fi
   if [ -x build/test_webapi_tls ] && [ -f tests/redirect_test.py ]; then
     echo "== tests/redirect_test.py"
+    ran=$((ran+1))
     if ! python3 tests/redirect_test.py; then echo "FAIL: tests/redirect_test.py"; rc=1; fi
+  fi
+  if [ "$ran" -lt 10 ]; then
+    echo "TOO FEW TESTS RAN ($ran) — build targets missing?"
+    rc=1
   fi
   [ "$rc" -eq 0 ] && echo "ALL HOST TESTS PASSED" || echo "HOST TESTS FAILED"
   exit "$rc"
