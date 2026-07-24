@@ -80,7 +80,7 @@ const navItems = [
     </aside>
 
     <!-- Main Content -->
-    <main class="relative z-20 min-h-screen flex flex-col pt-16 md:pl-64">
+    <main class="relative z-20 h-screen overflow-y-auto flex flex-col pt-16 md:pl-64">
       <slot />
     </main>
   </div>
