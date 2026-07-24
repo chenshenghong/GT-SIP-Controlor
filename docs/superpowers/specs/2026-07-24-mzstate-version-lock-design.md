@@ -190,7 +190,7 @@ mzstate.py gen-manifest [--release <tag>]
 | verdict 20 | `retry_probe` |
 | verdict 21 | `retry_probe`（連續失敗由 B 轉 `manual_review`） |
 | verdict 14 或 12 | `manual_review`（唯一元素，不與其他並列） |
-| verdict 11（可與下列並存但排最前） | `fw_upgrade` |
+| verdict 11 | `fw_upgrade`（**單元素**：同機的 side-car 缺口留待 F 完成後強制重判自然揭露 10——「動作後重判、禁止鏈式跳過」使兩者收斂同一終態；v2.2 修訂，消除表/碼矛盾） |
 | mzrelay3/S21mzrelay 態 ∈ {missing, outdated} | `deploy_mzrelay3` |
 | mzweb 態 ∈ {missing, outdated} | `install_mzweb` |
 | mzio/S21mzio 態 ∈ {missing, outdated} | `install_mzio` |

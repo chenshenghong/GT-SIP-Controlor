@@ -251,12 +251,15 @@ PROBE_CMD = (
     # ---- schema 2 新段落（spec D+E §七）----
     'echo "===MD5SIDECAR==="; md5sum /opt/mzrelay3 /etc/sipweb/sipweb /opt/mzio'
     ' /etc/init.d/S21mzrelay /etc/init.d/S21mzio 2>&1;'
-    'echo "===MZSTATE==="; head -c 8192 /opt/mzstate.json 2>&1; echo;'
     'echo "===IFCFGSIP==="; grep -E "^MULTICAST_(ADDRESS|PORT|ENABLED)=" /etc/ifcfg-sip 2>&1;'
     'echo "===CERT==="; ls -l /etc/sipweb/mz.crt /etc/sipweb/mz.key 2>&1;'
     ' md5sum /etc/sipweb/mz.crt 2>/dev/null;'
     'echo "===MZIO==="; ls /opt/mzio /etc/init.d/S21mzio 2>/dev/null;'
     ' ps | grep mzio | grep -v grep;'
+    # MZSTATE 段刻意放最後（對抗審查 M-3）：marker 原文帶回，若被塞入字面 ===END===
+    # 會提早終止 ssh_run 串流——放最後使截斷只損及 marker 本身（→視同缺），
+    # 不波及其他事實段造成整機卡 21。
+    'echo "===MZSTATE==="; head -c 8192 /opt/mzstate.json 2>&1; echo;'
     'echo "===END==="'
 )
 

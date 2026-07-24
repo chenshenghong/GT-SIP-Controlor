@@ -227,10 +227,14 @@ def decide_device(row, manifest, cert):
             out["reasons"].append("%s: %s" % (n, states[n]))
         return fin(EXIT_NEEDS_DEPLOY, acts)
 
-    # 21 B 層：元件全 ok 才走到這裡——config/服務判定（13/15/READY）前，其必需事實不得為 None
+    # 21 B 層：元件全 ok 才走到這裡——config/服務判定（13/15/READY）前，其必需事實不得為 None。
+    # 例外（對抗審查 I-1）：relay_running is False 是 down 的定性鐵證，此時 rest_ok 天然 None
+    # （daemon 沒 listening→nc 連線拒→零輸出），不算探測不完整——放行到 13 走 restart_services。
     service_null = ([k for k in ("singleslot_mc", "singleslot_enabled", "relay_running",
-                                 "rest_ok", "mzio_running", "cert_files_ok",
+                                 "mzio_running", "cert_files_ok",
                                  "mzweb_https_ok") if c[k] is None]
+                    + (["rest_ok"] if c["rest_ok"] is None
+                       and c["relay_running"] is not False else [])
                     + (["cert_san_ok"] if c["cert_san_ok"] is None else [])
                     + (["cert_expiry_ok"] if c["cert_expiry_ok"] is None else []))
     if service_null:
@@ -327,8 +331,9 @@ def merge_marker(existing, actuals, components, delete, release, now_iso, crt_md
 MARK_PROBE_CMD = (
     'echo "===MD5SIDECAR==="; md5sum /opt/mzrelay3 /etc/sipweb/sipweb /opt/mzio'
     ' /etc/init.d/S21mzrelay /etc/init.d/S21mzio 2>&1;'
-    'echo "===MZSTATE==="; head -c 8192 /opt/mzstate.json 2>&1; echo;'
     'echo "===CRT==="; md5sum /etc/sipweb/mz.crt 2>/dev/null;'
+    # MZSTATE 放最後：marker 內容注入 ===END=== 只損 marker 段（同 mzscan M-3 防護）
+    'echo "===MZSTATE==="; head -c 8192 /opt/mzstate.json 2>&1; echo;'
     'echo "===END==="')
 
 
@@ -346,18 +351,59 @@ def _mark_probe(ip, pw):
     return actuals, raw, (mm.group(1) if mm else None)
 
 
+def _pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except (PermissionError, OSError):
+        return True   # 無法確認就當存活（保守，不誤收）
+
+
+def lock_is_stale(owner_text, now_epoch, local_hostname, pid_alive_fn=_pid_alive):
+    """owner 格式 '<hostname> <pid> <epoch>'。同主機、齡>120s、pid 已死 → 可自動回收
+    （spec §四縱深政策落地；異主機/解析失敗 → False，維持人工 break-glass）。"""
+    try:
+        host, pid_s, ts_s = owner_text.split()[:3]
+        pid, ts = int(pid_s), int(ts_s)
+    except (ValueError, IndexError):
+        return False
+    if host != local_hostname or now_epoch - ts <= 120:
+        return False
+    return not pid_alive_fn(pid)
+
+
+def _try_lock(ip, pw, hostname):
+    import mzscan
+    # if/then 而非 && 鏈：mkdir 成功但 owner 寫失敗不得回 LOCK_FAIL（會留殘鎖假死）
+    lock_cmd = ('if mkdir /opt/.mzstate.lock 2>/dev/null; then'
+                ' echo "%s %d $(date +%%s)" > /opt/.mzstate.lock/owner 2>/dev/null;'
+                ' echo LOCK_OK;'
+                ' else echo LOCK_FAIL; cat /opt/.mzstate.lock/owner 2>/dev/null; date +%%s;'
+                ' fi; echo "===END==="' % (hostname, os.getpid()))
+    return mzscan.ssh_run(ip, pw, lock_cmd)
+
+
 def _mark_put(ip, pw, marker_obj):
-    """lock（owner 檔）→ 上傳 tmp → md5 複驗 → mv+sync → unlock。失敗 raise RuntimeError。
+    """lock（owner 檔＋同主機死鎖自動回收）→ 上傳 tmp → md5 複驗 → mv+sync → unlock。
+    失敗 raise RuntimeError。
 
     注意：上傳走 mzctl.py put（其密碼為 fleet 統一 root 密碼常數）；ssh_run 用 MZSCAN_SSH_PW。
     fleet 密碼若日後分裂，兩者須一起改。"""
     import mzscan, tempfile
     src_dir = os.path.dirname(os.path.abspath(__file__))
     hostname = socket.gethostname()
-    lock_cmd = ('mkdir /opt/.mzstate.lock 2>/dev/null'
-                ' && echo "%s $$ $(date)" > /opt/.mzstate.lock/owner'
-                ' && echo LOCK_OK || echo LOCK_FAIL; echo "===END==="' % hostname)
-    out, err = mzscan.ssh_run(ip, pw, lock_cmd)
+    out, err = _try_lock(ip, pw, hostname)
+    if out and "LOCK_FAIL" in out:
+        # 對抗審查 M-2：檢查殘鎖是否為本主機已死 worker 所留——是則自動回收重試一次
+        lines = [l.strip() for l in out.replace("\r", "").splitlines() if l.strip()]
+        owner_line = next((l for l in lines if l.split()[:1] and not l.startswith("LOCK")
+                           and len(l.split()) >= 3), "")
+        now_line = next((l for l in reversed(lines) if l.isdigit()), "0")
+        if lock_is_stale(owner_line, int(now_line), hostname):
+            mzscan.ssh_run(ip, pw, 'rm -rf /opt/.mzstate.lock; echo "===END==="')
+            out, err = _try_lock(ip, pw, hostname)
     if not out or "LOCK_OK" not in out:
         raise RuntimeError("marker lock busy/failed on %s (%s) — "
                            "inspect /opt/.mzstate.lock/owner; break-glass: "
@@ -534,7 +580,7 @@ def main(argv=None):
 
     decisions = []
     for row in inv.get("devices", []):
-        cert = check_cert(row["ip"]) if row.get("ssh_ok") else \
+        cert = check_cert(row["ip"]) if row.get("ip") and row.get("ssh_ok") else \
                {"tls_ok": None, "san_ok": None, "expiry_ok": None}
         dec = decide_device(row, manifest, cert)
         if args.allow_stale:

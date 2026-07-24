@@ -276,9 +276,18 @@ class TestDecideDevice(unittest.TestCase):
         self.assertEqual(r["exit_code"], 10)
 
     def test_service_null_blocks_at_config_stage(self):
-        # B 層事實在元件全 ok 時仍是必需：rest_ok=None → 21（不得矇著判 13/15/READY）
-        r = self.d(mk_row(sidecar_rest_ok=None))
+        # B 層事實在元件全 ok「且無 down 定性訊號」時仍是必需：
+        # relay 活著但 rest_ok=None（探測異常）→ 21（不得矇著判 13/15/READY）
+        r = self.d(mk_row(sidecar_rest_ok=None, sidecar_relay_running=True))
         self.assertEqual(r["exit_code"], 21)
+
+    def test_relay_daemon_down_is_restart_not_21(self):
+        # 最終對抗審查 I-1：mzrelay3 掛掉時 nc 連線被拒→rest_ok 天然 None，
+        # 但 relay_running=False 已是 down 的定性鐵證——必須走 13/restart_services，
+        # 否則部署後最常見 transient 全卡 retry→人工佇列。
+        r = self.d(mk_row(sidecar_relay_running=False, sidecar_rest_ok=None))
+        self.assertEqual(r["exit_code"], 13)
+        self.assertIn("restart_services", r["required_actions"])
 
     def test_unknown_fw_terminal_manual(self):
         r = self.d(mk_row(termapp_md5="f"*32, fw_ver_dbp=None))
@@ -482,6 +491,17 @@ class TestMarkAllOrNothing(unittest.TestCase):
         rc = mzstate.run_mark(A(), VALID_MANIFEST, "pw", fake_probe, fake_put)
         self.assertEqual(rc, 1)
         self.assertEqual(calls, [])                # 一個條目都沒寫
+
+    def test_lock_stale_reclaim_rules(self):
+        # 對抗審查 M-2：同主機+逾 120s+pid 死 → 可回收；其餘一律不可（人工 break-glass）
+        dead = lambda pid: False
+        alive = lambda pid: True
+        self.assertTrue(mzstate.lock_is_stale("jb 123 1000", 1200, "jb", dead))
+        self.assertFalse(mzstate.lock_is_stale("jb 123 1000", 1200, "jb", alive))    # pid 活著
+        self.assertFalse(mzstate.lock_is_stale("jb 123 1100", 1200, "jb", dead))     # 未逾 120s
+        self.assertFalse(mzstate.lock_is_stale("other 123 1000", 1200, "jb", dead))  # 異主機
+        self.assertFalse(mzstate.lock_is_stale("garbage", 1200, "jb", dead))         # 解析失敗
+        self.assertFalse(mzstate.lock_is_stale("", 1200, "jb", dead))
 
     def test_delete_only_skips_verification(self):
         calls = []
