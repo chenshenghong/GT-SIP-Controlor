@@ -126,6 +126,16 @@ class TestScanV2Parse(unittest.TestCase):
         self.assertEqual(self.f["singleslot_mc_port"], 2000)
         self.assertIs(self.f["singleslot_enabled"], True)
 
+    def test_singleslot_keys_absent_sentinel(self):
+        # .140 試點實證：工廠機 ifcfg 無 MULTICAST_* 鍵→sentinel→定性「未設」非 unknown
+        out = SCAN2_PROBE_SAMPLE.replace(
+            "MULTICAST_ADDRESS=239.192.1.1\nMULTICAST_PORT=2000\nMULTICAST_ENABLED=true",
+            "NO_MULTICAST_KEYS")
+        f = mzscan.parse_probe_v2(out)
+        self.assertEqual(f["singleslot_mc_addr"], "(unset)")
+        self.assertEqual(f["singleslot_mc_port"], 0)
+        self.assertIs(f["singleslot_enabled"], False)
+
     def test_cert_facts(self):
         self.assertIs(self.f["cert_crt_exists"], True)
         self.assertIs(self.f["cert_key_exists"], True)
@@ -326,6 +336,13 @@ class TestDecideDevice(unittest.TestCase):
 
     def test_config_singleslot(self):
         r = self.d(mk_row(singleslot_mc_addr="239.9.9.9"))
+        self.assertEqual(r["exit_code"], 13)
+        self.assertEqual(r["required_actions"], ["fix_singleslot"])
+
+    def test_singleslot_unset_is_fix_not_21(self):
+        # .140 試點：元件全 ok 但單槽「未設」（定性）→ 13/fix_singleslot 而非 21 retry
+        r = self.d(mk_row(singleslot_mc_addr="(unset)", singleslot_mc_port=0,
+                          singleslot_enabled=False))
         self.assertEqual(r["exit_code"], 13)
         self.assertEqual(r["required_actions"], ["fix_singleslot"])
 

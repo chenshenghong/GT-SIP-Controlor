@@ -251,7 +251,9 @@ PROBE_CMD = (
     # ---- schema 2 新段落（spec D+E §七）----
     'echo "===MD5SIDECAR==="; md5sum /opt/mzrelay3 /etc/sipweb/sipweb /opt/mzio'
     ' /etc/init.d/S21mzrelay /etc/init.d/S21mzio 2>&1;'
-    'echo "===IFCFGSIP==="; grep -E "^MULTICAST_(ADDRESS|PORT|ENABLED)=" /etc/ifcfg-sip 2>&1;'
+    # keys 不存在是定性事實（工廠出廠態，.140 試點實證）→ 印 sentinel 供 parse 區分「未設」vs「探測失敗」
+    'echo "===IFCFGSIP==="; grep -E "^MULTICAST_(ADDRESS|PORT|ENABLED)=" /etc/ifcfg-sip 2>/dev/null'
+    ' || echo NO_MULTICAST_KEYS;'
     'echo "===CERT==="; ls -l /etc/sipweb/mz.crt /etc/sipweb/mz.key 2>&1;'
     ' md5sum /etc/sipweb/mz.crt 2>/dev/null;'
     'echo "===MZIO==="; ls /opt/mzio /etc/init.d/S21mzio 2>/dev/null;'
@@ -390,12 +392,18 @@ def parse_probe_v2(out):
     else:
         f["mzstate_marker"] = {"state": "error", "raw": None}
     ifc = s.get("IFCFGSIP", "")
-    m = re.search(r"^MULTICAST_ADDRESS=(\S+)", ifc, re.M)
-    f["singleslot_mc_addr"] = m.group(1) if m else None
-    m = re.search(r"^MULTICAST_PORT=(\d+)", ifc, re.M)
-    f["singleslot_mc_port"] = int(m.group(1)) if m else None
-    m = re.search(r"^MULTICAST_ENABLED=(\S+)", ifc, re.M)
-    f["singleslot_enabled"] = (m.group(1) == "true") if m else None
+    if "NO_MULTICAST_KEYS" in ifc:
+        # 定性「未設定」（工廠出廠態）：非 None（unknown）——decide 據此判 13/fix_singleslot
+        f["singleslot_mc_addr"] = "(unset)"
+        f["singleslot_mc_port"] = 0
+        f["singleslot_enabled"] = False
+    else:
+        m = re.search(r"^MULTICAST_ADDRESS=(\S+)", ifc, re.M)
+        f["singleslot_mc_addr"] = m.group(1) if m else None
+        m = re.search(r"^MULTICAST_PORT=(\d+)", ifc, re.M)
+        f["singleslot_mc_port"] = int(m.group(1)) if m else None
+        m = re.search(r"^MULTICAST_ENABLED=(\S+)", ifc, re.M)
+        f["singleslot_enabled"] = (m.group(1) == "true") if m else None
     cert = s.get("CERT", "")
     f["cert_crt_exists"] = _ls_exists(cert, "/etc/sipweb/mz.crt")
     f["cert_key_exists"] = _ls_exists(cert, "/etc/sipweb/mz.key")
