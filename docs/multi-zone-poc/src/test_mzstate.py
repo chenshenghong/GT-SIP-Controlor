@@ -261,6 +261,25 @@ class TestDecideDevice(unittest.TestCase):
         row = mk_row(); row["sidecar_md5s"]["mzio"] = {"state": "error", "md5": None}
         self.assertEqual(self.d(row)["exit_code"], 21)
 
+    def test_factory_machine_service_nulls_still_deploy(self):
+        # 站內 .140 實測（2026-07-24）：工廠未部署機 rest_ok=None（無 sidecar→連線拒）、
+        # singleslot 兩欄 None（工廠 ifcfg-sip 無 MULTICAST_* 鍵）——這些是 config 階段
+        # （13/15/READY）才必需的 B 層事實，不得在元件缺口階段擋成 21。
+        row = mk_row(mzstate_marker={"state": "absent", "raw": None},
+                     sidecar_rest_ok=None, singleslot_mc_addr=None,
+                     singleslot_mc_port=None, singleslot_enabled=None,
+                     cert_crt_exists=False, cert_key_exists=False,
+                     cert_key_perm_ok=None)
+        for n in row["sidecar_md5s"]:
+            row["sidecar_md5s"][n] = {"state": "absent", "md5": None}
+        r = self.d(row, cert={"tls_ok": False, "san_ok": None, "expiry_ok": None})
+        self.assertEqual(r["exit_code"], 10)
+
+    def test_service_null_blocks_at_config_stage(self):
+        # B 層事實在元件全 ok 時仍是必需：rest_ok=None → 21（不得矇著判 13/15/READY）
+        r = self.d(mk_row(sidecar_rest_ok=None))
+        self.assertEqual(r["exit_code"], 21)
+
     def test_unknown_fw_terminal_manual(self):
         r = self.d(mk_row(termapp_md5="f"*32, fw_ver_dbp=None))
         self.assertEqual(r["exit_code"], 14)

@@ -201,7 +201,10 @@ mzstate.py gen-manifest [--release <tag>]
 
   順序＝上表由上而下（fw → deploy → services → cert → 單槽 → mark）；同列多元件依 mzrelay3→mzweb→mzio。12/14 為 terminal：`required_actions=["manual_review"]`，不附其他動作（防 B 誤自動化）。
 - **checks 值規範**：boolean 型欄位失敗＝`false`；觀測值型欄位（`termapp_fw`、`singleslot_mc`）記**實際觀測值**（判定結論由 verdict/required_actions 表達，不用 "ok"/"mismatch" 魔法字串）；無法取得＝`null`。
-- **判定必需事實清單（null → 該機落 21）**：`termapp_md5`、五件 side-car md5、`mzstate_marker`（讀取動作失敗才算 null；檔不在＝合法的「缺」非 null）、`singleslot_mc_addr/port/enabled`、`cert_crt_exists/key_exists/key_perm`、SAN/效期檢查結果、`sidecar_rest_ok`、relay/mzweb/mzio running 三欄。**非必需（null 不觸發 21）**：`fw_ver_dbp`（DBP 缺失走 §5.2 的 md5 優先層級）、`cert_crt_md5`（僅 warning 用）、`web_type` 等資訊性欄位。
+- **判定必需事實清單（null → 該機落 21）——兩層**（v2.2 修訂，2026-07-24 站內 .140 實測定案）：
+  - **A 層（無條件必需）**：`termapp_md5`、五件 side-car md5、`mzstate_marker`（讀取動作失敗才算 null；檔不在＝合法的「缺」非 null）。缺任一 → 21，不得做任何裁決。
+  - **B 層（config 階段必需）**：`singleslot_mc_addr/port/enabled`、`cert_crt_exists/key_exists/key_perm`、SAN/效期檢查結果、`sidecar_rest_ok`、relay/mzweb/mzio running 三欄——只在元件全 ok、進入 13/15/READY 判定前檢查；null → 21。**理由**：工廠未部署機這些事實天然 None（無 sidecar→REST 連線拒；工廠 ifcfg-sip 無 MULTICAST_* 鍵），若無條件擋 21，整批工廠機會卡重試佇列、永遠到不了 10（NEEDS_DEPLOY）。
+  - **非必需（null 不觸發 21）**：`fw_ver_dbp`（DBP 缺失走 §5.2 的 md5 優先層級）、`cert_crt_md5`（僅 warning 用）、`web_type` 等資訊性欄位。
 - **warnings/reasons 邊界**：`warnings[]`＝不影響本次裁決的非阻塞事項（任何裁決等級皆可有，如 cert md5 漂移、--allow-stale）；`reasons[]`＝導致非 READY 的直接原因（人讀，與 warnings 不重疊）。
 - **UNREACHABLE 條目形狀**：`components`/`checks` 為空物件、`required_actions=["retry_probe"]`、`reasons` 帶 ssh 錯誤描述——B 解析不會 KeyError。
 

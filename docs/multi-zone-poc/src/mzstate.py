@@ -193,13 +193,11 @@ def decide_device(row, manifest, cert):
     else:
         c["cert_san_ok"] = c["cert_expiry_ok"] = "n/a-service-down"
 
-    # 21：判定必需事實（spec §5.3 清單）
+    # 21 A 層：無條件必需事實（元件 md5/termapp/marker 可讀性）——缺任一不得做任何裁決。
+    # B 層（服務/config 事實）只在元件全 ok、進入 13/15/READY 判定前才必需：
+    # 站內 .140 實測（2026-07-24）——工廠未部署機 rest_ok/singleslot 天然 None（無 sidecar、
+    # 工廠 ifcfg 無鍵），若無條件擋 21 會讓整批工廠機卡在重試佇列進不了 10。
     required_null = ([n for n, s in states.items() if s == "unknown"]
-                     + [k for k in ("singleslot_mc", "singleslot_enabled", "relay_running",
-                                    "rest_ok", "mzio_running", "cert_files_ok",
-                                    "mzweb_https_ok") if c[k] is None]
-                     + (["cert_san_ok"] if c["cert_san_ok"] is None else [])
-                     + (["cert_expiry_ok"] if c["cert_expiry_ok"] is None else [])
                      + (["termapp_md5"] if fw_status == "probe_error" else []))
     if marker_info["state"] == "error":
         required_null.append("mzstate_marker")
@@ -228,6 +226,17 @@ def decide_device(row, manifest, cert):
         for n in need:
             out["reasons"].append("%s: %s" % (n, states[n]))
         return fin(EXIT_NEEDS_DEPLOY, acts)
+
+    # 21 B 層：元件全 ok 才走到這裡——config/服務判定（13/15/READY）前，其必需事實不得為 None
+    service_null = ([k for k in ("singleslot_mc", "singleslot_enabled", "relay_running",
+                                 "rest_ok", "mzio_running", "cert_files_ok",
+                                 "mzweb_https_ok") if c[k] is None]
+                    + (["cert_san_ok"] if c["cert_san_ok"] is None else [])
+                    + (["cert_expiry_ok"] if c["cert_expiry_ok"] is None else []))
+    if service_null:
+        return fin(EXIT_PROBE_INCOMPLETE, ["retry_probe"],
+                   "probe incomplete (config-stage facts): %s"
+                   % ",".join(sorted(set(service_null))))
 
     # 13：config/runtime
     acts, why = [], []
