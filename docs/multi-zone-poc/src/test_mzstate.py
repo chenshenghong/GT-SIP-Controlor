@@ -208,5 +208,117 @@ class TestDecideFw(unittest.TestCase):
         self.assertEqual(mzstate.decide_fw(None, "2.1.0", self.m)[0], "probe_error")
 
 
+def mk_row(**over):
+    """全綠 READY 基準 row（對 VALID_MANIFEST），測試逐項扭曲。"""
+    md5s = {n: {"state": "present", "md5": VALID_MANIFEST["components"][n]["md5"]}
+            for n in mzstate.COMPONENTS}
+    marker = {"schema_version": "1", "release": "r", "written_at": "t",
+              "components": {n: {"md5": md5s[n]["md5"], "deployed_at": "t"}
+                             for n in mzstate.COMPONENTS},
+              "cert": {"crt_md5": "9"*32}}
+    row = {"ip": "192.168.0.70", "ssh_ok": True, "fw_ver_dbp": "2.1.1",
+           "termapp_md5": "b0eed3b30bd4fa4f1599a9475296fb6d",
+           "sidecar_md5s": md5s,
+           "mzstate_marker": {"state": "present", "raw": json.dumps(marker)},
+           "singleslot_mc_addr": "239.192.1.1", "singleslot_mc_port": 2000,
+           "singleslot_enabled": True,
+           "cert_crt_exists": True, "cert_key_exists": True,
+           "cert_key_perm_ok": True, "cert_crt_md5": "9"*32,
+           "sidecar_relay_running": True, "sidecar_rest_ok": True,
+           "mzio_bin": True, "mzio_running": True, "mzio_init": True,
+           "errors": []}
+    row.update(over)
+    return row
+
+
+CERT_OK = {"tls_ok": True, "san_ok": True, "expiry_ok": True}
+
+
+class TestDecideDevice(unittest.TestCase):
+    def d(self, row, cert=CERT_OK):
+        return mzstate.decide_device(row, VALID_MANIFEST, cert)
+
+    def test_ready(self):
+        r = self.d(mk_row())
+        self.assertEqual((r["verdict"], r["exit_code"], r["required_actions"]),
+                         ("READY", 0, []))
+
+    def test_unreachable(self):
+        r = self.d(mk_row(ssh_ok=False))
+        self.assertEqual(r["exit_code"], 20)
+        self.assertEqual(r["required_actions"], ["retry_probe"])
+        self.assertEqual(r["components"], {}); self.assertEqual(r["checks"], {})
+
+    def test_probe_incomplete_on_unknown_md5(self):
+        row = mk_row(); row["sidecar_md5s"]["mzio"] = {"state": "error", "md5": None}
+        self.assertEqual(self.d(row)["exit_code"], 21)
+
+    def test_unknown_fw_terminal_manual(self):
+        r = self.d(mk_row(termapp_md5="f"*32, fw_ver_dbp=None))
+        self.assertEqual(r["exit_code"], 14)
+        self.assertEqual(r["required_actions"], ["manual_review"])
+
+    def test_fw_upgrade_masks_but_reports_components(self):
+        row = mk_row(termapp_md5="f"*32, fw_ver_dbp="2.1.0")
+        r = self.d(row)
+        self.assertEqual(r["exit_code"], 11)
+        self.assertEqual(r["required_actions"][0], "fw_upgrade")
+
+    def test_drift_beats_deploy(self):
+        row = mk_row()
+        row["sidecar_md5s"]["mzweb"] = {"state": "present", "md5": "5"*32}   # ≠desired ≠marker
+        row["sidecar_md5s"]["mzio"] = {"state": "absent", "md5": None}        # missing 並存
+        r = self.d(row)
+        self.assertEqual(r["exit_code"], 12)
+        self.assertEqual(r["required_actions"], ["manual_review"])
+
+    def test_fresh_factory_is_deploy_not_drift(self):
+        row = mk_row(mzstate_marker={"state": "absent", "raw": None})
+        row["sidecar_md5s"]["mzweb"] = {"state": "present", "md5": "5"*32}   # 原廠 web
+        r = self.d(row)
+        self.assertEqual(r["exit_code"], 10)
+        self.assertIn("install_mzweb", r["required_actions"])
+
+    def test_deploy_ordered_actions(self):
+        row = mk_row(mzstate_marker={"state": "absent", "raw": None})
+        for n in row["sidecar_md5s"]:
+            row["sidecar_md5s"][n] = {"state": "absent", "md5": None}
+        r = self.d(row)
+        self.assertEqual(r["exit_code"], 10)
+        self.assertEqual(r["required_actions"],
+                         ["deploy_mzrelay3", "install_mzweb", "install_mzio"])
+
+    def test_config_singleslot(self):
+        r = self.d(mk_row(singleslot_mc_addr="239.9.9.9"))
+        self.assertEqual(r["exit_code"], 13)
+        self.assertEqual(r["required_actions"], ["fix_singleslot"])
+
+    def test_config_cert_san(self):
+        r = self.d(mk_row(), cert={"tls_ok": True, "san_ok": False, "expiry_ok": True})
+        self.assertEqual(r["exit_code"], 13)
+        self.assertEqual(r["required_actions"], ["regen_cert"])
+
+    def test_service_down_is_restart_not_21(self):
+        # TLS 連不上（服務掛）→ mzweb_https_ok=False → 13/restart，san/expiry 不列必需
+        r = self.d(mk_row(), cert={"tls_ok": False, "san_ok": None, "expiry_ok": None})
+        self.assertEqual(r["exit_code"], 13)
+        self.assertIn("restart_services", r["required_actions"])
+
+    def test_needs_mark_on_absent_marker_all_ok(self):
+        r = self.d(mk_row(mzstate_marker={"state": "absent", "raw": None}))
+        self.assertEqual(r["exit_code"], 15)
+        self.assertEqual(r["required_actions"], ["mark"])
+
+    def test_needs_mark_on_unparseable_marker(self):
+        r = self.d(mk_row(mzstate_marker={"state": "present", "raw": "{broken"}))
+        self.assertEqual(r["exit_code"], 15)
+        self.assertTrue(r["warnings"])   # unparseable 記 warning
+
+    def test_cert_md5_drift_only_warns(self):
+        r = self.d(mk_row(cert_crt_md5="8"*32))   # ≠ marker 記錄的 9*32
+        self.assertEqual(r["exit_code"], 0)
+        self.assertTrue(any("crt_md5" in w for w in r["warnings"]))
+
+
 if __name__ == "__main__":
     unittest.main()

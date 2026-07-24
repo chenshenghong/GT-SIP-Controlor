@@ -111,3 +111,140 @@ def decide_fw(termapp_md5, dbp_ver, manifest):
     if dbp_ver == "2.1.0":
         return "needs_upgrade", []
     return "unknown_fw", []
+
+
+VERDICT_BY_EXIT = {0: "READY", 10: "NEEDS_DEPLOY", 11: "NEEDS_FW_UPGRADE",
+                   12: "DRIFT", 13: "NOT_READY_CONFIG", 14: "UNKNOWN_FW",
+                   15: "NEEDS_MARK", 20: "UNREACHABLE", 21: "PROBE_INCOMPLETE"}
+
+_DEPLOY_ACTION = {"mzrelay3": "deploy_mzrelay3", "S21mzrelay": "deploy_mzrelay3",
+                  "mzweb": "install_mzweb", "mzio": "install_mzio",
+                  "S21mzio": "install_mzio"}
+
+
+def parse_marker(raw):
+    """Parse mzstate marker JSON; strict schema_version==1 guard."""
+    if raw is None or len(raw) > 8192:
+        return None
+    try:
+        m = json.loads(raw)
+    except ValueError:
+        return None
+    return m if isinstance(m, dict) and m.get("schema_version") == "1" else None
+
+
+def decide_device(row, manifest, cert):
+    """spec §5.3 整機裁決優先序。回 verdict/exit_code/required_actions/checks/..."""
+    ip = row.get("ip")
+    out = {"ip": ip, "components": {}, "checks": {}, "warnings": [], "reasons": []}
+
+    def fin(code, actions, reason=None):
+        out["verdict"] = VERDICT_BY_EXIT[code]
+        out["exit_code"] = code
+        out["required_actions"] = actions
+        if reason:
+            out["reasons"].append(reason)
+        return out
+
+    if not row.get("ssh_ok"):
+        return fin(EXIT_UNREACHABLE, ["retry_probe"], "ssh probe failed")
+
+    marker_info = row.get("mzstate_marker") or {"state": "error", "raw": None}
+    marker = parse_marker(marker_info.get("raw")) if marker_info["state"] == "present" else None
+    if marker_info["state"] == "present" and marker is None:
+        out["warnings"].append("marker unparseable — treated as absent")
+    mcomp = (marker or {}).get("components", {})
+
+    # 元件態
+    states = {}
+    for name in COMPONENTS:
+        actual = (row.get("sidecar_md5s") or {}).get(name) or {"state": "error", "md5": None}
+        st = component_state(manifest["components"][name]["md5"],
+                             (mcomp.get(name) or {}).get("md5"), actual)
+        states[name] = st
+        out["components"][name] = {"state": st, "actual_md5": actual.get("md5"),
+                                   "marker_md5": (mcomp.get(name) or {}).get("md5")}
+
+    # checks（觀測值；判定必需清單 null → 21）
+    fw_status, fw_warn = decide_fw(row.get("termapp_md5"), row.get("fw_ver_dbp"), manifest)
+    out["warnings"] += fw_warn
+    c = out["checks"]
+    c["termapp_fw"] = manifest["termapp"]["known_versions"].get(row.get("termapp_md5"))
+    c["singleslot_mc"] = (None if row.get("singleslot_mc_addr") is None
+                          else "%s:%s" % (row["singleslot_mc_addr"],
+                                          row.get("singleslot_mc_port")))
+    c["singleslot_enabled"] = row.get("singleslot_enabled")
+    c["relay_running"] = row.get("sidecar_relay_running")
+    c["rest_ok"] = row.get("sidecar_rest_ok")
+    c["mzio_running"] = row.get("mzio_running")
+    c["mzweb_https_ok"] = cert.get("tls_ok")
+    c["cert_files_ok"] = (row.get("cert_crt_exists") and row.get("cert_key_exists")
+                          and row.get("cert_key_perm_ok"))
+    if cert.get("tls_ok"):          # 服務活著才驗 SAN/效期；掛掉走 restart 路徑
+        c["cert_san_ok"], c["cert_expiry_ok"] = cert.get("san_ok"), cert.get("expiry_ok")
+    else:
+        c["cert_san_ok"] = c["cert_expiry_ok"] = "n/a-service-down"
+
+    # 21：判定必需事實（spec §5.3 清單）
+    required_null = ([n for n, s in states.items() if s == "unknown"]
+                     + [k for k in ("singleslot_mc", "singleslot_enabled", "relay_running",
+                                    "rest_ok", "mzio_running", "cert_files_ok",
+                                    "mzweb_https_ok") if c[k] is None]
+                     + (["cert_san_ok"] if c["cert_san_ok"] is None else [])
+                     + (["cert_expiry_ok"] if c["cert_expiry_ok"] is None else [])
+                     + (["termapp_md5"] if fw_status == "probe_error" else []))
+    if marker_info["state"] == "error":
+        required_null.append("mzstate_marker")
+    if required_null:
+        return fin(EXIT_PROBE_INCOMPLETE, ["retry_probe"],
+                   "probe incomplete: %s" % ",".join(sorted(set(required_null))))
+
+    if fw_status == "unknown_fw":
+        return fin(EXIT_UNKNOWN_FW, ["manual_review"],
+                   "termapp md5 %s unclassifiable (no DBP cross-evidence)"
+                   % row.get("termapp_md5"))
+    if fw_status == "needs_upgrade":
+        acts = ["fw_upgrade"]
+        return fin(EXIT_NEEDS_FW_UPGRADE, acts, "termapp is %s, desired %s"
+                   % (c["termapp_fw"] or "old", manifest["termapp"]["desired_version"]))
+    drifted = [n for n in COMPONENTS if states[n] == "drift"]
+    if drifted:
+        return fin(EXIT_DRIFT, ["manual_review"],
+                   "drift (actual≠marker≠desired): %s" % ",".join(drifted))
+    need = [n for n in COMPONENTS if states[n] in ("missing", "outdated")]
+    if need:
+        acts = []
+        for n in COMPONENTS:                       # 固定順序去重
+            if n in need and _DEPLOY_ACTION[n] not in acts:
+                acts.append(_DEPLOY_ACTION[n])
+        for n in need:
+            out["reasons"].append("%s: %s" % (n, states[n]))
+        return fin(EXIT_NEEDS_DEPLOY, acts)
+
+    # 13：config/runtime
+    acts, why = [], []
+    if not (c["relay_running"] and c["rest_ok"] and c["mzweb_https_ok"]
+            and c["mzio_running"]):
+        acts.append("restart_services"); why.append("service down")
+    if c["cert_san_ok"] is False or c["cert_expiry_ok"] is False or not c["cert_files_ok"]:
+        acts.append("regen_cert"); why.append("cert invalid")
+    desired_mc = "%s:%s" % (manifest["config"]["mc_out_group"],
+                            manifest["config"]["mc_out_port"])
+    if c["singleslot_mc"] != desired_mc or c["singleslot_enabled"] is not True:
+        acts.append("fix_singleslot"); why.append("singleslot %r != %s"
+                                                  % (c["singleslot_mc"], desired_mc))
+    if acts:
+        return fin(EXIT_NOT_READY_CONFIG, acts, "; ".join(why))
+
+    # 15：全就緒唯標記
+    stale = (marker is None or
+             any((mcomp.get(n) or {}).get("md5") != manifest["components"][n]["md5"]
+                 for n in COMPONENTS))
+    if stale:
+        return fin(EXIT_NEEDS_MARK, ["mark"], "marker missing/stale")
+
+    # cert md5 漂移 warning（不擋 READY）
+    mk_crt = ((marker or {}).get("cert") or {}).get("crt_md5")
+    if mk_crt and row.get("cert_crt_md5") and mk_crt != row["cert_crt_md5"]:
+        out["warnings"].append("cert crt_md5 drifted since deploy (legit re-keygen?)")
+    return fin(EXIT_READY, [])
