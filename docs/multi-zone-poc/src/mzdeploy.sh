@@ -15,6 +15,8 @@
 set -e
 cd "$(dirname "$0")"
 CTL="python3 mzctl.py"
+# mzstate mark 用（fleet 統一 root 密碼；與 mzctl.py 內建常數同源，分裂時一起改）
+export MZSCAN_SSH_PW="${MZSCAN_SSH_PW:-BcastTerm2}"
 HOST="${MZHOST:-192.168.0.70}"
 REST="${MZREST:-8090}"
 TOK="Authorization: Bearer mzpoc-token"
@@ -29,13 +31,19 @@ deploy)
 	$CTL put mzrelay3 /opt/mzrelay3
 	# mzctl.py 退出碼不反映遠端結果，存在性判斷須抓輸出字串
 	if $CTL sh 'test -f /opt/mzrelay.conf && echo CONF_YES || echo CONF_NO' | grep -q CONF_NO; then
-		$CTL put mzrelay3.conf.example /opt/mzrelay.conf
+		# per-device conf（.140 試點實證）：範例檔的 ifaddr 是 .70 專值、rest_bind=0.0.0.0
+		# 會使 loopback REST 健檢被 token 擋——量產一律 ifaddr=$HOST、rest_bind=127.0.0.1
+		echo "239.192.1.1 2000 16 $HOST 2000 8090 /opt/mzzones.json 127.0.0.1" > "/tmp/mzrelay.conf.$$"
+		$CTL put "/tmp/mzrelay.conf.$$" /opt/mzrelay.conf
+		rm -f "/tmp/mzrelay.conf.$$"
 	fi
 	$CTL put S21mzrelay /etc/init.d/S21mzrelay
 	echo "== 重啟 daemon（zones 設定 /opt/mzzones.json 不動）=="
 	$CTL sh 'chmod +x /opt/mzrelay3 /etc/init.d/S21mzrelay; killall mzrelay3 2>/dev/null; sleep 1; /etc/init.d/S21mzrelay; sleep 2; ps | grep mzrelay3 | grep -v grep | head -1; sync'
 	echo "== 健康檢查 =="
 	"$0" status
+	echo "== 寫標（mzstate mark，驗 actual==manifest 後 all-or-nothing）=="
+	python3 mzstate.py mark --probe "$HOST" --components mzrelay3,S21mzrelay || exit 1
 	;;
 status)
 	echo "-- 程序:"
@@ -60,16 +68,25 @@ status)
 	fi
 	# mzweb 檢查段刻意排在 REST 檢查（下方，失敗會 exit 1）之前，
 	# 確保 mzrelay3 REST 掛掉時 mzweb 健康狀態仍能先印出來，不被蓋掉
-	echo "-- REST /get/sip/multicast/zones（啟用區摘要）:"
-	curl -s -m 5 "http://$HOST:$REST/get/sip/multicast/zones" -H "$TOK" \
-	  | python3 -c 'import json,sys; z=json.load(sys.stdin)["zones"]; en=[(r["zone_id"],r["multicast_address"],r["multicast_port"],r["priority"],r["audio_codec"]) for r in z if r["enabled"]]; print(f"  enabled {len(en)}/16:", en)' \
-	  || { echo "  REST 無回應 — daemon 未啟或埠不通"; exit 1; }
+	# spec D+E §八：P7 後 mzrelay3 REST 是 loopback-only bind，跳板機遠端 curl 必被拒
+	# （既有 bug）——改設備端 nc 對 127.0.0.1:8090 探測（同 mzscan sidecar_rest_ok 手法）。
+	echo "-- REST /get/sip/multicast/zones（設備端 loopback，:$REST 為 loopback-only bind）:"
+	REST_OUT=$($CTL sh 'printf "GET /get/sip/multicast/zones HTTP/1.1\r\nHost:127.0.0.1\r\nConnection: close\r\n\r\n" | nc 127.0.0.1 '"$REST"' 2>/dev/null | head -c 8192; echo')
+	if echo "$REST_OUT" | grep -q '"zones"'; then
+		echo "  REST OK（zones JSON 回應）"
+	else
+		echo "  REST 無回應/非 zones JSON — daemon 未啟或 loopback 埠不通"; exit 1
+	fi
 	;;
 rollback)
 	echo "== 還原 /opt/mzrelay3.prev =="
 	if $CTL sh 'test -f /opt/mzrelay3.prev && echo PREV_YES || echo PREV_NO' | grep -q PREV_NO; then
 		echo "無 /opt/mzrelay3.prev 可回退"; exit 1
 	fi
+	# spec D+E §八：先刪標、後動 binary；刪標失敗即中止（防 rollback 後殘標→假 drift）
+	echo "== 先刪標（mzstate mark --delete mzrelay3）=="
+	python3 mzstate.py mark --probe "$HOST" --components "" --delete mzrelay3 || {
+		echo "✗ 刪標失敗，中止 rollback（binary 未動）"; exit 1; }
 	$CTL sh 'cp /opt/mzrelay3.prev /opt/mzrelay3; chmod +x /opt/mzrelay3; killall mzrelay3 2>/dev/null; sleep 1; /etc/init.d/S21mzrelay; sleep 2; ps | grep mzrelay3 | grep -v grep | head -1; sync'
 	"$0" status
 	;;
@@ -99,11 +116,15 @@ mzweb-install)
 	# 開機自啟那行在 /etc/init.d/S20ipgaurd 預設被註解 → 需取消註解，mzweb（置於 /etc/sipweb/sipweb）
 	# 才會經監督迴圈於開機自啟並在 crash 時自動拉回。
 	$CTL sh '[ -f /etc/init.d/S20ipgaurd.orig ] || cp /etc/init.d/S20ipgaurd /etc/init.d/S20ipgaurd.orig; sed -i "s|^#/etc/sipweb/sipweb.sh|/etc/sipweb/sipweb.sh|" /etc/init.d/S20ipgaurd'
+	echo "== config 正規化：WEB_PORT=80（.140 試點實證：工廠 WEB_PORT=443 使 mzweb 明文佔 443、TLS 失效）=="
+	$CTL sh 'grep -q "^WEB_PORT=" /etc/ifcfg-sip && sed -i "s/^WEB_PORT=.*/WEB_PORT=80/" /etc/ifcfg-sip || echo "WEB_PORT=80" >> /etc/ifcfg-sip; sync; grep "^WEB_PORT=" /etc/ifcfg-sip'
 	echo "⚠ 正在重啟 web 服務（kill 舊 sipweb，監督迴圈未跑則手動起 sipweb.sh）=="
 	# 先 kill 現行 sipweb；若 sipweb.sh 監督迴圈已在跑會於 2s 內自動拉回 mzweb，否則手動背景啟動監督迴圈
 	$CTL sh 'killall sipweb 2>/dev/null; sleep 1; ps|grep -v grep|grep -q "sipweb.sh" || setsid /etc/sipweb/sipweb.sh start >/dev/null 2>&1 & sleep 3'
 	echo "== 驗證 web 服務是否已起（本機 loopback，busybox 無 wget 改 nc）=="
 	$CTL sh 'printf "GET /get/device/status HTTP/1.1\r\nHost:127.0.0.1\r\nConnection: close\r\n\r\n" | nc 127.0.0.1 80 2>/dev/null | head -c 96; echo'
+	echo "== 寫標（mzstate mark）=="
+	python3 mzstate.py mark --probe "$HOST" --components mzweb || exit 1
 	;;
 mzio-install)
 	[ -f mzweb/build/mzio-arm ] || { echo "缺 mzio-arm，先 make arm-mzio"; exit 1; }
@@ -111,6 +132,14 @@ mzio-install)
 	$CTL put mzweb/build/mzio-arm /opt/mzio
 	$CTL put S21mzio /etc/init.d/S21mzio
 	$CTL sh 'chmod +x /opt/mzio /etc/init.d/S21mzio; killall mzio 2>/dev/null; sleep 1; /etc/init.d/S21mzio; sleep 1; ps | grep mzio | grep -v grep | head -2; sync'
+	echo "== 寫標（mzstate mark）=="
+	python3 mzstate.py mark --probe "$HOST" --components mzio,S21mzio || exit 1
+	;;
+fix-singleslot)
+	# spec E 條件 7 的修復動作（B 的 fix_singleslot；.140 試點固化）：
+	# 四鍵指向 mzrelay3 輸出 group＋killall termapp 重讀（termapp.sh 監督會拉回、SIP 自動重註冊）
+	echo "== 單槽鎖定：MULTICAST_* → 239.192.1.1:2000/G.722 ＋ termapp 重讀 =="
+	$CTL sh 'cp /etc/ifcfg-sip /tmp/ifcfg.pre-singleslot.bak; sed -i -e "/^MULTICAST_ADDRESS=/d" -e "/^MULTICAST_PORT=/d" -e "/^MULTICAST_ENABLED=/d" -e "/^MULTICAST_CODEC=/d" /etc/ifcfg-sip; printf "MULTICAST_ADDRESS=239.192.1.1\nMULTICAST_PORT=2000\nMULTICAST_ENABLED=true\nMULTICAST_CODEC=G.722\n" >> /etc/ifcfg-sip; sync; killall termapp 2>/dev/null; sleep 2; ps | grep termapp | grep -v grep | head -2; grep "^MULTICAST_" /etc/ifcfg-sip'
 	;;
 mzio-status)
 	$CTL sh 'ps | grep mzio | grep -v grep; cat /tmp/mzio_state 2>/dev/null; ls -la /opt/mzio /opt/mzio.json /etc/init.d/S21mzio 2>&1; tail -5 /tmp/mzio.boot.log 2>/dev/null'
@@ -120,11 +149,15 @@ mzweb-rollback)
 	if $CTL sh 'test -f /etc/sipweb/sipweb.orig && echo ORIG_YES || echo ORIG_NO' | grep -q ORIG_NO; then
 		echo "無 /etc/sipweb/sipweb.orig 可回退（需先成功跑過一次 mzweb-install 才有備份）"; exit 1
 	fi
+	# spec D+E §八：先刪標、後還原+reboot；刪標失敗即中止不 reboot（防殘標→假 drift）
+	echo "== 先刪標（mzstate mark --delete mzweb）=="
+	python3 mzstate.py mark --probe "$HOST" --components "" --delete mzweb || {
+		echo "✗ 刪標失敗，中止 mzweb-rollback（未還原、未 reboot）"; exit 1; }
 	# 一併還原 S20ipgaurd（回 found-state：開機自啟仍註解＝web off；避免 rogue hbi_web 被自啟續發 403）
 	$CTL sh '[ -f /etc/init.d/S20ipgaurd.orig ] && cp /etc/init.d/S20ipgaurd.orig /etc/init.d/S20ipgaurd; cp /etc/sipweb/sipweb.orig /etc/sipweb/sipweb; sync; reboot'
 	echo "已還原 /etc/sipweb/sipweb.orig（rogue hbi_web）＋S20ipgaurd 並觸發 reboot；回到部署前狀態（:80 web off）"
 	;;
 *)
-	echo "usage: $0 {deploy|status|rollback|redeploy|mzweb-install|mzweb-rollback|mzio-install|mzio-status}"; exit 2
+	echo "usage: $0 {deploy|status|rollback|redeploy|mzweb-install|mzweb-rollback|mzio-install|mzio-status|fix-singleslot}"; exit 2
 	;;
 esac

@@ -1,0 +1,38 @@
+{
+ "schema_version": "1",
+ "release": "2026-07-24",
+ "components": {
+  "mzrelay3": {
+   "path": "/opt/mzrelay3",
+   "md5": "22977985aa469ee3ec9510c895ffa312"
+  },
+  "mzweb": {
+   "path": "/etc/sipweb/sipweb",
+   "md5": "ee26eec8882b7325cf00200d60d1d735"
+  },
+  "mzio": {
+   "path": "/opt/mzio",
+   "md5": "8050c466b64e776acce23ca90811916b"
+  },
+  "S21mzrelay": {
+   "path": "/etc/init.d/S21mzrelay",
+   "md5": "0f42300af3b8abfe2cd8eb862d26176f"
+  },
+  "S21mzio": {
+   "path": "/etc/init.d/S21mzio",
+   "md5": "2336e501f0df8b909db3cd24e06c5cfc"
+  }
+ },
+ "termapp": {
+  "path": "/opt/termapp",
+  "known_versions": {
+   "b0eed3b30bd4fa4f1599a9475296fb6d": "2.1.1",
+   "44f3101d1b1c9630f11211240443e8b1": "2.1.0"
+  },
+  "desired_version": "2.1.1"
+ },
+ "config": {
+  "mc_out_group": "239.192.1.1",
+  "mc_out_port": 2000
+ }
+}

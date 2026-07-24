@@ -76,34 +76,34 @@
         <h3>SIP 設定</h3>
         <div class="form-grid" @input="dirty.sip = true" @change="dirty.sip = true">
           <div class="form-group">
-            <label>SIP Server</label>
+            <label>SIP 伺服器</label>
             <input v-model="sipForm.server_address" placeholder="192.168.1.11" />
           </div>
           <div class="form-group">
-            <label>Port</label>
+            <label>埠號</label>
             <input v-model.number="sipForm.server_port" type="number" placeholder="8899" />
           </div>
           <div class="form-group">
-            <label>User ID</label>
+            <label>使用者 ID</label>
             <input v-model="sipForm.user_id" placeholder="1027" />
           </div>
           <div class="form-group">
-            <label>Password</label>
+            <label>密碼</label>
             <input type="password" v-model="sipForm.password" placeholder="123456" />
           </div>
           <div class="form-group">
-            <label>Protocol</label>
+            <label>傳輸協定</label>
             <select v-model="sipForm.transport_protocol">
               <option value="TCP">TCP</option>
               <option value="UDP">UDP</option>
             </select>
           </div>
           <div class="form-group">
-            <label>Register Timeout</label>
+            <label>註冊逾時（秒）</label>
             <input v-model.number="sipForm.register_timeout" type="number" />
           </div>
           <div class="form-group checkbox">
-            <label><input type="checkbox" v-model="sipForm.auto_answer" /> Auto Answer</label>
+            <label><input type="checkbox" v-model="sipForm.auto_answer" /> 自動應答</label>
           </div>
         </div>
         <button class="primary-btn" @click="handleSetSip">儲存 SIP 設定</button>
@@ -167,22 +167,22 @@
         <h3>網路設定</h3>
         <div class="form-grid" @input="dirty.network = true" @change="dirty.network = true">
           <div class="form-group">
-            <label>Network Mode</label>
+            <label>網路模式</label>
             <select v-model="networkForm.network_mode">
               <option value="static">Static</option>
               <option value="dhcp">DHCP</option>
             </select>
           </div>
           <div class="form-group">
-            <label>IP Address</label>
+            <label>IP 位址</label>
             <input v-model="networkForm.ip_address" placeholder="192.168.1.200" />
           </div>
           <div class="form-group">
-            <label>Subnet Mask</label>
+            <label>子網路遮罩</label>
             <input v-model="networkForm.subnet_mask" placeholder="255.255.255.0" />
           </div>
           <div class="form-group">
-            <label>Gateway</label>
+            <label>閘道</label>
             <input v-model="networkForm.gateway" placeholder="192.168.1.1" />
           </div>
           <div class="form-group">
@@ -210,6 +210,9 @@ import {
 } from '@/composables/deviceApi'
 import MulticastZones from '@/components/MulticastZones.vue'
 import { useMulticastZonesCapability } from '@/composables/useMulticastZonesCapability'
+import { useToast } from '@/composables/useToast'
+
+const toast = useToast()
 
 const props = defineProps<{ device: DeviceNode }>()
 const emit = defineEmits<{
@@ -342,22 +345,22 @@ onUnmounted(() => {
 // Handlers
 async function handleSetVolume() {
   const ok = await setDeviceVolume(props.device.ip, audioForm)
-  alert(ok ? '✅ 音量已更新' : '❌ 更新失敗')
+  toast.show(ok ? '音量已更新' : '更新失敗', ok ? 'ok' : 'err')
 }
 
 async function handleSetSip() {
   const ok = await setSipPrimary(props.device.ip, sipForm)
-  alert(ok ? '✅ SIP 設定已更新' : '❌ 更新失敗')
+  toast.show(ok ? 'SIP 設定已更新' : '更新失敗', ok ? 'ok' : 'err')
 }
 
 async function handleSetMulticast() {
   const ok = await setSipMulticast(props.device.ip, multicastForm)
-  alert(ok ? '✅ 組播設定已更新' : '❌ 更新失敗')
+  toast.show(ok ? '組播設定已更新' : '更新失敗', ok ? 'ok' : 'err')
 }
 
 async function handleCall(action: 'dial' | 'answer' | 'hangup') {
   const ok = await callControl(props.device.ip, action, dialNumber.value || undefined)
-  alert(ok ? `✅ ${action} 成功` : `❌ ${action} 失敗`)
+  toast.show(ok ? `${action} 成功` : `${action} 失敗`, ok ? 'ok' : 'err')
 }
 
 async function handleSetNetwork() {
@@ -372,10 +375,10 @@ async function handleSetNetwork() {
 
   if (networkForm.network_mode === 'dhcp') {
     if (ok) {
-      alert('✅ 已切換為自動取得 (DHCP)，設備將重啟並向路由器索取新 IP。\n請回設備清單用「設備探測」重新掃描以找出新 IP。')
+      toast.show('已切換為自動取得 (DHCP)，設備將重啟並向路由器索取新 IP。請回設備清單用「設備探測」重新掃描以找出新 IP。', 'ok')
       emit('close')
     } else {
-      alert('❌ 此設備韌體不支援「自動取得 (DHCP)」（REST 僅接受靜態設定，且無 DBP SET 通道）。\n請改用「手動 (Static)」指定一個 IP。')
+      toast.show('此設備韌體不支援「自動取得 (DHCP)」（REST 僅接受靜態設定，且無 DBP SET 通道）。請改用「手動 (Static)」指定一個 IP。', 'err')
     }
     return
   }
@@ -383,7 +386,7 @@ async function handleSetNetwork() {
   if (ok && networkForm.ip_address !== props.device.ip) {
     emit('reconnect', networkForm.ip_address)
   } else if (!ok) {
-    alert('❌ 網路設定更新失敗')
+    toast.show('網路設定更新失敗', 'err')
   }
 }
 
@@ -393,7 +396,7 @@ async function handleRestart() {
   if (ok) {
     emit('reconnect', props.device.ip)
   } else {
-    alert('❌ 重啟指令失敗')
+    toast.show('重啟指令失敗', 'err')
   }
 }
 </script>

@@ -102,9 +102,16 @@ const isSending = ref(false)
 const resultMsg = ref('')
 const resultOk = ref(false)
 
+const IPV4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/
+
 async function handleSubmit() {
   if (!form.newIp) {
     resultMsg.value = '❌ 請輸入新 IP 位址'
+    resultOk.value = false
+    return
+  }
+  if (!IPV4.test(form.newIp.trim())) {
+    resultMsg.value = '❌ 請輸入有效的 IPv4 位址（如 192.168.1.200）'
     resultOk.value = false
     return
   }
@@ -131,7 +138,7 @@ async function handleSubmit() {
     if (result.success) {
       resultMsg.value = `✅ IP 已修改為 ${form.newIp}，等待設備重啟...`
       resultOk.value = true
-      setTimeout(() => emit('success', form.newIp), 1500)
+      setTimeout(() => emit('success', form.newIp), 3000)
     } else {
       resultMsg.value = `❌ 修改失敗: ${result.error}`
       resultOk.value = false

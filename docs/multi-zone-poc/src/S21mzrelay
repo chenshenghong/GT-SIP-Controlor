@@ -9,6 +9,8 @@ CONF=/opt/mzrelay.conf
 case "${1:-start}" in
 start)
 	[ -x "$BIN" ] && [ -f "$CONF" ] || exit 0
+	# 子殼三 fd 全脫離（.101 rollout 實證）：不重導 stdout/stdin 時 daemon 會抓住
+	# ssh session 的 pipe，令遠端部署的 restart 步驟永不返回（boot 時無感、ssh 時致命）
 	(
 		n=0
 		while [ $n -lt 30 ]; do
@@ -16,7 +18,7 @@ start)
 			sleep 1; n=$((n+1))
 		done
 		exec "$BIN" $(cat "$CONF") 2>>/tmp/mzrelay.boot.log
-	) &
+	) >/dev/null </dev/null &
 	echo "mzrelay3: autostart armed"
 	;;
 stop)
